@@ -51,6 +51,9 @@ public:
     bool getReverse() const { return reverse; }
     void setReverse (bool v) { reverse = v; }
 
+    float getReverseTrim() const;
+    void setReverseTrim (float v);
+
     int getSelectedIRIndex() const { return selectedIRIndex; }
     void setSelectedIRIndex (int index) { selectedIRIndex = index; }
 

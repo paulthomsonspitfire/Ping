@@ -25,7 +25,8 @@ PingEditor::PingEditor (PingProcessor& p)
     : AudioProcessorEditor (&p),
       pingProcessor (p),
       apvts (p.getAPVTS()),
-      eqGraph (p.getAPVTS())
+      eqGraph (p.getAPVTS()),
+      waveformComponent (p)
 {
     setSize (editorW, editorH);
     setResizable (true, true);
@@ -164,7 +165,8 @@ PingEditor::PingEditor (PingProcessor& p)
         r->setFont (11.0f);
     }
 
-    addAndMakeVisible (waveformDisplay);
+    waveformComponent.setOnTrimChanged ([this] { loadSelectedIR(); });
+    addAndMakeVisible (waveformComponent);
     addAndMakeVisible (eqGraph);
 
     apvts.addParameterListener ("stretch", this);
@@ -200,70 +202,12 @@ void PingEditor::paint (juce::Graphics& g)
     g.setGradientFill (juce::ColourGradient::vertical (bgDark.brighter (0.03f), 0, bgDark.darker (0.04f), (float) getHeight()));
     g.fillRect (getLocalBounds());
 
-    auto wfBounds = waveformDisplay.getBounds();
+    auto wfBounds = waveformComponent.getBounds();
     const float corner = 6.0f;
     g.setColour (panelBg);
     g.fillRoundedRectangle (wfBounds.toFloat(), corner);
     g.setColour (panelBorder);
     g.drawRoundedRectangle (wfBounds.toFloat().reduced (0.5f), corner, 0.8f);
-
-    const auto& buf = pingProcessor.getCurrentIRBuffer();
-    if (buf.getNumSamples() > 0)
-    {
-        auto inner = wfBounds.reduced (juce::jmin (10, wfBounds.getWidth() / 40));
-        int numChannels = buf.getNumChannels();
-        int numSamples = buf.getNumSamples();
-        const int gapBetweenChannels = 2;
-        int totalChannelHeight = inner.getHeight() - (numChannels > 1 ? gapBetweenChannels * (numChannels - 1) : 0);
-        float hPerCh = (float) totalChannelHeight / (float) numChannels;
-
-        g.setColour (panelBorder.withAlpha (0.4f));
-        for (int i = 1; i <= 3; ++i)
-        {
-            float x = inner.getX() + inner.getWidth() * (float) i / 4.0f;
-            g.drawVerticalLine ((int) x, (float) inner.getY(), (float) inner.getBottom());
-        }
-        for (int i = 1; i <= 2; ++i)
-        {
-            float y = inner.getY() + inner.getHeight() * (float) i / 3.0f;
-            g.drawHorizontalLine ((int) y, (float) inner.getX(), (float) inner.getRight());
-        }
-
-        float gain = 1.5f;  // 100% louder for better visibility
-        for (int ch = 0; ch < numChannels; ++ch)
-        {
-            int chY = inner.getY() + (int) (ch * (hPerCh + gapBetweenChannels));
-            auto area = inner.withHeight ((int) hPerCh).withY (chY).reduced (3);
-            const float* data = buf.getReadPointer (ch);
-            juce::Path path;
-            juce::Path fillPath;
-            float centreY = area.getCentreY();
-            path.startNewSubPath ((float) area.getX(), centreY);
-            fillPath.startNewSubPath ((float) area.getX(), centreY);
-            for (int x = 0; x < area.getWidth(); ++x)
-            {
-                int sampleIdx = (int) ((double) x / (double) area.getWidth() * numSamples);
-                if (sampleIdx >= numSamples) sampleIdx = numSamples - 1;
-                float level = data[sampleIdx] * gain;
-                float y = centreY - level * area.getHeight();
-                float px = (float) area.getX() + x;
-                path.lineTo (px, y);
-                fillPath.lineTo (px, y);
-            }
-            fillPath.lineTo ((float) area.getRight(), centreY);
-            fillPath.closeSubPath();
-            g.setColour (waveFill);
-            g.fillPath (fillPath);
-            g.setColour (waveLine);
-            g.strokePath (path, juce::PathStrokeType (1.8f));
-        }
-    }
-    else
-    {
-        g.setColour (textDim);
-        g.setFont (juce::FontOptions (14.0f));
-        g.drawText ("No IR loaded", wfBounds, juce::Justification::centred, true);
-    }
 
     if (spitfireBounds.getWidth() > 0 && spitfireBounds.getHeight() > 0)
     {
@@ -339,12 +283,12 @@ void PingEditor::resized()
     auto rightCol = mainArea.removeFromRight (wavePanelW);
     auto reverseStrip = rightCol.removeFromTop (juce::jmin (26, rightCol.getHeight() / 4));
     reverseButton.setBounds (reverseStrip.removeFromRight (juce::jmax (68, (int)(0.075f * w))).reduced (2));
-    waveformDisplay.setBounds (rightCol.getX(), rightCol.getY(), rightCol.getWidth(),
-                              juce::jmin (wavePanelH, rightCol.getHeight()));
+    waveformComponent.setBounds (rightCol.getX(), rightCol.getY(), rightCol.getWidth(),
+                                 juce::jmin (wavePanelH, rightCol.getHeight()));
 
     int irComboH = 24;
     int irComboW = juce::jmin ((int) (0.24f * w), bigKnobSize + 40);
-    int cy = waveformDisplay.getBounds().getCentreY() - (bigKnobSize + labelH + readoutH + 4 + irComboH + 6) / 2;
+    int cy = waveformComponent.getBounds().getCentreY() - (bigKnobSize + labelH + readoutH + 4 + irComboH + 6) / 2;
     dryWetSlider.setBounds (presetCenterX - bigKnobSize / 2, cy, bigKnobSize, bigKnobSize);
     dryWetLabel.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + 2, bigKnobSize, labelH);
     dryWetReadout.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + labelH + 2, bigKnobSize, readoutH);
@@ -535,5 +479,5 @@ void PingEditor::loadSelectedIR()
 
 void PingEditor::updateWaveform()
 {
-    waveformDisplay.repaint();
+    waveformComponent.repaint();
 }

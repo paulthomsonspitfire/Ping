@@ -13,6 +13,7 @@ namespace IDs
     static const juce::String tailMod  { "tailmod" };
     static const juce::String delayDepth{ "delaydepth" };
     static const juce::String tailRate { "tailrate" };
+    static const juce::String reverseTrim { "reversetrim" };
     static const juce::String band0Freq { "b0freq" }, band0Gain { "b0gain" }, band0Q { "b0q" };
     static const juce::String band1Freq { "b1freq" }, band1Gain { "b1gain" }, band1Q { "b1q" };
     static const juce::String band2Freq { "b2freq" }, band2Gain { "b2gain" }, band2Q { "b2q" };
@@ -41,6 +42,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailMod,  "Tail Modulation", 0.0f, 1.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::delayDepth, "Delay Depth (ms)", 0.5f, 8.0f, 2.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailRate, "Tail Rate (Hz)", 0.05f, 3.0f, 0.5f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::reverseTrim, "Reverse Trim", 0.0f, 0.95f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Freq, "Band 0 Freq (Hz)", 20.0f, 20000.0f, 400.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Gain, "Band 0 Gain (dB)", -12.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Q, "Band 0 Q", 0.3f, 10.0f, 0.707f));
@@ -257,6 +259,25 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             for (int i = 0, j = n - 1; i < j; ++i, --j)
                 std::swap (p[i], p[j]);
         }
+
+        // Trim start of reversed IR (skip initial silence/long tail)
+        float trimFrac = apvts.getRawParameterValue (IDs::reverseTrim)->load();
+        if (trimFrac > 0.001f)
+        {
+            int n = buffer.getNumSamples();
+            int startIdx = (int) (trimFrac * (float) n);
+            if (startIdx > 0 && startIdx < n)
+            {
+                int newLen = n - startIdx;
+                if (newLen >= 64)
+                {
+                    juce::AudioBuffer<float> trimmed (buffer.getNumChannels(), newLen);
+                    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                        trimmed.copyFrom (ch, 0, buffer, ch, startIdx, newLen);
+                    buffer = std::move (trimmed);
+                }
+            }
+        }
     }
 
     // Stretch: time-scale IR to 50%..200% of original length (1.0 = natural)
@@ -333,6 +354,16 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
                 loadIRFromFile (file);
         }
     }
+}
+
+float PingProcessor::getReverseTrim() const
+{
+    return apvts.getRawParameterValue (IDs::reverseTrim)->load();
+}
+
+void PingProcessor::setReverseTrim (float v)
+{
+    apvts.getRawParameterValue (IDs::reverseTrim)->store (juce::jlimit (0.0f, 0.95f, v));
 }
 
 double PingProcessor::getTailLengthSeconds() const

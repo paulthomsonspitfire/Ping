@@ -55,6 +55,7 @@ target_sources(Ping
     PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp
+        Source/WaveformComponent.cpp
         Source/IRManager.cpp
         Source/PingLookAndFeel.cpp
         Source/EQGraphComponent.cpp

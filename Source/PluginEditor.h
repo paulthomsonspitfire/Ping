@@ -6,6 +6,7 @@
 #include "PingLookAndFeel.h"
 #include "EQGraphComponent.h"
 #include "PresetManager.h"
+#include "WaveformComponent.h"
 
 class PingEditor : public juce::AudioProcessorEditor,
                    private juce::ComboBox::Listener,
@@ -61,7 +62,7 @@ private:
 
     void updateAllReadouts();
 
-    juce::Component waveformDisplay;
+    WaveformComponent waveformComponent;
     juce::Rectangle<int> spitfireBounds;
     juce::Rectangle<int> pingBounds;
 
