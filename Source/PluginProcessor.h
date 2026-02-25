@@ -61,6 +61,7 @@ private:
     IRManager irManager;
     juce::dsp::Convolution convolution;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> predelayLine;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> chorusDelayLine;
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand;
 
@@ -69,6 +70,7 @@ private:
     int selectedIRIndex = -1;
     bool reverse = false;
     float lfoPhase = 0.0f;
+    float tailLfoPhase = 0.0f;
     juce::File lastLoadedIRFile;
 
     void updateGains();

@@ -55,7 +55,7 @@ void PingLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& butto
 
 void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
                                         float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
-                                        juce::Slider&)
+                                        juce::Slider& slider)
 {
     auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (2);
     float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
@@ -64,6 +64,8 @@ void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wid
     float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
 
     const bool isBigKnob = (width >= 72);
+    juce::Colour fill = slider.findColour (juce::Slider::rotarySliderFillColourId);
+    juce::Colour thumb = slider.findColour (juce::Slider::thumbColourId);
 
     if (isBigKnob)
     {
@@ -74,7 +76,7 @@ void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wid
         g.setColour (trackColour);
         g.drawEllipse (centreX - outerRadius, centreY - outerRadius, outerRadius * 2, outerRadius * 2, lineW);
 
-        g.setColour (fillColour);
+        g.setColour (fill);
         juce::Path arc;
         arc.addCentredArc (centreX, centreY, outerRadius - lineW * 0.5f, outerRadius - lineW * 0.5f, 0,
                            rotaryStartAngle, angle, true);
@@ -84,7 +86,7 @@ void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wid
         float dotDist = innerRadius + (outerRadius - innerRadius) * 0.5f;
         float dotX = centreX + dotDist * std::sin (angle);
         float dotY = centreY - dotDist * std::cos (angle);
-        g.setColour (thumbColour);
+        g.setColour (thumb);
         g.fillEllipse (dotX - dotRadius, dotY - dotRadius, dotRadius * 2, dotRadius * 2);
 
         float centreRadius = innerRadius * 0.85f;
@@ -108,7 +110,7 @@ void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wid
         g.setColour (trackColour);
         g.drawEllipse (centreX - trackRadius, centreY - trackRadius, trackRadius * 2, trackRadius * 2, lineW);
 
-        g.setColour (fillColour);
+        g.setColour (fill);
         juce::Path arc;
         arc.addCentredArc (centreX, centreY, trackRadius - lineW * 0.5f, trackRadius - lineW * 0.5f, 0,
                            rotaryStartAngle, angle, true);
@@ -118,7 +120,7 @@ void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wid
         float dotDist = trackRadius - 2.0f;
         float dotX = centreX + dotDist * std::sin (angle);
         float dotY = centreY - dotDist * std::cos (angle);
-        g.setColour (thumbColour);
+        g.setColour (thumb);
         g.fillEllipse (dotX - dotRadius, dotY - dotRadius, dotRadius * 2, dotRadius * 2);
     }
 }

@@ -10,6 +10,9 @@ namespace IDs
     static const juce::String width    { "width" };
     static const juce::String modDepth { "moddepth" };
     static const juce::String modRate  { "modrate" };
+    static const juce::String tailMod  { "tailmod" };
+    static const juce::String delayDepth{ "delaydepth" };
+    static const juce::String tailRate { "tailrate" };
     static const juce::String band0Freq { "b0freq" }, band0Gain { "b0gain" }, band0Q { "b0q" };
     static const juce::String band1Freq { "b1freq" }, band1Gain { "b1gain" }, band1Q { "b1q" };
     static const juce::String band2Freq { "b2freq" }, band2Gain { "b2gain" }, band2Q { "b2q" };
@@ -30,11 +33,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::dryWet,   "Dry / Wet",  0.0f, 1.0f, 0.3f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::predelay, "Predelay (ms)", 0.0f, 500.0f, 0.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::decay,    "Decay", 0.0f, 1.0f, 1.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::decay,    "Damping", 0.0f, 1.0f, 1.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::stretch,  "Stretch", 0.5f, 2.0f, 1.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::width,   "Width", 0.0f, 2.0f, 1.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::modDepth, "Mod Depth", 0.0f, 1.0f, 0.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::modRate, "Mod Period (s)", 0.01f, 2.0f, 0.5f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::modDepth, "LFO Depth", 0.0f, 1.0f, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::modRate, "LFO Rate", 0.01f, 2.0f, 0.5f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailMod,  "Tail Modulation", 0.0f, 1.0f, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::delayDepth, "Delay Depth (ms)", 0.5f, 8.0f, 2.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailRate, "Tail Rate (Hz)", 0.05f, 3.0f, 0.5f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Freq, "Band 0 Freq (Hz)", 20.0f, 20000.0f, 400.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Gain, "Band 0 Gain (dB)", -12.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Q, "Band 0 Q", 0.3f, 10.0f, 0.707f));
@@ -61,6 +67,10 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     predelayLine.reset();
     predelayLine.setMaximumDelayInSamples ((int) (2.0 * sampleRate)); // up to 2 s
     predelayLine.prepare (spec);
+
+    chorusDelayLine.reset();
+    chorusDelayLine.setMaximumDelayInSamples ((int) (0.015 * sampleRate)); // up to 15 ms
+    chorusDelayLine.prepare (spec);
 
     dryGain.reset();
     wetGain.reset();
@@ -139,6 +149,32 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
 
     float widthVal = apvts.getRawParameterValue (IDs::width)->load();
     applyWidth (buffer, widthVal);
+
+    // Chorus/tail modulation on wet signal (variable delay, LFO-modulated)
+    float tailAmt = apvts.getRawParameterValue (IDs::tailMod)->load();
+    float depthMs = apvts.getRawParameterValue (IDs::delayDepth)->load();
+    float rateHz = apvts.getRawParameterValue (IDs::tailRate)->load();
+    if (tailAmt > 0.0001f && depthMs > 0.1f && rateHz > 0.001f)
+    {
+        const float baseDelayMs = 2.5f;
+        float phaseInc = (float) (rateHz / currentSampleRate);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float mod = 0.5f * depthMs * std::sin (2.0f * juce::MathConstants<float>::twoPi * tailLfoPhase);
+            float delayMs = baseDelayMs + mod;
+            float delaySamps = (float) (currentSampleRate * delayMs * 0.001);
+            tailLfoPhase += phaseInc;
+            if (tailLfoPhase >= 1.0f) tailLfoPhase -= 1.0f;
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                float wetVal = buffer.getSample (ch, i);
+                chorusDelayLine.pushSample (ch, wetVal);
+                float delayed = chorusDelayLine.popSample (ch, delaySamps);
+                buffer.setSample (ch, i, wetVal * (1.0f - tailAmt) + delayed * tailAmt);
+            }
+        }
+    }
 
     // Mix dry/wet: output = dry * dryBuffer + wet * wetBuffer (buffer is currently wet)
     float dry = dryGain.getGainLinear();

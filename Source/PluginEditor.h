@@ -41,16 +41,20 @@ private:
     juce::Slider dryWetSlider;
     juce::Slider predelaySlider, decaySlider, modDepthSlider;
     juce::Slider stretchSlider, widthSlider, modRateSlider;
+    juce::Slider tailModSlider, delayDepthSlider, tailRateSlider;
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     std::unique_ptr<SliderAttachment> dryWetAttach, predelayAttach, decayAttach;
     std::unique_ptr<SliderAttachment> stretchAttach, widthAttach, modDepthAttach, modRateAttach;
+    std::unique_ptr<SliderAttachment> tailModAttach, delayDepthAttach, tailRateAttach;
 
     juce::Label dryWetLabel, predelayLabel, decayLabel, modDepthLabel;
     juce::Label stretchLabel, widthLabel, modRateLabel;
+    juce::Label tailModLabel, delayDepthLabel, tailRateLabel;
 
     juce::Label dryWetReadout, predelayReadout, decayReadout, modDepthReadout;
     juce::Label stretchReadout, widthReadout, modRateReadout;
+    juce::Label tailModReadout, delayDepthReadout, tailRateReadout;
 
     PingLookAndFeel pingLook;
     EQGraphComponent eqGraph;

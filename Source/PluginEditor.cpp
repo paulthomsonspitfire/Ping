@@ -85,6 +85,18 @@ PingEditor::PingEditor (PingProcessor& p)
         s.setColour (juce::Slider::trackColourId, panelBorder);
     };
 
+    auto makeGreySlider = [this] (juce::Slider& s)
+    {
+        addAndMakeVisible (s);
+        s.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        s.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+        const juce::Colour greyAccent { 0xff909090 };
+        s.setColour (juce::Slider::rotarySliderFillColourId, greyAccent);
+        s.setColour (juce::Slider::thumbColourId, greyAccent);
+        s.setColour (juce::Slider::rotarySliderOutlineColourId, panelBorder);
+        s.setColour (juce::Slider::trackColourId, panelBorder);
+    };
+
     makeSlider (dryWetSlider, "Dry/Wet");
     makeSlider (predelaySlider, "Predelay");
     makeSlider (decaySlider, "Decay");
@@ -92,6 +104,9 @@ PingEditor::PingEditor (PingProcessor& p)
     makeSlider (stretchSlider, "Stretch");
     makeSlider (widthSlider, "Width");
     makeSlider (modRateSlider, "Mod Rate");
+    makeGreySlider (tailModSlider);
+    makeGreySlider (delayDepthSlider);
+    makeGreySlider (tailRateSlider);
 
     dryWetSlider.setRange (0.0, 1.0, 0.01);
     predelaySlider.setRange (0.0, 500.0, 1.0);
@@ -100,6 +115,9 @@ PingEditor::PingEditor (PingProcessor& p)
     stretchSlider.setRange (0.5, 2.0, 0.01);
     widthSlider.setRange (0.0, 2.0, 0.01);
     modRateSlider.setRange (0.01, 2.0, 0.01);
+    tailModSlider.setRange (0.0, 1.0, 0.01);
+    delayDepthSlider.setRange (0.5f, 8.0f, 0.01f);
+    tailRateSlider.setRange (0.05f, 3.0f, 0.01f);
 
     dryWetAttach    = std::make_unique<SliderAttachment> (apvts, "drywet",   dryWetSlider);
     predelayAttach  = std::make_unique<SliderAttachment> (apvts, "predelay", predelaySlider);
@@ -108,12 +126,16 @@ PingEditor::PingEditor (PingProcessor& p)
     widthAttach     = std::make_unique<SliderAttachment> (apvts, "width",   widthSlider);
     modDepthAttach  = std::make_unique<SliderAttachment> (apvts, "moddepth", modDepthSlider);
     modRateAttach   = std::make_unique<SliderAttachment> (apvts, "modrate",  modRateSlider);
+    tailModAttach   = std::make_unique<SliderAttachment> (apvts, "tailmod",  tailModSlider);
+    delayDepthAttach = std::make_unique<SliderAttachment> (apvts, "delaydepth", delayDepthSlider);
+    tailRateAttach  = std::make_unique<SliderAttachment> (apvts, "tailrate", tailRateSlider);
 
     setLookAndFeel (&pingLook);
 
     // Labels
     for (auto* label : { &dryWetLabel, &predelayLabel, &decayLabel, &modDepthLabel,
-                        &stretchLabel, &widthLabel, &modRateLabel })
+                        &stretchLabel, &widthLabel, &modRateLabel,
+                        &tailModLabel, &delayDepthLabel, &tailRateLabel })
     {
         addAndMakeVisible (label);
         label->setJustificationType (juce::Justification::centred);
@@ -123,14 +145,18 @@ PingEditor::PingEditor (PingProcessor& p)
     dryWetLabel.setText ("", juce::dontSendNotification);
     dryWetLabel.setVisible (false);
     predelayLabel.setText ("PREDELAY", juce::dontSendNotification);
-    decayLabel.setText ("DECAY", juce::dontSendNotification);
-    modDepthLabel.setText ("MOD DEPTH", juce::dontSendNotification);
+    decayLabel.setText ("DAMPING", juce::dontSendNotification);
+    modDepthLabel.setText ("LFO DEPTH", juce::dontSendNotification);
     stretchLabel.setText ("STRETCH", juce::dontSendNotification);
     widthLabel.setText ("WIDTH", juce::dontSendNotification);
-    modRateLabel.setText ("MOD RATE", juce::dontSendNotification);
+    modRateLabel.setText ("LFO RATE", juce::dontSendNotification);
+    tailModLabel.setText ("TAIL MOD", juce::dontSendNotification);
+    delayDepthLabel.setText ("DELAY DEPTH", juce::dontSendNotification);
+    tailRateLabel.setText ("RATE", juce::dontSendNotification);
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
-                     &stretchReadout, &widthReadout, &modRateReadout })
+                     &stretchReadout, &widthReadout, &modRateReadout,
+                     &tailModReadout, &delayDepthReadout, &tailRateReadout })
     {
         addAndMakeVisible (r);
         r->setJustificationType (juce::Justification::centred);
@@ -329,6 +355,7 @@ void PingEditor::resized()
     const int sixColW = sixKnobSize + sixColGap;
     int x1 = mainArea.getX();
     int x2 = mainArea.getX() + sixColW;
+    int x3 = mainArea.getX() + 2 * sixColW;
     int y = mainArea.getY();
 
     decaySlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
@@ -359,6 +386,21 @@ void PingEditor::resized()
     modRateSlider.setBounds (x2, y, sixKnobSize, sixKnobSize);
     modRateLabel.setBounds (x2, y + sixKnobSize + 2, sixKnobSize, labelH);
     modRateReadout.setBounds (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
+
+    y = mainArea.getY();
+    tailModSlider.setBounds (x3, y, sixKnobSize, sixKnobSize);
+    tailModLabel.setBounds (x3, y + sixKnobSize + 2, sixKnobSize, labelH);
+    tailModReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
+    y += sixRowH;
+
+    delayDepthSlider.setBounds (x3, y, sixKnobSize, sixKnobSize);
+    delayDepthLabel.setBounds (x3, y + sixKnobSize + 2, sixKnobSize, labelH);
+    delayDepthReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
+    y += sixRowH;
+
+    tailRateSlider.setBounds (x3, y, sixKnobSize, sixKnobSize);
+    tailRateLabel.setBounds (x3, y + sixKnobSize + 2, sixKnobSize, labelH);
+    tailRateReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
 
     b.removeFromTop ((int) (0.008f * h));
 
@@ -464,6 +506,10 @@ void PingEditor::updateAllReadouts()
         modRateReadout.setText (juce::String (periodSec, 2) + " s", juce::dontSendNotification);
     else
         modRateReadout.setText (juce::String (1.0 / periodSec, 1) + " Hz", juce::dontSendNotification);
+
+    tailModReadout.setText (juce::String (juce::roundToInt (v ("tailmod") * 100)) + "%", juce::dontSendNotification);
+    delayDepthReadout.setText (juce::String (v ("delaydepth"), 1) + " ms", juce::dontSendNotification);
+    tailRateReadout.setText (juce::String (v ("tailrate"), 2) + " Hz", juce::dontSendNotification);
 }
 
 void PingEditor::refreshIRList()
