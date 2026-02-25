@@ -168,6 +168,18 @@ PingEditor::PingEditor (PingProcessor& p)
     waveformComponent.setOnTrimChanged ([this] { loadSelectedIR(); });
     addAndMakeVisible (waveformComponent);
     addAndMakeVisible (eqGraph);
+    addAndMakeVisible (outputLevelMeter);
+
+    addChildComponent (licenceScreen);
+    licenceScreen.onActivationSuccess = [this] (LicenceResult r, juce::String serial)
+    {
+        pingProcessor.setLicence (r, serial);
+        licenceScreen.setVisible (false);
+    };
+    if (pingProcessor.isLicensed())
+        licenceScreen.setVisible (false);
+    else
+        licenceScreen.setVisible (true);
 
     apvts.addParameterListener ("stretch", this);
     apvts.addParameterListener ("decay", this);
@@ -240,6 +252,10 @@ void PingEditor::paint (juce::Graphics& g)
 
 void PingEditor::resized()
 {
+    licenceScreen.setBounds (getLocalBounds());
+    if (licenceScreen.isVisible())
+        licenceScreen.toFront (true);
+
     int w = getWidth();
     int h = getHeight();
     auto b = getLocalBounds().reduced (juce::jmin (12, w / 76), juce::jmin (12, h / 38));
@@ -273,6 +289,13 @@ void PingEditor::resized()
     savePresetButton.setBounds (presetCombo.getRight() + 6, presetArea.getY() + 2, saveButtonW, presetArea.getHeight() - 4);
 
     const int presetCenterX = presetCombo.getX() + presetCombo.getWidth() / 2;
+
+    const int meterGap = 6;
+    const int meterH = 5;
+    int meterX = spitfireBounds.getRight() + meterGap;
+    int meterW = juce::jmax (0, presetCombo.getX() - meterX - meterGap);
+    int meterY = spitfireBounds.getY() + (spitfireBounds.getHeight() - meterH) / 2;
+    outputLevelMeter.setBounds (meterX, meterY, meterW, meterH);
 
     b.removeFromTop ((int) (0.01f * h));
 
@@ -423,6 +446,7 @@ void PingEditor::timerCallback()
 {
     updateWaveform();
     updateAllReadouts();
+    outputLevelMeter.setLevelsDb (pingProcessor.getOutputLevelDb (0), pingProcessor.getOutputLevelDb (1));
 }
 
 void PingEditor::updateAllReadouts()

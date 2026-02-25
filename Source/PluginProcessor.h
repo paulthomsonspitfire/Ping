@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "IRManager.h"
+#include "LicenceVerifier.h"
 
 class PingProcessor : public juce::AudioProcessor
 {
@@ -57,6 +58,11 @@ public:
     int getSelectedIRIndex() const { return selectedIRIndex; }
     void setSelectedIRIndex (int index) { selectedIRIndex = index; }
 
+    bool isLicensed() const;
+    void setLicence (const LicenceResult& result, const juce::String& serial);
+
+    float getOutputLevelDb (int channel) const;  // 0 = L, 1 = R
+
 private:
     juce::AudioProcessorValueTreeState apvts;
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -75,6 +81,14 @@ private:
     float lfoPhase = 0.0f;
     float tailLfoPhase = 0.0f;
     juce::File lastLoadedIRFile;
+
+    std::atomic<float> outputLevelPeakL { 0.0f };
+    std::atomic<float> outputLevelPeakR { 0.0f };
+
+    LicenceResult currentLicence;
+    juce::String savedLicenceSerial;
+
+    void loadStoredLicence();
 
     void updateGains();
     void updatePredelay();

@@ -19,12 +19,23 @@ namespace IDs
     static const juce::String band2Freq { "b2freq" }, band2Gain { "b2gain" }, band2Q { "b2q" };
 }
 
+static juce::File getLicenceFile()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                   .getChildFile ("Ping")
+                   .getChildFile ("P!NG");
+    if (! dir.exists())
+        dir.createDirectory();
+    return dir.getChildFile ("licence.xml");
+}
+
 PingProcessor::PingProcessor()
     : AudioProcessor (BusesProperties().withInput ("Input",  juce::AudioChannelSet::stereo(), true)
                                        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
     irManager.refresh();
+    loadStoredLicence();
 }
 
 PingProcessor::~PingProcessor() {}
@@ -97,6 +108,12 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
     if (numChannels < 2) return;
+
+    if (! isLicensed())
+    {
+        buffer.clear();
+        return;
+    }
 
     updateGains();
     updatePredelay();
@@ -186,6 +203,32 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         buffer.applyGain (ch, 0, numSamples, wet);
         buffer.addFrom (ch, 0, dryBuffer, ch, 0, numSamples, dry);
     }
+
+    // Output level for meter (peak follower with decay), L/R separately
+    auto updatePeak = [] (std::atomic<float>& peakStore, float newPeak)
+    {
+        float current = peakStore.load();
+        if (newPeak > current)
+            peakStore.store (newPeak);
+        else
+            peakStore.store (current * 0.95f);
+    };
+    float peakL = 0.0f, peakR = 0.0f;
+    for (int i = 0; i < numSamples; ++i)
+    {
+        if (numChannels > 0) peakL = juce::jmax (peakL, std::abs (buffer.getSample (0, i)));
+        if (numChannels > 1) peakR = juce::jmax (peakR, std::abs (buffer.getSample (1, i)));
+    }
+    updatePeak (outputLevelPeakL, peakL);
+    updatePeak (outputLevelPeakR, peakR);
+}
+
+float PingProcessor::getOutputLevelDb (int channel) const
+{
+    const std::atomic<float>* peakStore = (channel == 0) ? &outputLevelPeakL : &outputLevelPeakR;
+    float peak = peakStore->load();
+    if (peak < 1e-6f) return -60.0f;
+    return juce::Decibels::gainToDecibels (peak);
 }
 
 void PingProcessor::updateGains()
@@ -336,6 +379,11 @@ void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
     {
         xml->setAttribute ("irIndex", selectedIRIndex);
         xml->setAttribute ("reverse", reverse);
+        if (currentLicence.valid)
+        {
+            xml->setAttribute ("licenceName", currentLicence.normalisedName);
+            xml->setAttribute ("licenceSerial", savedLicenceSerial);
+        }
         copyXmlToBinary (*xml, destData);
     }
 }
@@ -347,11 +395,64 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
         selectedIRIndex = xml->getIntAttribute ("irIndex", -1);
         reverse = xml->getBoolAttribute ("reverse", false);
+
+        juce::String licenceName = xml->getStringAttribute ("licenceName");
+        juce::String licenceSerial = xml->getStringAttribute ("licenceSerial");
+        if (licenceName.isNotEmpty() && licenceSerial.isNotEmpty())
+        {
+            LicenceVerifier v;
+            currentLicence = v.activate (licenceName.toStdString(), licenceSerial.toStdString());
+            if (currentLicence.valid && ! currentLicence.expired)
+                savedLicenceSerial = licenceSerial;
+        }
+
         if (selectedIRIndex >= 0)
         {
             auto file = irManager.getIRFileAt (selectedIRIndex);
             if (file.existsAsFile())
                 loadIRFromFile (file);
+        }
+    }
+}
+
+bool PingProcessor::isLicensed() const
+{
+    return currentLicence.valid && ! currentLicence.expired;
+}
+
+void PingProcessor::setLicence (const LicenceResult& result, const juce::String& serial)
+{
+    currentLicence = result;
+    savedLicenceSerial = serial;
+
+    if (result.valid && ! result.expired)
+    {
+        auto file = getLicenceFile();
+        if (auto xml = std::make_unique<juce::XmlElement> ("Licence"))
+        {
+            xml->setAttribute ("name", result.normalisedName);
+            xml->setAttribute ("serial", serial);
+            xml->writeTo (file);
+        }
+    }
+}
+
+void PingProcessor::loadStoredLicence()
+{
+    auto file = getLicenceFile();
+    if (! file.existsAsFile())
+        return;
+
+    if (auto xml = juce::parseXML (file))
+    {
+        juce::String name = xml->getStringAttribute ("name");
+        juce::String serial = xml->getStringAttribute ("serial");
+        if (name.isNotEmpty() && serial.isNotEmpty())
+        {
+            LicenceVerifier v;
+            currentLicence = v.activate (name.toStdString(), serial.toStdString());
+            if (currentLicence.valid && ! currentLicence.expired)
+                savedLicenceSerial = serial;
         }
     }
 }

@@ -14,3 +14,7 @@ out/
 
 # JUCE
 JuceLibraryCode/
+
+# Licence keygen (never commit)
+private_key.bin
+public_key.bin

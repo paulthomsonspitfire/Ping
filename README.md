@@ -13,6 +13,8 @@ P!NG is an audio plugin you can use in Logic Pro (and other hosts) to add reverb
      `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
    - Then run: `brew install cmake`
 
+4. **libsodium** – for licence verification. Run: `brew install libsodium`
+
 ---
 
 ## Build steps (Terminal)
@@ -101,3 +103,33 @@ That means: **Documents** → create a folder named **P!NG** → inside it creat
 
 - **No IRs in the list**  
   Create `~/Documents/P!NG/IRs`, put `.wav` or `.aiff` files there, then click **Refresh** in the plugin.
+
+---
+
+## Licence activation
+
+P!NG requires activation with a name and serial number. On first use, a floating activation window appears. Enter the name and serial provided at purchase, then click **Activate**. The plugin stores the licence in its state and won't ask again.
+
+---
+
+## Generating serial numbers (developers)
+
+The keygen tool in `Tools/` lets you create signed serials. **One-time setup:**
+
+1. Install libsodium: `brew install libsodium`
+2. Compile the keygen:
+   ```bash
+   cd Tools && g++ -std=c++17 -o keygen keygen.cpp -lsodium
+   ```
+3. Generate keys (do this once):
+   ```bash
+   ./keygen --generate-keys
+   ```
+4. Copy the printed `PUBLIC_KEY` array into `Source/LicenceVerifier.h` where indicated.
+5. Store `private_key.bin` safely and **never commit it to git**.
+
+**Issuing a serial:**
+```bash
+./keygen --name "Customer Name" --tier pro --expiry 2027-12-31
+```
+ tiers: `demo` | `standard` | `pro`. Use `--expiry 9999-12-31` for perpetual.

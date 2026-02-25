@@ -7,6 +7,8 @@
 #include "EQGraphComponent.h"
 #include "PresetManager.h"
 #include "WaveformComponent.h"
+#include "LicenceScreen.h"
+#include "OutputLevelMeter.h"
 
 class PingEditor : public juce::AudioProcessorEditor,
                    private juce::ComboBox::Listener,
@@ -59,10 +61,12 @@ private:
 
     PingLookAndFeel pingLook;
     EQGraphComponent eqGraph;
+    LicenceScreen licenceScreen;
 
     void updateAllReadouts();
 
     WaveformComponent waveformComponent;
+    OutputLevelMeter outputLevelMeter;
     juce::Rectangle<int> spitfireBounds;
     juce::Rectangle<int> pingBounds;
 

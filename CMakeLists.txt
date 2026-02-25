@@ -25,6 +25,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
+# libsodium for licence verification
+find_path(SODIUM_INCLUDE_DIR sodium.h
+    HINTS /opt/homebrew/opt/libsodium/include /usr/local/include)
+find_library(SODIUM_LIBRARY sodium
+    HINTS /opt/homebrew/opt/libsodium/lib /usr/local/lib)
+if(NOT SODIUM_INCLUDE_DIR OR NOT SODIUM_LIBRARY)
+    message(FATAL_ERROR "libsodium not found. Install with: brew install libsodium")
+endif()
+
 # P!NG AU / VST3 plugin
 juce_add_plugin(Ping
     COMPANY_NAME          "Ping"
@@ -69,9 +78,12 @@ target_compile_definitions(Ping
         JUCE_VST3_CAN_REPLACE_VST2=0
 )
 
+target_include_directories(Ping PRIVATE ${SODIUM_INCLUDE_DIR})
+
 target_link_libraries(Ping
     PRIVATE
         PingData
+        ${SODIUM_LIBRARY}
         juce::juce_audio_utils
         juce::juce_dsp
     PUBLIC
