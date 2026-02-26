@@ -1,5 +1,6 @@
 # Build
 build/
+Installer/output/
 cmake-build-*/
 out/
 

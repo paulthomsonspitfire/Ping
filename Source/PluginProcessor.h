@@ -59,7 +59,13 @@ public:
     void setSelectedIRIndex (int index) { selectedIRIndex = index; }
 
     bool isLicensed() const;
-    void setLicence (const LicenceResult& result, const juce::String& serial);
+    void setLicence (const LicenceResult& result, const juce::String& serial, const juce::String& displayName = {});
+    juce::String getLicenceName() const;
+    /** Display name from verified payload only - use this for UI, ignores any stored state. */
+    juce::String getLicenceNameFromPayload() const;
+
+    /** Decode legacy ASCII-decimal display names (e.g. "8097117108..." -> "Paul Thomson"). */
+    static juce::String decodeLicenceDisplayName (const juce::String& raw);
 
     float getOutputLevelDb (int channel) const;  // 0 = L, 1 = R
 
@@ -87,6 +93,7 @@ private:
 
     LicenceResult currentLicence;
     juce::String savedLicenceSerial;
+    juce::String licenceDisplayName;
 
     void loadStoredLicence();
 

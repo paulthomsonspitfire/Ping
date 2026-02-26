@@ -25,6 +25,12 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
+# Install plugins to main /Library (not user ~/Library)
+if(APPLE)
+    set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY JUCE_AU_COPY_DIR   "/Library/Audio/Plug-Ins/Components")
+    set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY JUCE_VST3_COPY_DIR  "/Library/Audio/Plug-Ins/VST3")
+endif()
+
 # libsodium for licence verification
 find_path(SODIUM_INCLUDE_DIR sodium.h
     HINTS /opt/homebrew/opt/libsodium/include /usr/local/include)
@@ -45,7 +51,8 @@ juce_add_plugin(Ping
     NEEDS_MIDI_INPUT      FALSE
     NEEDS_MIDI_OUTPUT     FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-    COPY_PLUGIN_AFTER_BUILD TRUE
+    COPY_PLUGIN_AFTER_BUILD FALSE
+    # Install via Installer/output/*.pkg - run: cmake --build build --target installer
     PRODUCT_NAME          "P!NG"
 )
 
@@ -91,3 +98,13 @@ target_link_libraries(Ping
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+# Mac installer target - creates .pkg that prompts for admin and installs to /Library
+if(APPLE)
+    add_custom_target(installer
+        COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/Installer/build_installer.sh"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        DEPENDS Ping_AU Ping_VST3
+        COMMENT "Building P!NG installer package"
+    )
+endif()

@@ -19,6 +19,28 @@ namespace
     const juce::Colour textDim    { 0xff909090 };
     const juce::Colour waveFill   { 0x28e8a84a };
     const juce::Colour waveLine   { 0xffe8e8e8 };
+
+    juce::String toTitleCase (const juce::String& s)
+    {
+        if (s.isEmpty()) return {};
+        juce::String result;
+        bool atWordStart = true;
+        for (juce::juce_wchar c : s)
+        {
+            if (c == ' ' || c == '\t' || c == '-')
+            {
+                atWordStart = true;
+                result += c;
+            }
+            else
+            {
+                result += atWordStart ? (juce::String) (juce::juce_wchar) juce::CharacterFunctions::toUpperCase ((juce::juce_wchar) c)
+                                     : (juce::String) (juce::juce_wchar) juce::CharacterFunctions::toLowerCase ((juce::juce_wchar) c);
+                atWordStart = false;
+            }
+        }
+        return result;
+    }
 }
 
 PingEditor::PingEditor (PingProcessor& p)
@@ -170,10 +192,15 @@ PingEditor::PingEditor (PingProcessor& p)
     addAndMakeVisible (eqGraph);
     addAndMakeVisible (outputLevelMeter);
 
+    addAndMakeVisible (licenceLabel);
+    licenceLabel.setJustificationType (juce::Justification::centredLeft);
+    licenceLabel.setColour (juce::Label::textColourId, textDim);
+    licenceLabel.setFont (juce::FontOptions (11.0f));
+
     addChildComponent (licenceScreen);
-    licenceScreen.onActivationSuccess = [this] (LicenceResult r, juce::String serial)
+    licenceScreen.onActivationSuccess = [this] (LicenceResult r, juce::String serial, juce::String displayName)
     {
-        pingProcessor.setLicence (r, serial);
+        pingProcessor.setLicence (r, serial, displayName);
         licenceScreen.setVisible (false);
     };
     if (pingProcessor.isLicensed())
@@ -244,10 +271,6 @@ void PingEditor::paint (juce::Graphics& g)
             g.drawImageWithin (dryWetImg, r.getX(), r.getY(), r.getWidth(), r.getHeight(), juce::RectanglePlacement::centred);
     }
 
-    g.setColour (textDim);
-    g.setFont (juce::FontOptions (11.0f));
-    g.drawText ("Impulse responses: " + IRManager::getIRFolder().getFullPathName(),
-                12, getHeight() - 20, getWidth() - 24, 16, juce::Justification::centredLeft);
 }
 
 void PingEditor::resized()
@@ -376,6 +399,8 @@ void PingEditor::resized()
     auto bottomRow = b.removeFromBottom (eqHeight);
     auto eqRect = bottomRow.removeFromRight (eqWidth);
     eqGraph.setBounds (eqRect);
+
+    licenceLabel.setBounds (12, getHeight() - 20, getWidth() - 24, 16);
 }
 
 void PingEditor::comboBoxChanged (juce::ComboBox* combo)
@@ -447,6 +472,9 @@ void PingEditor::timerCallback()
     updateWaveform();
     updateAllReadouts();
     outputLevelMeter.setLevelsDb (pingProcessor.getOutputLevelDb (0), pingProcessor.getOutputLevelDb (1));
+    // Minimal: payload only, like LicenceScreen - no toTitleCase, no file, no stored state
+    juce::String name = pingProcessor.getLicenceNameFromPayload();
+    licenceLabel.setText (name.isNotEmpty() ? ("Licensed to: " + name) : juce::String ("Licensed"), juce::dontSendNotification);
 }
 
 void PingEditor::updateAllReadouts()

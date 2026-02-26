@@ -67,6 +67,7 @@ private:
 
     WaveformComponent waveformComponent;
     OutputLevelMeter outputLevelMeter;
+    juce::Label licenceLabel;
     juce::Rectangle<int> spitfireBounds;
     juce::Rectangle<int> pingBounds;
 

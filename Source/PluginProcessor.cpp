@@ -19,14 +19,147 @@ namespace IDs
     static const juce::String band2Freq { "b2freq" }, band2Gain { "b2gain" }, band2Q { "b2q" };
 }
 
+static juce::File getLicenceDirectory()
+{
+    auto systemDir = juce::File::getSpecialLocation (juce::File::commonApplicationDataDirectory)
+                         .getChildFile ("Audio")
+                         .getChildFile ("Ping")
+                         .getChildFile ("P!NG");
+    return systemDir;
+}
+
 static juce::File getLicenceFile()
 {
-    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-                   .getChildFile ("Ping")
-                   .getChildFile ("P!NG");
-    if (! dir.exists())
-        dir.createDirectory();
-    return dir.getChildFile ("licence.xml");
+    auto userFile = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                        .getChildFile ("Library")
+                        .getChildFile ("Audio")
+                        .getChildFile ("Ping")
+                        .getChildFile ("P!NG")
+                        .getChildFile ("licence.xml");
+    if (userFile.existsAsFile())
+        return userFile;
+    return getLicenceDirectory().getChildFile ("licence.xml");
+}
+
+static bool looksLikeDate (const std::string& s)
+{
+    if (s.size() != 10) return false;
+    return s[4] == '-' && s[7] == '-' && std::isdigit ((unsigned char) s[0]) && std::isdigit ((unsigned char) s[1]);
+}
+
+/** Convert digit char to 0-9 (handles ASCII and fullwidth Unicode ０-９ U+FF10-U+FF19). */
+static int digitValue (juce::juce_wchar c)
+{
+    if (c >= '0' && c <= '9') return (int) (c - '0');
+    if (c >= 0xFF10 && c <= 0xFF19) return (int) (c - 0xFF10);
+    return -1;
+}
+
+/** Decode ASCII decimal codes (e.g. "8097117108 84104111109115111110" -> "Paul Thomson"). */
+static juce::String decodeDecimalAscii (const juce::String& s)
+{
+    if (s.isEmpty()) return {};
+    auto t = s.trim();
+    bool allDigitsOrSpaces = true;
+    for (int i = 0; i < t.length(); ++i)
+    {
+        int d = digitValue (t[i]);
+        if (t[i] != ' ' && t[i] != '\t' && d < 0)
+        {
+            allDigitsOrSpaces = false;
+            break;
+        }
+    }
+    if (! allDigitsOrSpaces)
+        return s;
+
+    juce::String decoded;
+    int i = 0;
+    while (i < t.length())
+    {
+        while (i < t.length() && (t[i] == ' ' || t[i] == '\t')) { decoded += ' '; ++i; }
+        if (i >= t.length()) break;
+
+        int d0 = digitValue (t[i]);
+        if (d0 < 0) { ++i; continue; }
+
+        int code = d0, n = 1;
+        if (i + 1 < t.length())
+        {
+            int d1 = digitValue (t[i + 1]);
+            if (d1 >= 0)
+            {
+                int code2 = code * 10 + d1;
+                if (i + 2 < t.length())
+                {
+                    int d2 = digitValue (t[i + 2]);
+                    if (d2 >= 0)
+                    {
+                        int code3 = code2 * 10 + d2;
+                        if (code3 >= 32 && code3 <= 255)
+                        {
+                            code = code3;
+                            n = 3;
+                        }
+                        else if (code2 >= 32 && code2 <= 255)
+                        {
+                            code = code2;
+                            n = 2;
+                        }
+                    }
+                    else if (code2 >= 32 && code2 <= 255)
+                    {
+                        code = code2;
+                        n = 2;
+                    }
+                }
+                else if (code2 >= 32 && code2 <= 255)
+                {
+                    code = code2;
+                    n = 2;
+                }
+            }
+        }
+        else if (code >= 32 && code <= 255)
+        {
+            n = 1;
+        }
+
+        if (code >= 32 && code <= 255)
+            decoded += (juce::juce_wchar) (unsigned char) code;
+        i += n;
+    }
+    return decoded.length() >= 2 ? decoded : s;
+}
+
+/** Persist current licence to disk. Uses /Library/Audio/Ping/P!NG/ (main Library). */
+static void persistLicenceToFile (const std::string& normalisedName, const juce::String& serial,
+                                  const juce::String& displayName)
+{
+    auto dir = getLicenceDirectory();
+    if (! dir.createDirectory().wasOk())
+    {
+        auto userDir = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                           .getChildFile ("Library")
+                           .getChildFile ("Audio")
+                           .getChildFile ("Ping")
+                           .getChildFile ("P!NG");
+        dir = userDir;
+        if (! dir.createDirectory().wasOk())
+            return;
+    }
+    auto file = dir.getChildFile ("licence.xml");
+    if (auto xml = std::make_unique<juce::XmlElement> ("Licence"))
+    {
+        xml->setAttribute ("name", normalisedName);
+        xml->setAttribute ("serial", serial);
+        juce::String toStore = displayName.isNotEmpty() ? decodeDecimalAscii (displayName) : juce::String();
+        if (toStore.isEmpty() && displayName.isNotEmpty())
+            toStore = displayName;
+        if (toStore.isNotEmpty())
+            xml->setAttribute ("displayName", toStore);
+        xml->writeTo (file);
+    }
 }
 
 PingProcessor::PingProcessor()
@@ -383,6 +516,8 @@ void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
         {
             xml->setAttribute ("licenceName", currentLicence.normalisedName);
             xml->setAttribute ("licenceSerial", savedLicenceSerial);
+            if (licenceDisplayName.isNotEmpty())
+                xml->setAttribute ("licenceDisplayName", licenceDisplayName);
         }
         copyXmlToBinary (*xml, destData);
     }
@@ -398,12 +533,24 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
 
         juce::String licenceName = xml->getStringAttribute ("licenceName");
         juce::String licenceSerial = xml->getStringAttribute ("licenceSerial");
+        juce::String projectDisplayName = decodeDecimalAscii (xml->getStringAttribute ("licenceDisplayName"));
+        bool nameFromFileLooksValid = licenceDisplayName.isNotEmpty() && ! licenceDisplayName.containsOnly ("0123456789 ");
+        if (! nameFromFileLooksValid && projectDisplayName.isNotEmpty())
+            licenceDisplayName = projectDisplayName;
         if (licenceName.isNotEmpty() && licenceSerial.isNotEmpty())
         {
             LicenceVerifier v;
             currentLicence = v.activate (licenceName.toStdString(), licenceSerial.toStdString());
             if (currentLicence.valid && ! currentLicence.expired)
+            {
                 savedLicenceSerial = licenceSerial;
+                if (licenceDisplayName.isEmpty() && ! looksLikeDate (currentLicence.normalisedName))
+                {
+                    auto n = juce::String::fromUTF8 (currentLicence.normalisedName.data(), (int) currentLicence.normalisedName.size());
+                    licenceDisplayName = decodeDecimalAscii (n);
+                }
+                persistLicenceToFile (currentLicence.normalisedName, savedLicenceSerial, licenceDisplayName);
+            }
         }
 
         if (selectedIRIndex >= 0)
@@ -420,21 +567,48 @@ bool PingProcessor::isLicensed() const
     return currentLicence.valid && ! currentLicence.expired;
 }
 
-void PingProcessor::setLicence (const LicenceResult& result, const juce::String& serial)
+juce::String PingProcessor::decodeLicenceDisplayName (const juce::String& raw)
+{
+    return decodeDecimalAscii (raw);
+}
+
+juce::String PingProcessor::getLicenceNameFromPayload() const
+{
+    if (! currentLicence.valid || currentLicence.normalisedName.empty() || looksLikeDate (currentLicence.normalisedName))
+        return {};
+    return juce::String::fromUTF8 (currentLicence.normalisedName.data(), (int) currentLicence.normalisedName.size());
+}
+
+juce::String PingProcessor::getLicenceName() const
+{
+    // Prefer licenceDisplayName if valid (user-typed, correctly formatted); else payload (decoded if needed)
+    if (licenceDisplayName.isNotEmpty() && ! licenceDisplayName.containsOnly ("0123456789 "))
+        return licenceDisplayName;
+    juce::String fromPayload = juce::String::fromUTF8 (currentLicence.normalisedName.data(), (int) currentLicence.normalisedName.size());
+    if (fromPayload.isNotEmpty())
+    {
+        juce::String decoded = decodeDecimalAscii (fromPayload);
+        return decoded.isNotEmpty() ? decoded : fromPayload;
+    }
+    return decodeDecimalAscii (licenceDisplayName);
+}
+
+void PingProcessor::setLicence (const LicenceResult& result, const juce::String& serial, const juce::String& displayName)
 {
     currentLicence = result;
     savedLicenceSerial = serial;
+    if (displayName.isNotEmpty())
+        licenceDisplayName = displayName;
+    else if (! looksLikeDate (result.normalisedName))
+    {
+        auto n = juce::String::fromUTF8 (result.normalisedName.data(), (int) result.normalisedName.size());
+        licenceDisplayName = decodeDecimalAscii (n);
+    }
+    else
+        licenceDisplayName.clear();
 
     if (result.valid && ! result.expired)
-    {
-        auto file = getLicenceFile();
-        if (auto xml = std::make_unique<juce::XmlElement> ("Licence"))
-        {
-            xml->setAttribute ("name", result.normalisedName);
-            xml->setAttribute ("serial", serial);
-            xml->writeTo (file);
-        }
-    }
+        persistLicenceToFile (result.normalisedName, serial, licenceDisplayName);
 }
 
 void PingProcessor::loadStoredLicence()
@@ -447,12 +621,20 @@ void PingProcessor::loadStoredLicence()
     {
         juce::String name = xml->getStringAttribute ("name");
         juce::String serial = xml->getStringAttribute ("serial");
+        licenceDisplayName = decodeDecimalAscii (xml->getStringAttribute ("displayName"));
         if (name.isNotEmpty() && serial.isNotEmpty())
         {
             LicenceVerifier v;
             currentLicence = v.activate (name.toStdString(), serial.toStdString());
             if (currentLicence.valid && ! currentLicence.expired)
+            {
                 savedLicenceSerial = serial;
+                if (licenceDisplayName.isEmpty() && ! looksLikeDate (currentLicence.normalisedName))
+                {
+                    auto n = juce::String::fromUTF8 (currentLicence.normalisedName.data(), (int) currentLicence.normalisedName.size());
+                    licenceDisplayName = decodeDecimalAscii (n);
+                }
+            }
         }
     }
 }

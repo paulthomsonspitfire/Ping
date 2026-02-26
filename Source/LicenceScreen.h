@@ -7,7 +7,7 @@
 class LicenceScreen : public juce::Component
 {
 public:
-    std::function<void(LicenceResult, juce::String)> onActivationSuccess;
+    std::function<void(LicenceResult, juce::String, juce::String)> onActivationSuccess;
 
     LicenceScreen()
     {
@@ -100,7 +100,7 @@ private:
                                 juce::dontSendNotification);
 
             if (onActivationSuccess)
-                onActivationSuccess (result, serialField.getText());
+                onActivationSuccess (result, serialField.getText(), nameField.getText());
         }
         else if (result.valid && result.expired)
         {
