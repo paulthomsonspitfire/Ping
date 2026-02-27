@@ -45,19 +45,23 @@ private:
     juce::Slider predelaySlider, decaySlider, modDepthSlider;
     juce::Slider stretchSlider, widthSlider, modRateSlider;
     juce::Slider tailModSlider, delayDepthSlider, tailRateSlider;
+    juce::Slider irInputGainSlider, irInputDriveSlider;
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     std::unique_ptr<SliderAttachment> dryWetAttach, predelayAttach, decayAttach;
     std::unique_ptr<SliderAttachment> stretchAttach, widthAttach, modDepthAttach, modRateAttach;
     std::unique_ptr<SliderAttachment> tailModAttach, delayDepthAttach, tailRateAttach;
+    std::unique_ptr<SliderAttachment> irInputGainAttach, irInputDriveAttach;
 
     juce::Label dryWetLabel, predelayLabel, decayLabel, modDepthLabel;
     juce::Label stretchLabel, widthLabel, modRateLabel;
     juce::Label tailModLabel, delayDepthLabel, tailRateLabel;
+    juce::Label irInputGainLabel, irInputDriveLabel;
 
     juce::Label dryWetReadout, predelayReadout, decayReadout, modDepthReadout;
     juce::Label stretchReadout, widthReadout, modRateReadout;
     juce::Label tailModReadout, delayDepthReadout, tailRateReadout;
+    juce::Label irInputGainReadout, irInputDriveReadout;
 
     PingLookAndFeel pingLook;
     EQGraphComponent eqGraph;

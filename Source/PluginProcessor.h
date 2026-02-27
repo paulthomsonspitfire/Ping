@@ -79,6 +79,8 @@ private:
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> chorusDelayLine;
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand;
+    juce::SmoothedValue<float> inputGainSmoothed;
+    juce::SmoothedValue<float> saturatorDriveSmoothed;
 
     juce::AudioBuffer<float> currentIRBuffer;
     double currentSampleRate = 48000.0;

@@ -130,6 +130,12 @@ PingEditor::PingEditor (PingProcessor& p)
     makeGreySlider (tailModSlider);
     makeGreySlider (delayDepthSlider);
     makeGreySlider (tailRateSlider);
+    makeSlider (irInputGainSlider, "IR Input Gain");
+    irInputGainSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xff4caf50));
+    irInputGainSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xff4caf50));
+    makeSlider (irInputDriveSlider, "IR Input Drive");
+    irInputDriveSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xffe53935));
+    irInputDriveSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xffe53935));
 
     dryWetSlider.setRange (0.0, 1.0, 0.01);
     predelaySlider.setRange (0.0, 500.0, 1.0);
@@ -141,6 +147,8 @@ PingEditor::PingEditor (PingProcessor& p)
     tailModSlider.setRange (0.0, 1.0, 0.01);
     delayDepthSlider.setRange (0.5f, 8.0f, 0.01f);
     tailRateSlider.setRange (0.05f, 3.0f, 0.01f);
+    irInputGainSlider.setRange (-24.0, 12.0, 0.5);
+    irInputDriveSlider.setRange (0.0, 1.0, 0.01);
 
     dryWetAttach    = std::make_unique<SliderAttachment> (apvts, "drywet",   dryWetSlider);
     predelayAttach  = std::make_unique<SliderAttachment> (apvts, "predelay", predelaySlider);
@@ -152,13 +160,16 @@ PingEditor::PingEditor (PingProcessor& p)
     tailModAttach   = std::make_unique<SliderAttachment> (apvts, "tailmod",  tailModSlider);
     delayDepthAttach = std::make_unique<SliderAttachment> (apvts, "delaydepth", delayDepthSlider);
     tailRateAttach  = std::make_unique<SliderAttachment> (apvts, "tailrate", tailRateSlider);
+    irInputGainAttach  = std::make_unique<SliderAttachment> (apvts, "inputGain", irInputGainSlider);
+    irInputDriveAttach = std::make_unique<SliderAttachment> (apvts, "irInputDrive", irInputDriveSlider);
 
     setLookAndFeel (&pingLook);
 
     // Labels
     for (auto* label : { &dryWetLabel, &predelayLabel, &decayLabel, &modDepthLabel,
                         &stretchLabel, &widthLabel, &modRateLabel,
-                        &tailModLabel, &delayDepthLabel, &tailRateLabel })
+                        &tailModLabel, &delayDepthLabel, &tailRateLabel,
+                        &irInputGainLabel, &irInputDriveLabel })
     {
         addAndMakeVisible (label);
         label->setJustificationType (juce::Justification::centred);
@@ -176,10 +187,15 @@ PingEditor::PingEditor (PingProcessor& p)
     tailModLabel.setText ("TAIL MOD", juce::dontSendNotification);
     delayDepthLabel.setText ("DELAY DEPTH", juce::dontSendNotification);
     tailRateLabel.setText ("RATE", juce::dontSendNotification);
+    irInputGainLabel.setText ("IR INPUT GAIN", juce::dontSendNotification);
+    irInputGainLabel.setFont (juce::FontOptions (9.0f));
+    irInputDriveLabel.setText ("IR INPUT DRIVE", juce::dontSendNotification);
+    irInputDriveLabel.setFont (juce::FontOptions (9.0f));
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
-                     &tailModReadout, &delayDepthReadout, &tailRateReadout })
+                     &tailModReadout, &delayDepthReadout, &tailRateReadout,
+                     &irInputGainReadout, &irInputDriveReadout })
     {
         addAndMakeVisible (r);
         r->setJustificationType (juce::Justification::centred);
@@ -335,17 +351,34 @@ void PingEditor::resized()
     int irComboH = 24;
     int irComboW = juce::jmin ((int) (0.24f * w), bigKnobSize + 40);
     int cy = waveformComponent.getBounds().getCentreY() - (bigKnobSize + labelH + readoutH + 4 + irComboH + 6) / 2;
-    dryWetSlider.setBounds (presetCenterX - bigKnobSize / 2, cy, bigKnobSize, bigKnobSize);
-    dryWetLabel.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + 2, bigKnobSize, labelH);
-    dryWetReadout.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + labelH + 2, bigKnobSize, readoutH);
-    irCombo.setBounds (presetCenterX - irComboW / 2, dryWetReadout.getBottom() + 6, irComboW, irComboH);
-    dryWetSlider.toFront (false);
+    const int smallKnobSize = sixKnobSize / 2;
+    const int dryWetCenterY = cy + bigKnobSize / 2;
+    const int irKnobGap = 6;
 
     const int sixColGap = juce::jmax (8, (int) (0.01f * w));
     const int sixColW = sixKnobSize + sixColGap;
     int x1 = mainArea.getX();
     int x2 = mainArea.getX() + sixColW;
     int x3 = mainArea.getX() + 2 * sixColW;
+    const int tailModCenterX = x3 + sixKnobSize / 2;
+    const int irKnobsCenterX = (tailModCenterX + presetCenterX) / 2;
+
+    const int irLabelW = juce::jmax (90, smallKnobSize * 2);
+
+    irInputGainSlider.setBounds (irKnobsCenterX - smallKnobSize / 2, dryWetCenterY - smallKnobSize - irKnobGap, smallKnobSize, smallKnobSize);
+    irInputGainLabel.setBounds (irKnobsCenterX - irLabelW / 2, irInputGainSlider.getBottom() + 2, irLabelW, labelH);
+    irInputGainReadout.setBounds (irKnobsCenterX - irLabelW / 2, irInputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
+
+    irInputDriveSlider.setBounds (irKnobsCenterX - smallKnobSize / 2, irInputGainReadout.getBottom() + 4, smallKnobSize, smallKnobSize);
+    irInputDriveLabel.setBounds (irKnobsCenterX - irLabelW / 2, irInputDriveSlider.getBottom() + 2, irLabelW, labelH);
+    irInputDriveReadout.setBounds (irKnobsCenterX - irLabelW / 2, irInputDriveSlider.getBottom() + labelH + 2, irLabelW, readoutH);
+
+    dryWetSlider.setBounds (presetCenterX - bigKnobSize / 2, cy, bigKnobSize, bigKnobSize);
+    dryWetLabel.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + 2, bigKnobSize, labelH);
+    dryWetReadout.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + labelH + 2, bigKnobSize, readoutH);
+
+    irCombo.setBounds (presetCenterX - irComboW / 2, dryWetReadout.getBottom() + 6, irComboW, irComboH);
+    dryWetSlider.toFront (false);
     int y = mainArea.getY();
 
     decaySlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
@@ -506,6 +539,8 @@ void PingEditor::updateAllReadouts()
     tailModReadout.setText (juce::String (juce::roundToInt (v ("tailmod") * 100)) + "%", juce::dontSendNotification);
     delayDepthReadout.setText (juce::String (v ("delaydepth"), 1) + " ms", juce::dontSendNotification);
     tailRateReadout.setText (juce::String (v ("tailrate"), 2) + " Hz", juce::dontSendNotification);
+    irInputGainReadout.setText (juce::String (juce::roundToInt (v ("inputGain"))) + " dB", juce::dontSendNotification);
+    irInputDriveReadout.setText (juce::String (juce::roundToInt (v ("irInputDrive") * 100)) + "%", juce::dontSendNotification);
 }
 
 void PingEditor::refreshIRList()

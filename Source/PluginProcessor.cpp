@@ -13,6 +13,8 @@ namespace IDs
     static const juce::String tailMod  { "tailmod" };
     static const juce::String delayDepth{ "delaydepth" };
     static const juce::String tailRate { "tailrate" };
+    static const juce::String inputGain { "inputGain" };
+    static const juce::String irInputDrive { "irInputDrive" };
     static const juce::String reverseTrim { "reversetrim" };
     static const juce::String band0Freq { "b0freq" }, band0Gain { "b0gain" }, band0Q { "b0q" };
     static const juce::String band1Freq { "b1freq" }, band1Gain { "b1gain" }, band1Q { "b1q" };
@@ -186,6 +188,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailMod,  "Tail Modulation", 0.0f, 1.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::delayDepth, "Delay Depth (ms)", 0.5f, 8.0f, 2.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailRate, "Tail Rate (Hz)", 0.05f, 3.0f, 0.5f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::inputGain, "IR Input Gain (dB)", -24.0f, 12.0f, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::irInputDrive, "IR Input Drive", 0.0f, 1.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::reverseTrim, "Reverse Trim", 0.0f, 0.95f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Freq, "Band 0 Freq (Hz)", 20.0f, 20000.0f, 400.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Gain, "Band 0 Gain (dB)", -12.0f, 12.0f, 0.0f));
@@ -222,6 +226,9 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     wetGain.reset();
     dryGain.prepare (spec);
     wetGain.prepare (spec);
+
+    inputGainSmoothed.reset (sampleRate, 0.02);
+    saturatorDriveSmoothed.reset (sampleRate, 0.02);
 
     updateEQ();
     lowBand.prepare (spec);
@@ -271,6 +278,39 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             float in = ptr[i];
             predelayLine.pushSample (ch, in);
             ptr[i] = predelayLine.popSample (ch);
+        }
+    }
+
+    // Input gain (wet path only, before saturator)
+    float gainDb = apvts.getRawParameterValue (IDs::inputGain)->load();
+    inputGainSmoothed.setTargetValue (juce::Decibels::decibelsToGain (gainDb));
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float g = inputGainSmoothed.getNextValue();
+        for (int ch = 0; ch < numChannels; ++ch)
+            buffer.setSample (ch, i, buffer.getSample (ch, i) * g);
+    }
+
+    // Harmonic saturator: cubic soft clip with mix and compensation
+    float driveRaw = apvts.getRawParameterValue (IDs::irInputDrive)->load();
+    saturatorDriveSmoothed.setTargetValue (driveRaw);
+    const float inflection = 1.732050808f;  // sqrt(3), inflection point of x - x³/3
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float drive = saturatorDriveSmoothed.getNextValue();
+        float mix = drive;
+        float compensation = 1.0f / (1.0f + drive * 0.5f);
+        float scale = 1.0f + drive * 3.0f;
+
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            float drySample = buffer.getSample (ch, i);
+            float x = drySample * scale;
+            x = juce::jlimit (-inflection, inflection, x);
+            float saturated = x - (x * x * x / 3.0f);
+            float out = drySample * (1.0f - mix) + saturated * mix;
+            out *= compensation;
+            buffer.setSample (ch, i, out);
         }
     }
 
