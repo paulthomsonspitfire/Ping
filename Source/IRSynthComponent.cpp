@@ -223,6 +223,18 @@ IRSynthComponent::IRSynthComponent()
         rt60Values[i].setFont (juce::FontOptions (9.0f));
     }
 
+    addAndMakeVisible (irCombo);
+    irCombo.addListener (this);
+    irCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff2a2a2a));
+    irCombo.setColour (juce::ComboBox::textColourId, textDim);
+    irCombo.setColour (juce::ComboBox::arrowColourId, accent);
+    irCombo.setEditableText (true);
+
+    addAndMakeVisible (saveIRButton);
+    saveIRButton.addListener (this);
+    saveIRButton.setColour (juce::TextButton::buttonColourId, panelBg);
+    saveIRButton.setColour (juce::TextButton::textColourOffId, textDim);
+
     addAndMakeVisible (previewButton);
     previewButton.addListener (this);
     previewButton.setColour (juce::TextButton::buttonColourId, accent);
@@ -235,16 +247,10 @@ IRSynthComponent::IRSynthComponent()
     progressLabel.setText ("", juce::dontSendNotification);
     progressLabel.setColour (juce::Label::textColourId, textDim);
 
-    addAndMakeVisible (acceptButton);
-    addAndMakeVisible (cancelButton);
-    acceptButton.addListener (this);
-    cancelButton.addListener (this);
-    acceptButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff4caf50));
-    acceptButton.setColour (juce::TextButton::textColourOffId, juce::Colours::black);
-    cancelButton.setColour (juce::TextButton::buttonColourId, panelBg);
-    cancelButton.setColour (juce::TextButton::textColourOffId, textDim);
-    acceptButton.setVisible (false);
-    cancelButton.setVisible (false);
+    addAndMakeVisible (doneButton);
+    doneButton.addListener (this);
+    doneButton.setColour (juce::TextButton::buttonColourId, panelBg);
+    doneButton.setColour (juce::TextButton::textColourOffId, textDim);
 
     for (auto* l : { &widthLabel, &depthLabel, &heightLabel, &widthValueLabel, &depthValueLabel, &heightValueLabel,
                      &floorLabel, &ceilingLabel, &wallLabel,
@@ -306,22 +312,32 @@ void IRSynthComponent::resized()
     }
     const int rt60EndX = x;
 
-    // Accept/Cancel at far right
-    const int acceptCancelW = 64 + 6 + 64;
-    int rightX = barArea.getRight();
-    cancelButton.setBounds (rightX - 64, barY + 6, 64, 24);
-    acceptButton.setBounds (rightX - 64 - 6 - 64, barY + 6, 64, 24);
-    rightX -= acceptCancelW + 12;
+    // IR save/load combo (left of centre)
+    const int irComboW = juce::jmin (140, (int)(0.18f * barW));
+    int leftX = rt60EndX + 16;
+    irCombo.setBounds (leftX, barY + 6, irComboW, 24);
+    leftX += irComboW + 16;
 
-    // Progress bar right-justified (before Accept/Cancel)
-    const int progW = std::min (200, rightX - rt60EndX - 100);
+    // Save button at centre (where Preview was)
+    const int saveIRW = 50;
+    saveIRButton.setBounds (barCentreX - saveIRW / 2, barY + 6, saveIRW, 24);
+    leftX = barCentreX + saveIRW / 2 + 12;
+
+    // Preview button just to the right of Save
+    const int previewW = 80;
+    previewButton.setBounds (leftX, barY + 6, previewW, 24);
+    leftX += previewW + 16;
+
+    // Done at far right
+    const int doneW = 64;
+    int rightX = barArea.getRight();
+    doneButton.setBounds (rightX - doneW, barY + 6, doneW, 24);
+    rightX -= doneW + 12;
+
+    // Progress bar right-justified (before Done)
+    const int progW = std::min (200, rightX - leftX - 12);
     progressBar.setBounds (rightX - progW, barY + 8, progW, 16);
     progressLabel.setBounds (rightX - progW, barY + 26, progW, 14);
-    rightX -= progW + 16;
-
-    // Preview button centred in the bar
-    const int previewW = 80;
-    previewButton.setBounds (barCentreX - previewW / 2, barY + 6, previewW, 24);
 }
 
 void IRSynthComponent::layoutCharacterTab (juce::Rectangle<int> b)
@@ -466,6 +482,7 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     t.cx[2] = p.receiver_lx; t.cy[2] = p.receiver_ly; t.angle[2] = p.micl_angle;
     t.cx[3] = p.receiver_rx; t.cy[3] = p.receiver_ry; t.angle[3] = p.micr_angle;
     floorPlanComponent.setTransducerState (t);
+    floorPlanComponent.repaint();
     setComboTo (micPatternCombo, p.mic_pattern, micOptions, 4);
     erOnlyButton.setToggleState (p.er_only, juce::dontSendNotification);
     sampleRateCombo.setSelectedId (p.sample_rate == 44100 ? 1 : 2, juce::dontSendNotification);
@@ -491,10 +508,45 @@ void IRSynthComponent::buttonClicked (juce::Button* b)
 {
     if (b == &previewButton && ! synthRunning.load())
         startSynthesis();
-    else if (b == &acceptButton)
-        onAccept();
-    else if (b == &cancelButton)
-        onCancel();
+    else if (b == &doneButton)
+        onDone();
+    else if (b == &saveIRButton && onSaveIRFn)
+    {
+        juce::String name = irCombo.getText().trim();
+        if (name.isNotEmpty())
+            onSaveIRFn (name);
+    }
+}
+
+void IRSynthComponent::comboBoxChanged (juce::ComboBox* combo)
+{
+    if (combo == &irCombo && onLoadIRFn)
+    {
+        int id = irCombo.getSelectedId();
+        if (id >= 1)
+            onLoadIRFn (id - 1);
+    }
+}
+
+void IRSynthComponent::setIRList (const juce::StringArray& names)
+{
+    irCombo.clear (juce::dontSendNotification);
+    for (int i = 0; i < names.size(); ++i)
+        irCombo.addItem (names[i], i + 1);
+    irCombo.setEditableText (true);
+    irCombo.setText ("", juce::dontSendNotification);  // Empty by default to avoid accidental overwrite
+}
+
+void IRSynthComponent::setSelectedIRDisplayName (const juce::String& name)
+{
+    int id = -1;
+    for (int i = 0; i < irCombo.getNumItems(); ++i)
+        if (irCombo.getItemText (i + 1) == name)
+            { id = i + 1; break; }
+    if (id >= 1)
+        irCombo.setSelectedId (id, juce::dontSendNotification);
+    else
+        irCombo.setText (name, juce::dontSendNotification);
 }
 
 void IRSynthComponent::startSynthesis()
@@ -502,8 +554,6 @@ void IRSynthComponent::startSynthesis()
     IRSynthParams p = getParams();
     synthRunning = true;
     previewButton.setEnabled (false);
-    acceptButton.setVisible (false);
-    cancelButton.setVisible (false);
     pendingResult.reset();
     progressValue = 0.0;
     progressLabel.setText ("Starting…", juce::dontSendNotification);
@@ -527,32 +577,18 @@ void IRSynthComponent::startSynthesis()
             progressValue = 1.0;
             progressLabel.setText ("Done.", juce::dontSendNotification);
 
-            if (result.success)
+            if (result.success && onComplete)
             {
-                pendingResult = std::make_unique<IRSynthResult> (result);
-                acceptButton.setVisible (true);
-                cancelButton.setVisible (true);
+                onComplete (result);
             }
         });
     });
 }
 
-void IRSynthComponent::onAccept()
+void IRSynthComponent::onDone()
 {
-    if (pendingResult && pendingResult->success && onComplete)
-        onComplete (*pendingResult);
-    pendingResult.reset();
-    acceptButton.setVisible (false);
-    cancelButton.setVisible (false);
-}
-
-void IRSynthComponent::onCancel()
-{
-    pendingResult.reset();
-    acceptButton.setVisible (false);
-    cancelButton.setVisible (false);
-    if (onCancelFn)
-        onCancelFn();
+    if (onDoneFn)
+        onDoneFn();
 }
 
 void IRSynthComponent::updateRT60Display()

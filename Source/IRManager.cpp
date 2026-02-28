@@ -59,3 +59,39 @@ juce::File IRManager::getIRFileAt (int index) const
         return irFiles.getReference (index);
     return juce::File();
 }
+
+juce::StringArray IRManager::getDisplayNames4Channel() const
+{
+    juce::StringArray names;
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    for (const auto& f : irFiles)
+    {
+        std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+        if (r && r->numChannels == 4)
+            names.add (f.getFileNameWithoutExtension());
+    }
+    return names;
+}
+
+juce::Array<juce::File> IRManager::getIRFiles4Channel() const
+{
+    juce::Array<juce::File> out;
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    for (const auto& f : irFiles)
+    {
+        std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+        if (r && r->numChannels == 4)
+            out.add (f);
+    }
+    return out;
+}
+
+juce::File IRManager::getIRFileAt4Channel (int index) const
+{
+    auto files = getIRFiles4Channel();
+    if (juce::isPositiveAndBelow (index, files.size()))
+        return files.getReference (index);
+    return juce::File();
+}

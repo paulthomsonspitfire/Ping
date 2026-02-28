@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "IRManager.h"
+#include "IRSynthEngine.h"
 #include "LicenceVerifier.h"
 
 class PingProcessor : public juce::AudioProcessor
@@ -43,11 +44,24 @@ public:
     /** Last loaded IR file (for reload when stretch/decay change). */
     const juce::File& getLastLoadedIRFile() const { return lastLoadedIRFile; }
 
-    /** Load IR from buffer (e.g. reversed). Call from message thread. */
-    void loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate);
+    /** Load IR from buffer (e.g. reversed). Call from message thread.
+        If fromSynth is true, marks current IR as synthesized and persists it with plugin state. */
+    void loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth = false);
+
+    /** True when current IR came from IR Synth (not from file list). */
+    bool isIRFromSynth() const { return irFromSynth; }
 
     /** Current IR buffer for waveform display (read-only). May be empty. */
     const juce::AudioBuffer<float>& getCurrentIRBuffer() const { return currentIRBuffer; }
+    /** Sample rate of the current IR (for saving). */
+    double getCurrentIRSampleRate() const { return currentIRSampleRate; }
+
+    /** Save current IR to the IR folder with the given name (no extension). Returns the saved file.
+        Also saves IRSynthParams sidecar (.ping) for recall when loading from IR Synth list. */
+    juce::File saveCurrentIRToFile (const juce::String& name);
+
+    /** Load IRSynthParams from a .ping sidecar if it exists. Returns default params if not found. */
+    static IRSynthParams loadIRSynthParamsFromSidecar (const juce::File& irFile);
 
     bool getReverse() const { return reverse; }
     void setReverse (bool v) { reverse = v; }
@@ -57,6 +71,10 @@ public:
 
     int getSelectedIRIndex() const { return selectedIRIndex; }
     void setSelectedIRIndex (int index) { selectedIRIndex = index; }
+
+    /** Last IR Synth parameters (room, materials, placement). Persisted with plugin state. */
+    const IRSynthParams& getLastIRSynthParams() const { return lastIRSynthParams; }
+    void setLastIRSynthParams (const IRSynthParams& p) { lastIRSynthParams = p; }
 
     bool isLicensed() const;
     void setLicence (const LicenceResult& result, const juce::String& serial, const juce::String& displayName = {});
@@ -91,10 +109,14 @@ private:
     juce::AudioBuffer<float> currentIRBuffer;
     double currentSampleRate = 48000.0;
     int selectedIRIndex = -1;
+    bool irFromSynth = false;
+    double synthesizedIRSampleRate = 48000.0;
+    double currentIRSampleRate = 48000.0;
     bool reverse = false;
     float lfoPhase = 0.0f;
     float tailLfoPhase = 0.0f;
     juce::File lastLoadedIRFile;
+    IRSynthParams lastIRSynthParams;
 
     std::atomic<float> outputLevelPeakL { 0.0f };
     std::atomic<float> outputLevelPeakR { 0.0f };

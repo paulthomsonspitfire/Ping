@@ -13,7 +13,8 @@
  */
 class IRSynthComponent : public juce::Component,
                          private juce::Timer,
-                         private juce::Button::Listener
+                         private juce::Button::Listener,
+                         private juce::ComboBox::Listener
 {
 public:
     /** Called when synthesis completes. Run on message thread. */
@@ -24,11 +25,23 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
 
-    /** Set callback when user clicks Accept (IR ready to load). */
+    /** Called when synthesis completes successfully – loads IR into processor, caller stays on page. */
     void setOnComplete (OnCompleteFn fn) { onComplete = std::move (fn); }
 
-    /** Set callback when user clicks Cancel (optional, e.g. to hide dialog). */
-    void setOnCancel (std::function<void()> fn) { onCancelFn = std::move (fn); }
+    /** Called when user clicks Done/Back – return to main UI. */
+    void setOnDone (std::function<void()> fn) { onDoneFn = std::move (fn); }
+
+    /** Called when user saves a synthesized IR. Passes name; caller saves from processor. */
+    void setOnSaveIR (std::function<void (const juce::String&)> fn) { onSaveIRFn = std::move (fn); }
+
+    /** Called when user selects an IR to load. Passes 0-based index into the list. */
+    void setOnLoadIR (std::function<void (int)> fn) { onLoadIRFn = std::move (fn); }
+
+    /** Refresh the IR combo from the given names (e.g. from IRManager). */
+    void setIRList (const juce::StringArray& names);
+
+    /** Set the IR combo to show the given display name (e.g. when loading from main UI). */
+    void setSelectedIRDisplayName (const juce::String& name);
 
     /** Current params (read from UI). */
     IRSynthParams getParams() const;
@@ -39,16 +52,18 @@ public:
 private:
     void timerCallback() override;
     void buttonClicked (juce::Button* b) override;
+    void comboBoxChanged (juce::ComboBox* combo) override;
     void startSynthesis();
-    void onAccept();
-    void onCancel();
+    void onDone();
     void updateRT60Display();
     void updateProgress (double fraction, const juce::String& message);
     void layoutCharacterTab (juce::Rectangle<int> bounds);
     void layoutPlacementTab (juce::Rectangle<int> bounds);
 
     OnCompleteFn onComplete;
-    std::function<void()> onCancelFn;
+    std::function<void()> onDoneFn;
+    std::function<void (const juce::String&)> onSaveIRFn;
+    std::function<void (int)> onLoadIRFn;
 
     juce::TabbedComponent tabbedComponent { juce::TabbedButtonBar::TabsAtTop };
     juce::Component characterTab;
@@ -89,12 +104,13 @@ private:
     juce::Label rt60Label;
     juce::Label rt60FreqLabels[6];   // 125, 250, 500, 1k, 2k, 4k
     juce::Label rt60Values[6];
+    juce::ComboBox irCombo;
+    juce::TextButton saveIRButton { "Save" };
     juce::TextButton previewButton { "Preview" };
     double progressValue = 0.0;
     juce::ProgressBar progressBar { progressValue };
     juce::Label progressLabel;
-    juce::TextButton acceptButton { "Accept" };
-    juce::TextButton cancelButton { "Cancel" };
+    juce::TextButton doneButton { "Done" };
 
     juce::ThreadPool synthPool { 1 };
     std::atomic<bool> synthRunning { false };

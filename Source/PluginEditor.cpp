@@ -101,6 +101,8 @@ PingEditor::PingEditor (PingProcessor& p)
     irSynthButton.setColour (juce::TextButton::textColourOffId, textDim);
     irSynthButton.onClick = [this]
     {
+        irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
+        irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
         setMainPanelControlsVisible (false);
         irSynthComponent.setVisible (true);
         irSynthComponent.toFront (true);
@@ -121,16 +123,67 @@ PingEditor::PingEditor (PingProcessor& p)
             buf.setSample (2, (int) i, (float) result.iLR[i]);
             buf.setSample (3, (int) i, (float) result.iRR[i]);
         }
-        pingProcessor.loadIRFromBuffer (std::move (buf), (double) result.sampleRate);
+        pingProcessor.loadIRFromBuffer (std::move (buf), (double) result.sampleRate, true);
+        pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
         updateWaveform();
-        irSynthComponent.setVisible (false);
-        setMainPanelControlsVisible (true);
     });
-    irSynthComponent.setOnCancel ([this]
+    irSynthComponent.setOnDone ([this]
     {
         irSynthComponent.setVisible (false);
         setMainPanelControlsVisible (true);
+        refreshIRList();
+        updateWaveform();
     });
+    irSynthComponent.setOnSaveIR ([this] (const juce::String& name)
+    {
+        auto file = pingProcessor.saveCurrentIRToFile (name);
+        if (file.existsAsFile())
+        {
+            pingProcessor.getIRManager().refresh();
+            int idx = -1;
+            auto files = pingProcessor.getIRManager().getIRFiles();
+            for (int i = 0; i < files.size(); ++i)
+            {
+                if (files[i] == file) { idx = i; break; }
+            }
+            if (idx >= 0)
+            {
+                pingProcessor.setSelectedIRIndex (idx);
+                pingProcessor.loadIRFromFile (file);
+            }
+            refreshIRList();
+            refreshPresetList();
+            irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
+            updateWaveform();
+        }
+    });
+    irSynthComponent.setOnLoadIR ([this] (int index)
+    {
+        auto file = pingProcessor.getIRManager().getIRFileAt4Channel (index);
+        if (file.existsAsFile())
+        {
+            int fullIdx = -1;
+            auto files = pingProcessor.getIRManager().getIRFiles();
+            for (int i = 0; i < files.size(); ++i)
+            {
+                if (files[i] == file) { fullIdx = i; break; }
+            }
+            if (fullIdx >= 0)
+                pingProcessor.setSelectedIRIndex (fullIdx);
+            pingProcessor.loadIRFromFile (file);
+            auto sidecar = file.getSiblingFile (file.getFileNameWithoutExtension() + ".ping");
+            if (sidecar.existsAsFile())
+            {
+                auto params = PingProcessor::loadIRSynthParamsFromSidecar (file);
+                pingProcessor.setLastIRSynthParams (params);
+                irSynthComponent.setParams (params);
+            }
+            irSynthComponent.setSelectedIRDisplayName (file.getFileNameWithoutExtension());
+            refreshIRList();
+            updateWaveform();
+        }
+    });
+    irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
 
     // Sliders - rotary style
     auto makeSlider = [this] (juce::Slider& s, const juce::String& name)
@@ -286,14 +339,15 @@ PingEditor::PingEditor (PingProcessor& p)
     refreshPresetList();
     reverseButton.setToggleState (pingProcessor.getReverse(), juce::dontSendNotification);
     int savedIdx = pingProcessor.getSelectedIRIndex();
-    if (savedIdx >= 0 && savedIdx < irCombo.getNumItems())
-        irCombo.setSelectedId (savedIdx + 1, juce::dontSendNotification);
+    if (savedIdx >= 0 && savedIdx < irCombo.getNumItems() - 1)  // -1 for Synthesized item
+        irCombo.setSelectedId (savedIdx + 2, juce::dontSendNotification);
     loadSelectedIR();
     startTimerHz (8);
 }
 
 PingEditor::~PingEditor()
 {
+    pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
     setLookAndFeel (nullptr);
     apvts.removeParameterListener ("stretch", this);
     apvts.removeParameterListener ("decay", this);
@@ -528,7 +582,7 @@ void PingEditor::comboBoxChanged (juce::ComboBox* combo)
 {
     if (combo == &irCombo)
     {
-        int idx = irCombo.getSelectedId() - 1;
+        int idx = irCombo.getSelectedId() - 2;  // id 1=Synth, 2+=files
         if (idx >= 0)
         {
             pingProcessor.setSelectedIRIndex (idx);
@@ -536,8 +590,21 @@ void PingEditor::comboBoxChanged (juce::ComboBox* combo)
             if (file.existsAsFile())
             {
                 pingProcessor.loadIRFromFile (file);
+                auto sidecar = file.getSiblingFile (file.getFileNameWithoutExtension() + ".ping");
+                if (sidecar.existsAsFile())
+                {
+                    auto params = PingProcessor::loadIRSynthParamsFromSidecar (file);
+                    pingProcessor.setLastIRSynthParams (params);
+                    irSynthComponent.setParams (params);
+                }
+                irSynthComponent.setSelectedIRDisplayName (file.getFileNameWithoutExtension());
                 updateWaveform();
             }
+        }
+        else
+        {
+            pingProcessor.setSelectedIRIndex (-1);  // Synthesized IR selected
+            irSynthComponent.setSelectedIRDisplayName ("");
         }
     }
     else if (combo == &presetCombo)
@@ -572,8 +639,9 @@ void PingEditor::loadPreset (const juce::String& name)
         {
             pingProcessor.setStateInformation (data.getData(), (int) data.getSize());
             reverseButton.setToggleState (pingProcessor.getReverse(), juce::dontSendNotification);
+            irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
             int idx = pingProcessor.getSelectedIRIndex();
-            irCombo.setSelectedId (idx >= 0 ? idx + 1 : 1, juce::sendNotificationSync);
+            irCombo.setSelectedId (idx >= 0 ? idx + 2 : 1, juce::sendNotificationSync);
             updateWaveform();
         }
     }
@@ -588,6 +656,8 @@ void PingEditor::setMainPanelControlsVisible (bool visible)
 
 void PingEditor::savePreset (const juce::String& name)
 {
+    if (irSynthComponent.isVisible())
+        pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
     juce::MemoryBlock data;
     pingProcessor.getStateInformation (data);
     auto file = PresetManager::getPresetFile (name);
@@ -597,6 +667,8 @@ void PingEditor::savePreset (const juce::String& name)
 
 void PingEditor::timerCallback()
 {
+    if (irSynthComponent.isVisible())
+        pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
     updateWaveform();
     updateAllReadouts();
     outputLevelMeter.setLevelsDb (pingProcessor.getOutputLevelDb (0), pingProcessor.getOutputLevelDb (1));
@@ -647,18 +719,29 @@ void PingEditor::refreshIRList()
 {
     pingProcessor.getIRManager().refresh();
     irCombo.clear();
+    irCombo.addItem ("Synthesized IR", 1);
     auto names = pingProcessor.getIRManager().getDisplayNames();
     for (int i = 0; i < names.size(); ++i)
-        irCombo.addItem (names[i], i + 1);
-    if (irCombo.getNumItems() > 0 && irCombo.getSelectedId() <= 0)
-        irCombo.setSelectedId (1, juce::sendNotificationSync);
-    loadSelectedIR();
+        irCombo.addItem (names[i], i + 2);  // id 1=Synth, 2+=files
+    if (pingProcessor.isIRFromSynth())
+    {
+        irCombo.setSelectedId (1, juce::dontSendNotification);
+    }
+    else
+    {
+        int idx = pingProcessor.getSelectedIRIndex();
+        if (idx >= 0 && idx < (int) names.size())
+            irCombo.setSelectedId (idx + 2, juce::dontSendNotification);
+        else if (irCombo.getNumItems() > 1)
+            irCombo.setSelectedId (2, juce::sendNotificationSync);  // first file
+        loadSelectedIR();
+    }
 }
 
 void PingEditor::loadSelectedIR()
 {
-    int idx = irCombo.getSelectedId() - 1;
-    if (idx < 0) return;
+    int idx = irCombo.getSelectedId() - 2;  // id 1=Synth (idx -1), id 2+=file
+    if (idx < 0) return;  // Synthesized IR selected
     auto file = pingProcessor.getIRManager().getIRFileAt (idx);
     if (file.existsAsFile())
         pingProcessor.loadIRFromFile (file);

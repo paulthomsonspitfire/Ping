@@ -1,0 +1,174 @@
+{\rtf1\ansi\deff0 {\fonttbl {\f0 Helvetica;}{\f1 Helvetica-Bold;}}
+\viewkind4\uc0\pard\f0\fs22
+
+\f1\fs28 P!NG User Manual\f0\fs22\par
+\par
+
+\f1\fs24 1. Overview\f0\fs22\par
+\par
+P!NG is an impulse response (IR) reverb plugin for macOS. It convolves your audio with IR files to add reverb, and includes a built-in IR synthesiser to generate new IRs from room geometry, materials, and speaker/mic placement.\par
+\par
+\line \par
+
+\f1\fs24 2. Main Interface\f0\fs22\par
+\par
+\i [Insert screenshot: Main P!NG interface showing top row (preset, metres), centre knobs, IR selector, waveform, and EQ]\i0\par
+\par
+
+\f1\fs22 2.1 Top Row\f0\fs22\par
+\par
+\b Preset menu\b0  - Load or save presets. Presets store all settings including IR choice and IR Synth parameters.\par
+\b Save preset\b0  - Saves the current settings under the name shown in the preset combo (editable).\par
+\b Output level metres\b0  - Visual feedback of wet output level.\par
+\par
+
+\f1\fs22 2.2 IR Selection & Waveform\f0\fs22\par
+\par
+\b IR dropdown\b0  - Choose an IR from your folder. Synthesized IR appears when you've just created an IR with the IR Synth and haven't saved it yet.\par
+\b IR Synth button\b0  - Opens the IR Synthesiser page.\par
+\b REVERSE\b0  - Toggle. Time-reverses the IR for preverb-style effects.\par
+\b Waveform display\b0  - Shows the current IR. Drag the trim handles to trim the start/end of the IR (applies to file-loaded IRs).\par
+\par
+
+\f1\fs22 2.3 Mix & Reverb Controls\f0\fs22\par
+\par
+\i [Insert screenshot: Centre panel with Dry/Wet, Predelay, Damping, Stretch, Width, etc.]\i0\par
+\par
+\b Dry / Wet\b0  (0-100%) - Balance between dry (original) and wet (reverb) signal.\par
+\b Predelay\b0  (0-500 ms) - Delay before the reverb starts.\par
+\b Damping\b0  (0-100%) - High-frequency damping. Higher = more dull decay.\par
+\b Stretch\b0  (0.5-2.0) - Time-stretches the IR. 1.0 = no change.\par
+\par
+
+\f1\fs22 2.4 Stereo & Modulation\f0\fs22\par
+\par
+\b Width\b0  (0-2) - Stereo width of the wet signal. 1 = normal, less than 1 = narrower, greater than 1 = wider.\par
+\b LFO Depth\b0  (0-1) - Depth of LFO modulation applied to the tail.\par
+\b LFO Rate\b0  (0.01-2 Hz) - Speed of the LFO modulation.\par
+\b Tail Mod\b0  (0-1) - Amount of modulation on the reverb tail.\par
+\b Delay Depth\b0  (0.5-8 ms) - Modulated delay depth.\par
+\b Rate\b0  (0.05-3 Hz) - Rate of tail modulation.\par
+\par
+
+\f1\fs22 2.5 IR Input\f0\fs22\par
+\par
+\b IR Input Gain\b0  (-24 to +12 dB) - Gain applied to the signal before convolution.\par
+\b IR Input Drive\b0  (0-1) - Saturation/drive before convolution. Higher values add warmth.\par
+\par
+
+\f1\fs22 2.6 Early Reflections & Tail Balance\f0\fs22\par
+\par
+\b ER (Early Reflections)\b0  (-48 to +6 dB) - Level of the early reflection portion of the IR.\par
+\b Tail\b0  (-48 to +6 dB) - Level of the late reverb tail.\par
+\par
+Use these to rebalance IRs that have strong early or late content.\par
+\par
+
+\f1\fs22 2.7 EQ Section\f0\fs22\par
+\par
+\i [Insert screenshot: EQ graph with three bands]\i0\par
+\par
+A 3-band parametric EQ shapes the wet reverb:\par
+\par
+- \b Band 1\b0: Default 400 Hz, variable Q (0.3-10). Cut or boost low-mid.\par
+- \b Band 2\b0: Default 1 kHz, variable Q. Mid control.\par
+- \b Band 3\b0: Default 4 kHz, variable Q. High-mid / presence.\par
+\par
+Click band buttons 1, 2, or 3 to select a band; drag on the graph to change frequency and gain, or use the sliders when they appear.\par
+\par
+\line \par
+
+\f1\fs24 3. IR Synthesiser\f0\fs22\par
+\par
+Click IR Synth to open the synthesiser page.\par
+\par
+\i [Insert screenshot: IR Synth page with Placement and Character tabs, floor plan, bottom bar]\i0\par
+\par
+
+\f1\fs22 3.1 Placement Tab\f0\fs22\par
+\par
+\i [Insert screenshot: Placement tab - room shape, dimensions, floor plan]\i0\par
+\par
+Room Shape: Rectangular, L-shaped, Fan/Shoebox, Cylindrical, Cathedral, Octagonal.\par
+\par
+Dimensions (metres):\par
+- \b Width\b0 (0.5-50 m), \b Depth\b0 (0.5-50 m), \b Height\b0 (1-30 m)\par
+\par
+Floor Plan: Left/Right speakers (orange pucks) and Left/Right mics (blue pucks). Drag pucks to move; drag the handle to rotate. Positions and angles affect early reflections and stereo image.\par
+\par
+
+\f1\fs22 3.2 Character Tab\f0\fs22\par
+\par
+Surface Materials: 14 materials per surface - Concrete, Painted plaster, Hardwood floor, Carpet (thin/thick), Glass, Heavy curtains, Acoustic ceiling tile, Plywood panel, Upholstered seats, Bare wooden seats, Water/pool surface, Rough stone/rock, Exposed brick.\par
+\par
+\b Audience\b0 (0-1) - Amount of audience absorption. \b Diffusion\b0 (0-1) - Scattered reflections. Higher = smoother.\par
+\par
+Vault type, Organ case (0-1), Balconies (0-1).\par
+\par
+Options: Mic pattern (omni, subcardioid, cardioid, figure-8), Early reflections only (toggle), Sample rate (44.1 or 48 kHz).\par
+\par
+
+\f1\fs22 3.3 RT60 Display\f0\fs22\par
+\par
+Estimated RT60 at 125, 250, 500, 1k, 2k, 4k Hz. Updates as you change materials and dimensions.\par
+\par
+
+\f1\fs22 3.4 Bottom Bar\f0\fs22\par
+\par
+\b IR pick list\b0 - Load existing 4-channel IRs. \b Save\b0 - Saves under the name you type. \b Preview\b0 - Renders and loads, stays on page. \b Done\b0 - Returns to main UI.\par
+\par
+\line \par
+
+\f1\fs24 4. Technical Explanation: How the IR is Synthesised\f0\fs22\par
+\par
+P!NG uses a geometric acoustic engine to produce a true-stereo, 4-channel IR (LL, RL, LR, RR) for convolution reverb.\par
+\par
+
+\f1\fs22 4.1 Overview\f0\fs22\par
+\par
+1. Image-source method - Mirror sources for early reflections.\par
+2. Per-band rendering - Six octave bands for frequency-dependent absorption.\par
+3. Allpass diffusion - Smoothes reflections.\par
+4. FDN tail - 16-delay feedback delay network for late reverb.\par
+\par
+
+\f1\fs22 4.2 Image-Source Method\f0\fs22\par
+\par
+Virtual sources mirror the real source across floor, ceiling, and walls. Each reflection has delay (path length / speed of sound) and per-band amplitudes from distance attenuation, floor/ceiling/wall absorption, air absorption, mic polar pattern, speaker directivity (cardioid), and polarity (flipped on odd bounces).\par
+\par
+
+\f1\fs22 4.3 Per-Band Rendering\f0\fs22\par
+\par
+Materials have absorption coefficients at 125-4000 Hz. The engine splits reflections into six bands, applies band-specific absorption, bandpass-filters each band, and sums into a single time series per channel. Produces frequency-dependent decay.\par
+\par
+
+\f1\fs22 4.4 Diffusion\f0\fs22\par
+\par
+A 4-stage allpass diffusion network smooths the summed signal. Higher diffusion increases delay density and reduces flutter.\par
+\par
+
+\f1\fs22 4.5 Late Reverb (FDN Tail)\f0\fs22\par
+\par
+After ~85 ms: Early part from image-source feeds a 16-line FDN. Delays are prime-numbered, scaled by mean free path. LFO modulation reduces metallic resonances. Hadamard mixing distributes energy. Per-line lowpass gives frequency-dependent decay. Early and tail crossfaded at 85 ms.\par
+\par
+
+\f1\fs22 4.6 Output\f0\fs22\par
+\par
+4-channel IR: iLL, iRL, iLR, iRR. Band-limited 20 Hz-18 kHz, normalised, 24-bit WAV. .ping sidecar stores synthesis parameters.\par
+\par
+
+\f1\fs22 4.7 RT60 Calculation\f0\fs22\par
+\par
+Eyring equation: T = 0.161 x V / (-S x ln(1 - a)) where V = volume, S = surface area, a = average absorption. Air absorption, audience, balconies, organ included.\par
+\par
+\line \par
+
+\f1\fs24 5. IR File Location & Formats\f0\fs22\par
+\par
+Folder: ~/Documents/P!NG/IRs. Formats: .wav, .aiff, .aif. Synthesised IRs: 4-channel 24-bit WAV. .ping sidecar for parameters.\par
+\par
+
+\f1\fs24 6. Presets\f0\fs22\par
+\par
+Presets store main UI params, IR selection, IR Synth params, EQ. Stored in ~/Documents/P!NG/Presets/.\par
+}

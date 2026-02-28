@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+static void writeIRSynthParamsSidecar (const juce::File& wavFile, const IRSynthParams& p);
+
 namespace IDs
 {
     static const juce::String dryWet   { "drywet" };
@@ -530,7 +532,9 @@ void PingProcessor::applyWidth (juce::AudioBuffer<float>& wet, float width)
 void PingProcessor::loadIRFromFile (const juce::File& file)
 {
     if (! file.existsAsFile()) return;
+    irFromSynth = false;
     lastLoadedIRFile = file;
+    currentIRSampleRate = 48000.0;  // set from reader below
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
     std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
@@ -538,13 +542,48 @@ void PingProcessor::loadIRFromFile (const juce::File& file)
 
     juce::AudioBuffer<float> buf ((int) reader->numChannels, (int) reader->lengthInSamples);
     reader->read (&buf, 0, (int) reader->lengthInSamples, 0, true, true);
-    double rate = reader->sampleRate;
-    loadIRFromBuffer (std::move (buf), rate);
+    currentIRSampleRate = reader->sampleRate;
+    loadIRFromBuffer (std::move (buf), currentIRSampleRate);
 }
 
-void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate)
+juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
+{
+    if (currentIRBuffer.getNumSamples() == 0) return {};
+    juce::String safeName = name.trim();
+    if (safeName.isEmpty()) return {};
+    safeName = safeName.replaceCharacters ("/\\:*?\"<>|", "----------");
+    auto folder = IRManager::getIRFolder();
+    if (! folder.exists())
+        folder.createDirectory();
+    auto file = folder.getChildFile (safeName + ".wav");
+    juce::WavAudioFormat wavFormat;
+    juce::FileOutputStream* rawStream = new juce::FileOutputStream (file);
+    if (! rawStream->openedOk())
+    {
+        delete rawStream;
+        return {};
+    }
+    std::unique_ptr<juce::AudioFormatWriter> writer (
+        wavFormat.createWriterFor (rawStream, currentIRSampleRate,
+                                   (unsigned int) currentIRBuffer.getNumChannels(), 24, {}, 0));
+    if (! writer) return {};
+    writer->writeFromAudioSampleBuffer (currentIRBuffer, 0, currentIRBuffer.getNumSamples());
+    writeIRSynthParamsSidecar (file, lastIRSynthParams);
+    return file;
+}
+
+void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth)
 {
     if (buffer.getNumSamples() == 0) return;
+    currentIRSampleRate = bufferSampleRate;
+    if (fromSynth)
+    {
+        irFromSynth = true;
+        selectedIRIndex = -1;
+        synthesizedIRSampleRate = bufferSampleRate;
+    }
+    else
+        irFromSynth = false;
 
     // Optional: apply reverse
     if (reverse)
@@ -766,6 +805,137 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
     }
 }
 
+static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent)
+{
+    auto* ir = parent.createNewChildElement ("irSynthParams");
+    if (! ir) return;
+    ir->setAttribute ("shape", juce::String (p.shape));
+    ir->setAttribute ("width", p.width);
+    ir->setAttribute ("depth", p.depth);
+    ir->setAttribute ("height", p.height);
+    ir->setAttribute ("floor", juce::String (p.floor_material));
+    ir->setAttribute ("ceiling", juce::String (p.ceiling_material));
+    ir->setAttribute ("wall", juce::String (p.wall_material));
+    ir->setAttribute ("audience", p.audience);
+    ir->setAttribute ("diffusion", p.diffusion);
+    ir->setAttribute ("vault", juce::String (p.vault_type));
+    ir->setAttribute ("organ", p.organ_case);
+    ir->setAttribute ("balconies", p.balconies);
+    ir->setAttribute ("temp", p.temperature);
+    ir->setAttribute ("humidity", p.humidity);
+    ir->setAttribute ("slx", p.source_lx);
+    ir->setAttribute ("sly", p.source_ly);
+    ir->setAttribute ("srx", p.source_rx);
+    ir->setAttribute ("sry", p.source_ry);
+    ir->setAttribute ("rlx", p.receiver_lx);
+    ir->setAttribute ("rly", p.receiver_ly);
+    ir->setAttribute ("rrx", p.receiver_rx);
+    ir->setAttribute ("rry", p.receiver_ry);
+    ir->setAttribute ("spkl", p.spkl_angle);
+    ir->setAttribute ("spkr", p.spkr_angle);
+    ir->setAttribute ("micl", p.micl_angle);
+    ir->setAttribute ("micr", p.micr_angle);
+    ir->setAttribute ("micPat", juce::String (p.mic_pattern));
+    ir->setAttribute ("erOnly", p.er_only);
+    ir->setAttribute ("sr", p.sample_rate);
+}
+
+static void synthesizedIRToXml (const juce::AudioBuffer<float>& buf, double sampleRate, juce::XmlElement& elem)
+{
+    if (buf.getNumSamples() == 0 || buf.getNumChannels() == 0) return;
+    juce::MemoryBlock block;
+    const int numCh = buf.getNumChannels();
+    const int numSamples = buf.getNumSamples();
+    block.append (&numCh, sizeof (int));
+    block.append (&numSamples, sizeof (int));
+    block.append (&sampleRate, sizeof (double));
+    for (int ch = 0; ch < numCh; ++ch)
+        block.append (buf.getReadPointer (ch), (size_t) numSamples * sizeof (float));
+    juce::String b64 = juce::Base64::toBase64 (block.getData(), block.getSize());
+    elem.setAttribute ("data", b64);
+}
+
+static bool synthesizedIRFromXml (const juce::XmlElement& xml, juce::AudioBuffer<float>& outBuf, double& outSampleRate)
+{
+    juce::String b64 = xml.getStringAttribute ("data");
+    if (b64.isEmpty()) return false;
+    juce::MemoryBlock block;
+    juce::MemoryOutputStream mos (block, false);
+    if (! juce::Base64::convertFromBase64 (mos, b64)) return false;
+    const size_t minSize = sizeof (int) + sizeof (int) + sizeof (double);
+    if (block.getSize() < minSize) return false;
+    const char* data = static_cast<const char*> (block.getData());
+    int numCh, numSamples;
+    double sampleRate;
+    memcpy (&numCh, data, sizeof (int));
+    memcpy (&numSamples, data + sizeof (int), sizeof (int));
+    memcpy (&sampleRate, data + sizeof (int) * 2, sizeof (double));
+    size_t expectedSize = minSize + (size_t) numCh * (size_t) numSamples * sizeof (float);
+    if (numCh < 1 || numCh > 8 || numSamples < 1 || numSamples > 2000000 || block.getSize() != expectedSize)
+        return false;
+    outBuf.setSize (numCh, numSamples);
+    const float* src = reinterpret_cast<const float*> (data + minSize);
+    for (int ch = 0; ch < numCh; ++ch)
+        outBuf.copyFrom (ch, 0, src + ch * numSamples, numSamples);
+    outSampleRate = sampleRate;
+    return true;
+}
+
+static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
+{
+    IRSynthParams p;
+    if (! ir) return p;
+    p.shape          = ir->getStringAttribute ("shape", "Rectangular").toStdString();
+    p.width          = ir->getDoubleAttribute ("width", 28.0);
+    p.depth          = ir->getDoubleAttribute ("depth", 16.0);
+    p.height         = ir->getDoubleAttribute ("height", 12.0);
+    p.floor_material = ir->getStringAttribute ("floor", "Hardwood floor").toStdString();
+    p.ceiling_material = ir->getStringAttribute ("ceiling", "Acoustic ceiling tile").toStdString();
+    p.wall_material  = ir->getStringAttribute ("wall", "Painted plaster").toStdString();
+    p.audience       = ir->getDoubleAttribute ("audience", 0.0);
+    p.diffusion      = ir->getDoubleAttribute ("diffusion", 0.4);
+    p.vault_type     = ir->getStringAttribute ("vault", "None (flat)").toStdString();
+    p.organ_case     = ir->getDoubleAttribute ("organ", 0.0);
+    p.balconies      = ir->getDoubleAttribute ("balconies", 0.0);
+    p.temperature    = ir->getDoubleAttribute ("temp", 20.0);
+    p.humidity       = ir->getDoubleAttribute ("humidity", 50.0);
+    p.source_lx      = ir->getDoubleAttribute ("slx", 0.25);
+    p.source_ly      = ir->getDoubleAttribute ("sly", 0.5);
+    p.source_rx      = ir->getDoubleAttribute ("srx", 0.75);
+    p.source_ry      = ir->getDoubleAttribute ("sry", 0.5);
+    p.receiver_lx     = ir->getDoubleAttribute ("rlx", 0.25);
+    p.receiver_ly     = ir->getDoubleAttribute ("rly", 0.8);
+    p.receiver_rx     = ir->getDoubleAttribute ("rrx", 0.75);
+    p.receiver_ry     = ir->getDoubleAttribute ("rry", 0.8);
+    p.spkl_angle     = ir->getDoubleAttribute ("spkl", 1.57079632679);
+    p.spkr_angle     = ir->getDoubleAttribute ("spkr", 1.57079632679);
+    p.micl_angle     = ir->getDoubleAttribute ("micl", -2.35619449019);
+    p.micr_angle     = ir->getDoubleAttribute ("micr", -0.785398163397);
+    p.mic_pattern    = ir->getStringAttribute ("micPat", "cardioid").toStdString();
+    p.er_only        = ir->getBoolAttribute ("erOnly", false);
+    p.sample_rate    = ir->getIntAttribute ("sr", 48000);
+    return p;
+}
+
+static void writeIRSynthParamsSidecar (const juce::File& wavFile, const IRSynthParams& p)
+{
+    juce::XmlElement root ("PingIRSynth");
+    irSynthParamsToXml (p, root);
+    root.writeTo (wavFile.getSiblingFile (wavFile.getFileNameWithoutExtension() + ".ping"));
+}
+
+IRSynthParams PingProcessor::loadIRSynthParamsFromSidecar (const juce::File& irFile)
+{
+    auto sidecar = irFile.getSiblingFile (irFile.getFileNameWithoutExtension() + ".ping");
+    if (! sidecar.existsAsFile()) return IRSynthParams();
+    if (auto xml = juce::parseXML (sidecar))
+    {
+        if (auto* ir = xml->getChildByName ("irSynthParams"))
+            return irSynthParamsFromXml (ir);
+    }
+    return IRSynthParams();
+}
+
 void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
@@ -773,6 +943,13 @@ void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
     {
         xml->setAttribute ("irIndex", selectedIRIndex);
         xml->setAttribute ("reverse", reverse);
+        if (irFromSynth && currentIRBuffer.getNumSamples() > 0)
+        {
+            auto* synth = xml->createNewChildElement ("synthIR");
+            if (synth)
+                synthesizedIRToXml (currentIRBuffer, synthesizedIRSampleRate, *synth);
+        }
+        irSynthParamsToXml (lastIRSynthParams, *xml);
         if (currentLicence.valid)
         {
             xml->setAttribute ("licenceName", currentLicence.normalisedName);
@@ -791,6 +968,8 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
         selectedIRIndex = xml->getIntAttribute ("irIndex", -1);
         reverse = xml->getBoolAttribute ("reverse", false);
+        if (auto* ir = xml->getChildByName ("irSynthParams"))
+            lastIRSynthParams = irSynthParamsFromXml (ir);
 
         juce::String licenceName = xml->getStringAttribute ("licenceName");
         juce::String licenceSerial = xml->getStringAttribute ("licenceSerial");
@@ -814,7 +993,22 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
             }
         }
 
-        if (selectedIRIndex >= 0)
+        if (auto* synth = xml->getChildByName ("synthIR"))
+        {
+            juce::AudioBuffer<float> buf;
+            double sr;
+            if (synthesizedIRFromXml (*synth, buf, sr))
+            {
+                loadIRFromBuffer (std::move (buf), sr, true);
+            }
+            else if (selectedIRIndex >= 0)
+            {
+                auto file = irManager.getIRFileAt (selectedIRIndex);
+                if (file.existsAsFile())
+                    loadIRFromFile (file);
+            }
+        }
+        else if (selectedIRIndex >= 0)
         {
             auto file = irManager.getIRFileAt (selectedIRIndex);
             if (file.existsAsFile())
