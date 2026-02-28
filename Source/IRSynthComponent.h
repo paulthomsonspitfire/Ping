@@ -65,12 +65,6 @@ private:
     juce::Label widthLabel, depthLabel, heightLabel;
     juce::Label widthValueLabel, depthValueLabel, heightValueLabel;  // Editable number only
 
-    // DEBUG: Position/angle sliders (temporary, to verify floor plan <-> engine connection)
-    juce::Slider spkLXSlider, spkLYSlider, spkLAngSlider;
-    juce::Slider spkRXSlider, spkRYSlider, spkRAngSlider;
-    juce::Slider micLXSlider, micLYSlider, micLAngSlider;
-    juce::Slider micRXSlider, micRYSlider, micRAngSlider;
-
     // Surfaces (Character tab)
     juce::ComboBox floorCombo, ceilingCombo, wallCombo;
     juce::Label floorLabel, ceilingLabel, wallLabel;

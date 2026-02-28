@@ -11,9 +11,9 @@ struct IRSynthParams
 {
     // Room
     std::string shape = "Rectangular";  // "Rectangular"|"L-shaped"|"Fan / Shoebox"|"Cylindrical"|"Cathedral"|"Octagonal"
-    double width  = 8.0;
-    double depth  = 12.0;
-    double height = 4.0;
+    double width  = 28.0;
+    double depth  = 16.0;
+    double height = 12.0;
 
     // Surfaces
     std::string floor_material   = "Hardwood floor";
@@ -34,16 +34,17 @@ struct IRSynthParams
     double humidity    = 50.0; // %   (same — keep as stored param for display; AIR[] array is hardcoded)
 
     // Placement — normalised 0..1 within room footprint
+    // Speakers: centre (y=0.5), 25%/75% across, facing down. Mics: 1/5 up from bottom (y=0.8), 25%/75% across
     double source_lx   = 0.25; double source_ly   = 0.5;
     double source_rx   = 0.75; double source_ry   = 0.5;
-    double receiver_lx = 0.5;  double receiver_ly = 0.7;
-    double receiver_rx = 0.55; double receiver_ry = 0.7;
+    double receiver_lx = 0.25; double receiver_ly = 0.8;
+    double receiver_rx = 0.75; double receiver_ry = 0.8;
 
-    // Angles (radians)
-    double spkl_angle = 0.0;
-    double spkr_angle = 0.0;
-    double micl_angle = 3.14159;
-    double micr_angle = 3.14159;
+    // Angles (radians): 0=right, π/2=down, -π/2=up. Speakers down (π/2), mics up-left (-3π/4) / up-right (-π/4)
+    double spkl_angle = 1.57079632679;   // π/2 down
+    double spkr_angle = 1.57079632679;
+    double micl_angle = -2.35619449019;  // -3π/4 up-left
+    double micr_angle = -0.785398163397; // -π/4 up-right
 
     // Options
     std::string mic_pattern = "cardioid"; // "omni"|"subcardioid"|"cardioid"|"figure8"

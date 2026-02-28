@@ -6,9 +6,11 @@
 
 struct TransducerState
 {
-    double cx[4]  = { 0.35, 0.65, 0.40, 0.60 };
-    double cy[4]  = { 0.30, 0.30, 0.70, 0.70 };
-    double angle[4] = { 1.5 * 3.14159, 1.5 * 3.14159, 0.5 * 3.14159, 0.5 * 3.14159 };
+    // Speakers: centre of room (y=0.5), 25% and 75% across, facing down
+    // Mics: 1/5 up from bottom (y=0.8), 25% and 75% across; L faces up-left (-135°), R faces up-right (-45°)
+    double cx[4]    = { 0.25, 0.75, 0.25, 0.75 };
+    double cy[4]    = { 0.50, 0.50, 0.80, 0.80 };
+    double angle[4] = { 1.57079632679, 1.57079632679, -2.35619449019, -0.785398163397 };  // π/2 down, -3π/4 up-left, -π/4 up-right
 };
 
 /**

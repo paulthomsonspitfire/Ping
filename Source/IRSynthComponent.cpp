@@ -62,9 +62,9 @@ IRSynthComponent::IRSynthComponent()
     widthSlider.setRange (0.5, 50.0, 0.5);
     depthSlider.setRange (0.5, 50.0, 0.5);
     heightSlider.setRange (1.0, 30.0, 0.5);
-    widthSlider.setValue (8.0);
-    depthSlider.setValue (12.0);
-    heightSlider.setValue (4.0);
+    widthSlider.setValue (28.0);
+    depthSlider.setValue (16.0);
+    heightSlider.setValue (12.0);
 
     for (auto* s : { &widthSlider, &depthSlider, &heightSlider })
     {
@@ -93,45 +93,6 @@ IRSynthComponent::IRSynthComponent()
     setupDimRow (widthLabel, widthValueLabel, widthSlider, "Width");
     setupDimRow (depthLabel, depthValueLabel, depthSlider, "Depth");
     setupDimRow (heightLabel, heightValueLabel, heightSlider, "Height");
-
-    // DEBUG sliders: position 0..1, angle -π..π (display as degrees)
-    for (auto* s : { &spkLXSlider, &spkLYSlider, &spkRXSlider, &spkRYSlider,
-                     &micLXSlider, &micLYSlider, &micRXSlider, &micRYSlider })
-    {
-        s->setRange (0.0, 1.0, 0.01);
-        s->setSliderStyle (juce::Slider::LinearHorizontal);
-        s->setTextBoxStyle (juce::Slider::TextBoxRight, false, 40, 18);
-        s->setColour (juce::Slider::thumbColourId, accent);
-        s->setColour (juce::Slider::trackColourId, panelBorder);
-    }
-    const double kPi = 3.14159265358979323846;
-    for (auto* s : { &spkLAngSlider, &spkRAngSlider, &micLAngSlider, &micRAngSlider })
-    {
-        s->setRange (-kPi, kPi, 0.01);
-        s->setSliderStyle (juce::Slider::LinearHorizontal);
-        s->setTextBoxStyle (juce::Slider::TextBoxRight, false, 48, 18);
-        s->setColour (juce::Slider::thumbColourId, accent);
-        s->setColour (juce::Slider::trackColourId, panelBorder);
-        s->setNumDecimalPlacesToDisplay (1);
-    }
-    spkLXSlider.setValue (0.35); spkLYSlider.setValue (0.30); spkLAngSlider.setValue (1.5 * kPi);
-    spkRXSlider.setValue (0.65); spkRYSlider.setValue (0.30); spkRAngSlider.setValue (1.5 * kPi);
-    micLXSlider.setValue (0.40); micLYSlider.setValue (0.70); micLAngSlider.setValue (0.5 * kPi);
-    micRXSlider.setValue (0.60); micRYSlider.setValue (0.70); micRAngSlider.setValue (0.5 * kPi);
-
-    auto syncFloorPlanFromSliders = [this]
-    {
-        TransducerState t;
-        t.cx[0] = spkLXSlider.getValue();  t.cy[0] = spkLYSlider.getValue();  t.angle[0] = spkLAngSlider.getValue();
-        t.cx[1] = spkRXSlider.getValue();  t.cy[1] = spkRYSlider.getValue();  t.angle[1] = spkRAngSlider.getValue();
-        t.cx[2] = micLXSlider.getValue();  t.cy[2] = micLYSlider.getValue();  t.angle[2] = micLAngSlider.getValue();
-        t.cx[3] = micRXSlider.getValue();  t.cy[3] = micRYSlider.getValue();  t.angle[3] = micRAngSlider.getValue();
-        floorPlanComponent.setTransducerState (t);
-    };
-    for (auto* s : { &spkLXSlider, &spkLYSlider, &spkLAngSlider, &spkRXSlider, &spkRYSlider, &spkRAngSlider,
-                     &micLXSlider, &micLYSlider, &micLAngSlider, &micRXSlider, &micRYSlider, &micRAngSlider })
-        s->onValueChange = syncFloorPlanFromSliders;
-    syncFloorPlanFromSliders();
 
     // Surfaces (Character tab)
     addOptions (floorCombo, materialOptions, 14);
@@ -237,9 +198,6 @@ IRSynthComponent::IRSynthComponent()
     placementContent.addAndMakeVisible (widthValueLabel);
     placementContent.addAndMakeVisible (depthValueLabel);
     placementContent.addAndMakeVisible (heightValueLabel);
-    for (auto* s : { &spkLXSlider, &spkLYSlider, &spkLAngSlider, &spkRXSlider, &spkRYSlider, &spkRAngSlider,
-                     &micLXSlider, &micLYSlider, &micLAngSlider, &micRXSlider, &micRYSlider, &micRAngSlider })
-        placementContent.addAndMakeVisible (*s);
     placementContent.addAndMakeVisible (floorPlanComponent);
     floorPlanComponent.setParamsGetter ([this] { return getParams(); });
 
@@ -319,9 +277,9 @@ void IRSynthComponent::resized()
     characterViewport.setBounds (0, 0, contentW, contentH);
     placementViewport.setBounds (0, 0, contentW, contentH);
 
-    // Content panels: placement needs extra height for DEBUG sliders
+    // Content panels
     const int characterContentH = contentH;
-    const int placementContentH = contentH + 100;
+    const int placementContentH = contentH;
     characterContent.setSize (contentW, characterContentH);
     placementContent.setSize (contentW, placementContentH);
 
@@ -456,26 +414,6 @@ void IRSynthComponent::layoutPlacementTab (juce::Rectangle<int> b)
     dimRow (depthLabel, depthValueLabel, depthSlider);
     dimRow (heightLabel, heightValueLabel, heightSlider);
 
-    const int dbgSliderH = 18;
-    int yy = y;
-    int col1 = leftColX, col2 = leftColX + 58, col3 = leftColX + 116;
-    spkLXSlider.setBounds (col1, yy, 52, dbgSliderH);
-    spkLYSlider.setBounds (col2, yy, 52, dbgSliderH);
-    spkLAngSlider.setBounds (col3, yy, leftColW - secPad - col3, dbgSliderH);
-    yy += dbgSliderH + 2;
-    spkRXSlider.setBounds (col1, yy, 52, dbgSliderH);
-    spkRYSlider.setBounds (col2, yy, 52, dbgSliderH);
-    spkRAngSlider.setBounds (col3, yy, leftColW - secPad - col3, dbgSliderH);
-    yy += dbgSliderH + 2;
-    micLXSlider.setBounds (col1, yy, 52, dbgSliderH);
-    micLYSlider.setBounds (col2, yy, 52, dbgSliderH);
-    micLAngSlider.setBounds (col3, yy, leftColW - secPad - col3, dbgSliderH);
-    yy += dbgSliderH + 2;
-    micRXSlider.setBounds (col1, yy, 52, dbgSliderH);
-    micRYSlider.setBounds (col2, yy, 52, dbgSliderH);
-    micRAngSlider.setBounds (col3, yy, leftColW - secPad - col3, dbgSliderH);
-    yy += dbgSliderH + 6;
-
     floorPlanComponent.setBounds (floorPlanX, secPad, floorPlanW, juce::jmax (120, floorPlanH));
 }
 
@@ -494,11 +432,11 @@ IRSynthParams IRSynthComponent::getParams() const
     p.vault_type = comboSelection (vaultCombo, vaultOptions, 6).toStdString();
     p.organ_case = organSlider.getValue();
     p.balconies = balconiesSlider.getValue();
-    // Use DEBUG sliders directly (they drive floor plan; no angle conversion for now)
-    p.source_lx = spkLXSlider.getValue();   p.source_ly = spkLYSlider.getValue();   p.spkl_angle = spkLAngSlider.getValue();
-    p.source_rx = spkRXSlider.getValue();   p.source_ry = spkRYSlider.getValue();   p.spkr_angle = spkRAngSlider.getValue();
-    p.receiver_lx = micLXSlider.getValue(); p.receiver_ly = micLYSlider.getValue(); p.micl_angle = micLAngSlider.getValue();
-    p.receiver_rx = micRXSlider.getValue(); p.receiver_ry = micRYSlider.getValue(); p.micr_angle = micRAngSlider.getValue();
+    auto t = floorPlanComponent.getTransducerState();
+    p.source_lx = t.cx[0];   p.source_ly = t.cy[0];   p.spkl_angle = t.angle[0];
+    p.source_rx = t.cx[1];   p.source_ry = t.cy[1];   p.spkr_angle = t.angle[1];
+    p.receiver_lx = t.cx[2]; p.receiver_ly = t.cy[2]; p.micl_angle = t.angle[2];
+    p.receiver_rx = t.cx[3]; p.receiver_ry = t.cy[3]; p.micr_angle = t.angle[3];
     p.mic_pattern = comboSelection (micPatternCombo, micOptions, 4).toStdString();
     p.er_only = erOnlyButton.getToggleState();
     p.sample_rate = sampleRateCombo.getSelectedId() == 1 ? 44100 : 48000;
@@ -528,18 +466,6 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     t.cx[2] = p.receiver_lx; t.cy[2] = p.receiver_ly; t.angle[2] = p.micl_angle;
     t.cx[3] = p.receiver_rx; t.cy[3] = p.receiver_ry; t.angle[3] = p.micr_angle;
     floorPlanComponent.setTransducerState (t);
-    spkLXSlider.setValue (p.source_lx, juce::dontSendNotification);
-    spkLYSlider.setValue (p.source_ly, juce::dontSendNotification);
-    spkLAngSlider.setValue (p.spkl_angle, juce::dontSendNotification);
-    spkRXSlider.setValue (p.source_rx, juce::dontSendNotification);
-    spkRYSlider.setValue (p.source_ry, juce::dontSendNotification);
-    spkRAngSlider.setValue (p.spkr_angle, juce::dontSendNotification);
-    micLXSlider.setValue (p.receiver_lx, juce::dontSendNotification);
-    micLYSlider.setValue (p.receiver_ly, juce::dontSendNotification);
-    micLAngSlider.setValue (p.micl_angle, juce::dontSendNotification);
-    micRXSlider.setValue (p.receiver_rx, juce::dontSendNotification);
-    micRYSlider.setValue (p.receiver_ry, juce::dontSendNotification);
-    micRAngSlider.setValue (p.micr_angle, juce::dontSendNotification);
     setComboTo (micPatternCombo, p.mic_pattern, micOptions, 4);
     erOnlyButton.setToggleState (p.er_only, juce::dontSendNotification);
     sampleRateCombo.setSelectedId (p.sample_rate == 44100 ? 1 : 2, juce::dontSendNotification);
@@ -553,20 +479,6 @@ void IRSynthComponent::timerCallback()
         depthValueLabel.setText (juce::String (depthSlider.getValue(), 1), juce::dontSendNotification);
     if (! heightValueLabel.hasKeyboardFocus (true))
         heightValueLabel.setText (juce::String (heightSlider.getValue(), 1), juce::dontSendNotification);
-    // Sync sliders from floor plan when user drags pucks (keeps them in sync)
-    auto t = floorPlanComponent.getTransducerState();
-    spkLXSlider.setValue (t.cx[0], juce::dontSendNotification);
-    spkLYSlider.setValue (t.cy[0], juce::dontSendNotification);
-    spkLAngSlider.setValue (t.angle[0], juce::dontSendNotification);
-    spkRXSlider.setValue (t.cx[1], juce::dontSendNotification);
-    spkRYSlider.setValue (t.cy[1], juce::dontSendNotification);
-    spkRAngSlider.setValue (t.angle[1], juce::dontSendNotification);
-    micLXSlider.setValue (t.cx[2], juce::dontSendNotification);
-    micLYSlider.setValue (t.cy[2], juce::dontSendNotification);
-    micLAngSlider.setValue (t.angle[2], juce::dontSendNotification);
-    micRXSlider.setValue (t.cx[3], juce::dontSendNotification);
-    micRYSlider.setValue (t.cy[3], juce::dontSendNotification);
-    micRAngSlider.setValue (t.angle[3], juce::dontSendNotification);
     floorPlanComponent.repaint();
     audienceReadout.setText (juce::String (audienceSlider.getValue(), 2), juce::dontSendNotification);
     diffusionReadout.setText (juce::String (diffusionSlider.getValue(), 2), juce::dontSendNotification);
@@ -587,21 +499,6 @@ void IRSynthComponent::buttonClicked (juce::Button* b)
 
 void IRSynthComponent::startSynthesis()
 {
-    // Sync floor plan drags to sliders before synthesis so params reflect latest positions
-    auto t = floorPlanComponent.getTransducerState();
-    spkLXSlider.setValue (t.cx[0], juce::dontSendNotification);
-    spkLYSlider.setValue (t.cy[0], juce::dontSendNotification);
-    spkLAngSlider.setValue (t.angle[0], juce::dontSendNotification);
-    spkRXSlider.setValue (t.cx[1], juce::dontSendNotification);
-    spkRYSlider.setValue (t.cy[1], juce::dontSendNotification);
-    spkRAngSlider.setValue (t.angle[1], juce::dontSendNotification);
-    micLXSlider.setValue (t.cx[2], juce::dontSendNotification);
-    micLYSlider.setValue (t.cy[2], juce::dontSendNotification);
-    micLAngSlider.setValue (t.angle[2], juce::dontSendNotification);
-    micRXSlider.setValue (t.cx[3], juce::dontSendNotification);
-    micRYSlider.setValue (t.cy[3], juce::dontSendNotification);
-    micRAngSlider.setValue (t.angle[3], juce::dontSendNotification);
-
     IRSynthParams p = getParams();
     synthRunning = true;
     previewButton.setEnabled (false);
