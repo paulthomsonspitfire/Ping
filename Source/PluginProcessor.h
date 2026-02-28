@@ -74,13 +74,19 @@ private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
     IRManager irManager;
-    juce::dsp::Convolution convolution;
+    juce::dsp::Convolution erConvolver;
+    juce::dsp::Convolution tailConvolver;
+    juce::dsp::Convolution tsErConvLL, tsErConvRL, tsErConvLR, tsErConvRR;
+    juce::dsp::Convolution tsTailConvLL, tsTailConvRL, tsTailConvLR, tsTailConvRR;
+    bool useTrueStereo = false;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> predelayLine;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> chorusDelayLine;
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand;
     juce::SmoothedValue<float> inputGainSmoothed;
     juce::SmoothedValue<float> saturatorDriveSmoothed;
+    juce::SmoothedValue<float> erLevelSmoothed;
+    juce::SmoothedValue<float> tailLevelSmoothed;
 
     juce::AudioBuffer<float> currentIRBuffer;
     double currentSampleRate = 48000.0;

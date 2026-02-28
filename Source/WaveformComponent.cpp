@@ -44,9 +44,11 @@ void WaveformComponent::paint (juce::Graphics& g)
 
     int numChannels = buf.getNumChannels();
     int numSamples = buf.getNumSamples();
+    // True-stereo 4ch: display as 2 (L = ch0+ch1, R = ch2+ch3) to match output
+    int displayChannels = (numChannels >= 4) ? 2 : numChannels;
     const int gapBetweenChannels = 2;
-    int totalChannelHeight = (int) inner.getHeight() - (numChannels > 1 ? gapBetweenChannels * (numChannels - 1) : 0);
-    float hPerCh = (float) totalChannelHeight / (float) numChannels;
+    int totalChannelHeight = (int) inner.getHeight() - (displayChannels > 1 ? gapBetweenChannels * (displayChannels - 1) : 0);
+    float hPerCh = (float) totalChannelHeight / (float) juce::jmax (1, displayChannels);
 
     g.setColour (panelBorder.withAlpha (0.4f));
     for (int i = 1; i <= 3; ++i)
@@ -60,11 +62,15 @@ void WaveformComponent::paint (juce::Graphics& g)
         g.drawHorizontalLine ((int) y, inner.getX(), inner.getRight());
     }
 
-    for (int ch = 0; ch < numChannels; ++ch)
+    const float* ch0 = buf.getNumChannels() > 0 ? buf.getReadPointer (0) : nullptr;
+    const float* ch1 = buf.getNumChannels() > 1 ? buf.getReadPointer (1) : nullptr;
+    const float* ch2 = buf.getNumChannels() > 2 ? buf.getReadPointer (2) : nullptr;
+    const float* ch3 = buf.getNumChannels() > 3 ? buf.getReadPointer (3) : nullptr;
+
+    for (int dispCh = 0; dispCh < displayChannels; ++dispCh)
     {
-        int chY = (int) (inner.getY() + ch * (hPerCh + gapBetweenChannels));
+        int chY = (int) (inner.getY() + dispCh * (hPerCh + gapBetweenChannels));
         auto area = inner.withHeight ((int) hPerCh).withY ((float) chY).reduced (3);
-        const float* data = buf.getReadPointer (ch);
         juce::Path path;
         juce::Path fillPath;
         float centreY = area.getCentreY();
@@ -74,7 +80,12 @@ void WaveformComponent::paint (juce::Graphics& g)
         {
             int sampleIdx = (int) ((double) x / (double) area.getWidth() * numSamples);
             if (sampleIdx >= numSamples) sampleIdx = numSamples - 1;
-            float level = data[sampleIdx] * waveformGain;
+            float level;
+            if (numChannels >= 4)
+                level = (dispCh == 0) ? (ch0[sampleIdx] + ch1[sampleIdx]) * 0.5f : (ch2[sampleIdx] + ch3[sampleIdx]) * 0.5f;
+            else
+                level = (dispCh == 0 && ch0) ? ch0[sampleIdx] : (dispCh == 1 && ch1) ? ch1[sampleIdx] : 0.0f;
+            level *= waveformGain;
             float y = centreY - level * area.getHeight();
             float px = (float) area.getX() + x;
             path.lineTo (px, y);

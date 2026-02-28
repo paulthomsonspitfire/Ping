@@ -15,6 +15,8 @@ namespace IDs
     static const juce::String tailRate { "tailrate" };
     static const juce::String inputGain { "inputGain" };
     static const juce::String irInputDrive { "irInputDrive" };
+    static const juce::String erLevel { "erLevel" };
+    static const juce::String tailLevel { "tailLevel" };
     static const juce::String reverseTrim { "reversetrim" };
     static const juce::String band0Freq { "b0freq" }, band0Gain { "b0gain" }, band0Q { "b0q" };
     static const juce::String band1Freq { "b1freq" }, band1Gain { "b1gain" }, band1Q { "b1q" };
@@ -190,6 +192,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailRate, "Tail Rate (Hz)", 0.05f, 3.0f, 0.5f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::inputGain, "IR Input Gain (dB)", -24.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::irInputDrive, "IR Input Drive", 0.0f, 1.0f, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::erLevel, "Early Reflections",
+        juce::NormalisableRange<float> (-48.0f, 6.0f, 0.1f), 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailLevel, "Tail",
+        juce::NormalisableRange<float> (-48.0f, 6.0f, 0.1f), 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::reverseTrim, "Reverse Trim", 0.0f, 0.95f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Freq, "Band 0 Freq (Hz)", 20.0f, 20000.0f, 400.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Gain, "Band 0 Gain (dB)", -12.0f, 12.0f, 0.0f));
@@ -211,8 +217,19 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     spec.maximumBlockSize = (juce::uint32) samplesPerBlock;
     spec.numChannels = 2;
 
-    convolution.reset();
-    convolution.prepare (spec);
+    spec.numChannels = 1;  // True stereo convolvers are mono
+    tsErConvLL.reset(); tsErConvRL.reset(); tsErConvLR.reset(); tsErConvRR.reset();
+    tsTailConvLL.reset(); tsTailConvRL.reset(); tsTailConvLR.reset(); tsTailConvRR.reset();
+    tsErConvLL.prepare (spec); tsErConvRL.prepare (spec); tsErConvLR.prepare (spec); tsErConvRR.prepare (spec);
+    tsTailConvLL.prepare (spec); tsTailConvRL.prepare (spec); tsTailConvLR.prepare (spec); tsTailConvRR.prepare (spec);
+    spec.numChannels = 2;
+    erConvolver.reset();
+    tailConvolver.reset();
+    erConvolver.prepare (spec);
+    tailConvolver.prepare (spec);
+
+    erLevelSmoothed.reset (sampleRate, 0.02);
+    tailLevelSmoothed.reset (sampleRate, 0.02);
 
     predelayLine.reset();
     predelayLine.setMaximumDelayInSamples ((int) (2.0 * sampleRate)); // up to 2 s
@@ -314,8 +331,72 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         }
     }
 
-    // Convolution (stereo)
-    convolution.process (context);
+    float erDb = apvts.getRawParameterValue (IDs::erLevel)->load();
+    float tailDb = apvts.getRawParameterValue (IDs::tailLevel)->load();
+    erLevelSmoothed.setTargetValue (juce::Decibels::decibelsToGain (erDb));
+    tailLevelSmoothed.setTargetValue (juce::Decibels::decibelsToGain (tailDb));
+
+    if (useTrueStereo)
+    {
+        juce::AudioBuffer<float> lIn (1, numSamples), rIn (1, numSamples);
+        lIn.copyFrom (0, 0, buffer, 0, 0, numSamples);
+        rIn.copyFrom (0, 0, buffer, 1, 0, numSamples);
+
+        juce::AudioBuffer<float> tmp (1, numSamples);
+        juce::AudioBuffer<float> lEr (1, numSamples), rEr (1, numSamples);
+
+        juce::dsp::AudioBlock<float> tmpBlock (tmp);
+        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
+        tsErConvLL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+        lEr.copyFrom (0, 0, tmp, 0, 0, numSamples);
+        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
+        tsErConvRL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+        lEr.addFrom (0, 0, tmp, 0, 0, numSamples);
+
+        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
+        tsErConvLR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+        rEr.copyFrom (0, 0, tmp, 0, 0, numSamples);
+        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
+        tsErConvRR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+        rEr.addFrom (0, 0, tmp, 0, 0, numSamples);
+
+        // Tail: use the regular stereo tailConvolver (IRSynthEngine calibrates tail
+        // to ER level, so Normalise::no preserves the correct balance).
+        juce::AudioBuffer<float> tailBuf (2, numSamples);
+        tailBuf.copyFrom (0, 0, lIn, 0, 0, numSamples);
+        tailBuf.copyFrom (1, 0, rIn, 0, 0, numSamples);
+        {
+            juce::dsp::AudioBlock<float> tailBlock (tailBuf);
+            tailConvolver.process (juce::dsp::ProcessContextReplacing<float> (tailBlock));
+        }
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float erG = erLevelSmoothed.getNextValue();
+            float tailG = tailLevelSmoothed.getNextValue();
+            buffer.setSample (0, i, lEr.getSample (0, i) * erG + tailBuf.getSample (0, i) * tailG);
+            buffer.setSample (1, i, rEr.getSample (0, i) * erG + tailBuf.getSample (1, i) * tailG);
+        }
+    }
+    else
+    {
+        juce::AudioBuffer<float> tailBuffer (numChannels, numSamples);
+        for (int ch = 0; ch < numChannels; ++ch)
+            tailBuffer.copyFrom (ch, 0, buffer, ch, 0, numSamples);
+
+        juce::dsp::AudioBlock<float> erBlock (buffer);
+        juce::dsp::AudioBlock<float> tailBlock (tailBuffer);
+        erConvolver.process (juce::dsp::ProcessContextReplacing<float> (erBlock));
+        tailConvolver.process (juce::dsp::ProcessContextReplacing<float> (tailBlock));
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float erG = erLevelSmoothed.getNextValue();
+            float tailG = tailLevelSmoothed.getNextValue();
+            for (int ch = 0; ch < numChannels; ++ch)
+                buffer.setSample (ch, i, buffer.getSample (ch, i) * erG + tailBuffer.getSample (ch, i) * tailG);
+        }
+    }
 
     // EQ
     lowBand.process (context);
@@ -538,11 +619,151 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
     }
 
     currentIRBuffer = buffer;
-    bool isStereo = buffer.getNumChannels() >= 2;
-    convolution.loadImpulseResponse (std::move (buffer), bufferSampleRate,
-                                    isStereo ? juce::dsp::Convolution::Stereo::yes : juce::dsp::Convolution::Stereo::no,
-                                    juce::dsp::Convolution::Trim::no,
-                                    juce::dsp::Convolution::Normalise::yes);
+    int numCh = buffer.getNumChannels();
+    int fullLen = buffer.getNumSamples();
+
+    const int crossoverSamples = static_cast<int> (0.080 * bufferSampleRate);
+    const int fadeLength = static_cast<int> (0.010 * bufferSampleRate);
+
+    if (numCh >= 4)
+    {
+        useTrueStereo = true;
+        auto makeMonoEr = [&] (int ch)
+        {
+            int erLen = fullLen <= crossoverSamples ? fullLen : crossoverSamples + fadeLength;
+            juce::AudioBuffer<float> m (1, erLen);
+            m.copyFrom (0, 0, buffer, ch, 0, juce::jmin (erLen, fullLen));
+            if (fullLen > crossoverSamples)
+                for (int i = 0; i < fadeLength && (crossoverSamples + i) < erLen; ++i)
+                    m.applyGain (crossoverSamples + i, 1, 1.0f - (float) i / (float) fadeLength);
+            return m;
+        };
+        auto makeMonoTail = [&] (int ch)
+        {
+            if (fullLen <= crossoverSamples)
+            {
+                juce::AudioBuffer<float> m (1, juce::jmax (64, fadeLength * 2));
+                m.clear();
+                return m;
+            }
+            int tailLen = fullLen - crossoverSamples;
+            juce::AudioBuffer<float> m (1, tailLen);
+            m.copyFrom (0, 0, buffer, ch, crossoverSamples, tailLen);
+            for (int i = 0; i < juce::jmin (fadeLength, tailLen); ++i)
+                m.applyGain (i, 1, (float) i / (float) fadeLength);
+            return m;
+        };
+        juce::dsp::Convolution* tsEr[]  = { &tsErConvLL, &tsErConvRL, &tsErConvLR, &tsErConvRR };
+        juce::dsp::Convolution* tsTail[] = { &tsTailConvLL, &tsTailConvRL, &tsTailConvLR, &tsTailConvRR };
+        // Group-normalise the 4 ER channels with a single shared scale factor.
+        // This preserves every inter-channel amplitude ratio (= all spatial information).
+        // We must bound both PEAK (for transients) and L1 sum (for sustained signals):
+        // convolution gain for steady input is proportional to sum(|IR|), not peak.
+        // Image-source ER IRs have many reflections that sum to 5–20x, causing ~20 dB
+        // overload. Scale by 1/max(grpPk, grpL1) so both are bounded to 1.0.
+        {
+            juce::AudioBuffer<float> erBuf[4];
+            for (int c = 0; c < 4; ++c) erBuf[c] = makeMonoEr (c);
+            float grpPk = 0.0f;
+            float grpL1L = 0.0f, grpL1R = 0.0f;
+            const int erN = erBuf[0].getNumSamples();
+            for (int i = 0; i < erN; ++i)
+            {
+                float s0 = erBuf[0].getSample (0, i), s1 = erBuf[1].getSample (0, i);
+                float s2 = erBuf[2].getSample (0, i), s3 = erBuf[3].getSample (0, i);
+                grpPk = std::max (grpPk, std::abs (s0 + s1));  // combined L
+                grpPk = std::max (grpPk, std::abs (s2 + s3));  // combined R
+                grpPk = std::max (grpPk, std::abs (s0));       // individual LL
+                grpPk = std::max (grpPk, std::abs (s1));       // individual RL
+                grpPk = std::max (grpPk, std::abs (s2));       // individual LR
+                grpPk = std::max (grpPk, std::abs (s3));       // individual RR
+                grpL1L += std::abs (s0 + s1);  // L1 of effective L-out IR
+                grpL1R += std::abs (s2 + s3);  // L1 of effective R-out IR
+            }
+            float grpL1 = std::max (grpL1L, grpL1R);
+            float scaleLimit = std::max (grpPk, grpL1);
+            if (scaleLimit > 1.0e-9f)
+            {
+                const float sc = 1.0f / scaleLimit;
+                for (int c = 0; c < 4; ++c) erBuf[c].applyGain (sc);
+            }
+            for (int c = 0; c < 4; ++c)
+                tsEr[c]->loadImpulseResponse (std::move (erBuf[c]), bufferSampleRate,
+                    juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no,
+                    juce::dsp::Convolution::Normalise::no);
+        }
+        for (int c = 0; c < 4; ++c)
+            tsTail[c]->loadImpulseResponse (makeMonoTail (c), bufferSampleRate,
+                juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no,
+                juce::dsp::Convolution::Normalise::no);
+
+        // Build a stereo combined-tail IR for the regular tailConvolver.
+        // iLL_tail == iRL_tail and iLR_tail == iRR_tail (the tail has no true-stereo
+        // spatial content), so combining them and normalising with ::yes restores the
+        // correct tail level without affecting spatial information.
+        {
+            auto t0 = makeMonoTail (0);   // iLL tail
+            auto t1 = makeMonoTail (1);   // iRL tail  (== t0)
+            auto t2 = makeMonoTail (2);   // iLR tail
+            auto t3 = makeMonoTail (3);   // iRR tail  (== t2)
+            const int tailLen = t0.getNumSamples();
+            juce::AudioBuffer<float> combinedTail (2, tailLen);
+            for (int i = 0; i < tailLen; ++i)
+            {
+                combinedTail.setSample (0, i, t0.getSample (0, i) + t1.getSample (0, i));
+                combinedTail.setSample (1, i, t2.getSample (0, i) + t3.getSample (0, i));
+            }
+            tailConvolver.loadImpulseResponse (std::move (combinedTail), bufferSampleRate,
+                juce::dsp::Convolution::Stereo::yes,
+                juce::dsp::Convolution::Trim::no,
+                juce::dsp::Convolution::Normalise::yes);
+        }
+    }
+    else
+    {
+        useTrueStereo = false;
+        bool isStereo = numCh >= 2;
+        juce::AudioBuffer<float> erIR;
+        juce::AudioBuffer<float> tailIR;
+
+        if (fullLen <= crossoverSamples)
+        {
+            erIR = std::move (buffer);
+            tailIR = juce::AudioBuffer<float> (numCh, juce::jmax (64, fadeLength * 2));
+            tailIR.clear();
+        }
+        else
+        {
+            int erLen = crossoverSamples + fadeLength;
+            erIR = juce::AudioBuffer<float> (numCh, erLen);
+            for (int ch = 0; ch < numCh; ++ch)
+                erIR.copyFrom (ch, 0, buffer, ch, 0, juce::jmin (erLen, fullLen));
+            for (int i = 0; i < fadeLength && (crossoverSamples + i) < erIR.getNumSamples(); ++i)
+            {
+                float gain = 1.0f - (float) i / (float) fadeLength;
+                erIR.applyGain (crossoverSamples + i, 1, gain);
+            }
+
+            int tailLen = fullLen - crossoverSamples;
+            tailIR = juce::AudioBuffer<float> (numCh, tailLen);
+            for (int ch = 0; ch < numCh; ++ch)
+                tailIR.copyFrom (ch, 0, buffer, ch, crossoverSamples, tailLen);
+            for (int i = 0; i < juce::jmin (fadeLength, tailLen); ++i)
+            {
+                float gain = (float) i / (float) fadeLength;
+                tailIR.applyGain (i, 1, gain);
+            }
+        }
+
+        erConvolver.loadImpulseResponse (std::move (erIR), bufferSampleRate,
+                                        isStereo ? juce::dsp::Convolution::Stereo::yes : juce::dsp::Convolution::Stereo::no,
+                                        juce::dsp::Convolution::Trim::no,
+                                        juce::dsp::Convolution::Normalise::yes);
+        tailConvolver.loadImpulseResponse (std::move (tailIR), bufferSampleRate,
+                                           isStereo ? juce::dsp::Convolution::Stereo::yes : juce::dsp::Convolution::Stereo::no,
+                                           juce::dsp::Convolution::Trim::no,
+                                           juce::dsp::Convolution::Normalise::yes);
+    }
 }
 
 void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
@@ -691,7 +912,19 @@ void PingProcessor::setReverseTrim (float v)
 
 double PingProcessor::getTailLengthSeconds() const
 {
-    int irSize = convolution.getCurrentIRSize();
+    int irSize = 0;
+    if (useTrueStereo)
+    {
+        int erMax = juce::jmax (tsErConvLL.getCurrentIRSize(), tsErConvRL.getCurrentIRSize(),
+                               tsErConvLR.getCurrentIRSize(), tsErConvRR.getCurrentIRSize());
+        int tailMax = juce::jmax (tsTailConvLL.getCurrentIRSize(), tsTailConvRL.getCurrentIRSize(),
+                                 tsTailConvLR.getCurrentIRSize(), tsTailConvRR.getCurrentIRSize());
+        irSize = juce::jmax (erMax, tailMax);
+    }
+    else
+    {
+        irSize = juce::jmax (erConvolver.getCurrentIRSize(), tailConvolver.getCurrentIRSize());
+    }
     if (currentSampleRate > 0 && irSize > 0)
         return irSize / currentSampleRate;
     return 0.0;

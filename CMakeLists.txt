@@ -76,6 +76,12 @@ target_sources(Ping
         Source/PingLookAndFeel.cpp
         Source/EQGraphComponent.cpp
         Source/PresetManager.cpp
+        Source/IRSynthEngine.h
+        Source/IRSynthEngine.cpp
+        Source/FloorPlanComponent.h
+        Source/FloorPlanComponent.cpp
+        Source/IRSynthComponent.h
+        Source/IRSynthComponent.cpp
 )
 
 target_compile_definitions(Ping

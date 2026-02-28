@@ -5,7 +5,7 @@
 namespace
 {
     constexpr int editorW = 920;
-    constexpr int editorH = 420;
+    constexpr int editorH = 440;
     constexpr int minW = 720;
     constexpr int minH = 440;
     constexpr int maxW = 1600;
@@ -96,6 +96,42 @@ PingEditor::PingEditor (PingProcessor& p)
         loadSelectedIR();
     };
 
+    addAndMakeVisible (irSynthButton);
+    irSynthButton.setColour (juce::TextButton::buttonColourId, panelBg);
+    irSynthButton.setColour (juce::TextButton::textColourOffId, textDim);
+    irSynthButton.onClick = [this]
+    {
+        setMainPanelControlsVisible (false);
+        irSynthComponent.setVisible (true);
+        irSynthComponent.toFront (true);
+    };
+
+    addChildComponent (irSynthComponent);
+    irSynthComponent.setVisible (false);
+    irSynthComponent.setOnComplete ([this] (const IRSynthResult& result)
+    {
+        if (! result.success || result.iLL.empty() || result.iRL.empty() || result.iLR.empty() || result.iRR.empty())
+            return;
+        const size_t N = result.iLL.size();
+        juce::AudioBuffer<float> buf (4, (int) N);
+        for (size_t i = 0; i < N; ++i)
+        {
+            buf.setSample (0, (int) i, (float) result.iLL[i]);
+            buf.setSample (1, (int) i, (float) result.iRL[i]);
+            buf.setSample (2, (int) i, (float) result.iLR[i]);
+            buf.setSample (3, (int) i, (float) result.iRR[i]);
+        }
+        pingProcessor.loadIRFromBuffer (std::move (buf), (double) result.sampleRate);
+        updateWaveform();
+        irSynthComponent.setVisible (false);
+        setMainPanelControlsVisible (true);
+    });
+    irSynthComponent.setOnCancel ([this]
+    {
+        irSynthComponent.setVisible (false);
+        setMainPanelControlsVisible (true);
+    });
+
     // Sliders - rotary style
     auto makeSlider = [this] (juce::Slider& s, const juce::String& name)
     {
@@ -137,6 +173,17 @@ PingEditor::PingEditor (PingProcessor& p)
     irInputDriveSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xffe53935));
     irInputDriveSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xffe53935));
 
+    auto makeHorizontalSlider = [this] (juce::Slider& s)
+    {
+        addAndMakeVisible (s);
+        s.setSliderStyle (juce::Slider::LinearHorizontal);
+        s.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+        s.setColour (juce::Slider::thumbColourId, accent);
+        s.setColour (juce::Slider::trackColourId, panelBorder);
+    };
+    makeHorizontalSlider (erLevelSlider);
+    makeHorizontalSlider (tailLevelSlider);
+
     dryWetSlider.setRange (0.0, 1.0, 0.01);
     predelaySlider.setRange (0.0, 500.0, 1.0);
     decaySlider.setRange (0.0, 1.0, 0.01);
@@ -149,6 +196,8 @@ PingEditor::PingEditor (PingProcessor& p)
     tailRateSlider.setRange (0.05f, 3.0f, 0.01f);
     irInputGainSlider.setRange (-24.0, 12.0, 0.5);
     irInputDriveSlider.setRange (0.0, 1.0, 0.01);
+    erLevelSlider.setRange (-48.0, 6.0, 0.1);
+    tailLevelSlider.setRange (-48.0, 6.0, 0.1);
 
     dryWetAttach    = std::make_unique<SliderAttachment> (apvts, "drywet",   dryWetSlider);
     predelayAttach  = std::make_unique<SliderAttachment> (apvts, "predelay", predelaySlider);
@@ -162,6 +211,8 @@ PingEditor::PingEditor (PingProcessor& p)
     tailRateAttach  = std::make_unique<SliderAttachment> (apvts, "tailrate", tailRateSlider);
     irInputGainAttach  = std::make_unique<SliderAttachment> (apvts, "inputGain", irInputGainSlider);
     irInputDriveAttach = std::make_unique<SliderAttachment> (apvts, "irInputDrive", irInputDriveSlider);
+    erLevelAttach   = std::make_unique<SliderAttachment> (apvts, "erLevel", erLevelSlider);
+    tailLevelAttach = std::make_unique<SliderAttachment> (apvts, "tailLevel", tailLevelSlider);
 
     setLookAndFeel (&pingLook);
 
@@ -169,7 +220,8 @@ PingEditor::PingEditor (PingProcessor& p)
     for (auto* label : { &dryWetLabel, &predelayLabel, &decayLabel, &modDepthLabel,
                         &stretchLabel, &widthLabel, &modRateLabel,
                         &tailModLabel, &delayDepthLabel, &tailRateLabel,
-                        &irInputGainLabel, &irInputDriveLabel })
+                        &irInputGainLabel, &irInputDriveLabel,
+                        &erLevelLabel, &tailLevelLabel })
     {
         addAndMakeVisible (label);
         label->setJustificationType (juce::Justification::centred);
@@ -191,11 +243,14 @@ PingEditor::PingEditor (PingProcessor& p)
     irInputGainLabel.setFont (juce::FontOptions (9.0f));
     irInputDriveLabel.setText ("IR INPUT DRIVE", juce::dontSendNotification);
     irInputDriveLabel.setFont (juce::FontOptions (9.0f));
+    erLevelLabel.setText ("ER", juce::dontSendNotification);
+    tailLevelLabel.setText ("Tail", juce::dontSendNotification);
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
                      &tailModReadout, &delayDepthReadout, &tailRateReadout,
-                     &irInputGainReadout, &irInputDriveReadout })
+                     &irInputGainReadout, &irInputDriveReadout,
+                     &erLevelReadout, &tailLevelReadout })
     {
         addAndMakeVisible (r);
         r->setJustificationType (juce::Justification::centred);
@@ -295,6 +350,10 @@ void PingEditor::resized()
     if (licenceScreen.isVisible())
         licenceScreen.toFront (true);
 
+    irSynthComponent.setBounds (getLocalBounds());
+    if (irSynthComponent.isVisible())
+        irSynthComponent.toFront (true);
+
     int w = getWidth();
     int h = getHeight();
     auto b = getLocalBounds().reduced (juce::jmin (12, w / 76), juce::jmin (12, h / 38));
@@ -311,8 +370,9 @@ void PingEditor::resized()
     const int gapV = (int) (0.01f * h) + (int) (0.008f * h);
     const int marginV = juce::jmin (12, h / 38);
     const int availableForMainAndEq = h - 2 * marginV - topRowH - gapV;
-    const int mainHClamped = juce::jmax (3 * sixRowH, availableForMainAndEq - eqHeight);
-    const int mainHeight = juce::jmin (mainHClamped, availableForMainAndEq - eqHeight - 6);
+    const int erTailRowH = 28;
+    const int mainHClamped = juce::jmax (3 * sixRowH, availableForMainAndEq - eqHeight - erTailRowH);
+    const int mainHeight = juce::jmin (mainHClamped, availableForMainAndEq - eqHeight - erTailRowH - 6);
 
     // —— Top row: Spitfire (left) | Preset menu (center, greyed - key menu) | P!NG (right) ——
     auto topRow = b.removeFromTop (topRowH);
@@ -377,8 +437,16 @@ void PingEditor::resized()
     dryWetLabel.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + 2, bigKnobSize, labelH);
     dryWetReadout.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + labelH + 2, bigKnobSize, readoutH);
 
-    irCombo.setBounds (presetCenterX - irComboW / 2, dryWetReadout.getBottom() + 6, irComboW, irComboH);
-    dryWetSlider.toFront (false);
+    // IR combo + IR Synth: align IR Synth right edge with waveform left edge
+    const int irSynthW = 64;
+    const int irGap = 6;
+    int irSynthX = waveformComponent.getX() - irSynthW;
+    int irComboX = irSynthX - irGap - irComboW;
+    int irRowY = dryWetReadout.getBottom() + 6;
+    irCombo.setBounds (irComboX, irRowY, irComboW, irComboH);
+    irSynthButton.setBounds (irSynthX, irRowY, irSynthW, irComboH);
+    if (! irSynthComponent.isVisible())
+        dryWetSlider.toFront (false);
     int y = mainArea.getY();
 
     decaySlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
@@ -427,7 +495,27 @@ void PingEditor::resized()
 
     b.removeFromTop ((int) (0.008f * h));
 
-    // —— Bottom: EQ (right), expanded so graph isn't squashed ——
+    // —— ER/Tail sliders: between waveform and EQ, within waveform width, side by side ——
+    auto erTailRow = b.removeFromTop (erTailRowH);
+    int sliderAreaX = erTailRow.getX() + erTailRow.getWidth() - wavePanelW;  // align with waveform
+    int sliderAreaW = wavePanelW;
+    int sliderH = 18;
+    int labelW = 28;
+    int readoutW = 38;
+    int gap = 8;
+    int halfW = (sliderAreaW - gap) / 2;
+    int eachSliderW = halfW - labelW - readoutW - gap;
+
+    erLevelLabel.setBounds (sliderAreaX, erTailRow.getY(), labelW, sliderH);
+    erLevelSlider.setBounds (erLevelLabel.getRight() + gap, erTailRow.getY(), eachSliderW, sliderH);
+    erLevelReadout.setBounds (erLevelSlider.getRight() + gap, erTailRow.getY(), readoutW, sliderH);
+
+    int tailX = sliderAreaX + halfW + gap;
+    tailLevelLabel.setBounds (tailX, erTailRow.getY(), labelW, sliderH);
+    tailLevelSlider.setBounds (tailLevelLabel.getRight() + gap, erTailRow.getY(), eachSliderW, sliderH);
+    tailLevelReadout.setBounds (tailLevelSlider.getRight() + gap, erTailRow.getY(), readoutW, sliderH);
+
+    // —— Bottom: EQ (right) ——
     int eqWidth = juce::jmax (420, (int) (0.62f * w));
     auto bottomRow = b.removeFromBottom (eqHeight);
     auto eqRect = bottomRow.removeFromRight (eqWidth);
@@ -491,6 +579,13 @@ void PingEditor::loadPreset (const juce::String& name)
     }
 }
 
+void PingEditor::setMainPanelControlsVisible (bool visible)
+{
+    dryWetSlider.setVisible (visible);
+    dryWetLabel.setVisible (visible);
+    dryWetReadout.setVisible (visible);
+}
+
 void PingEditor::savePreset (const juce::String& name)
 {
     juce::MemoryBlock data;
@@ -541,6 +636,11 @@ void PingEditor::updateAllReadouts()
     tailRateReadout.setText (juce::String (v ("tailrate"), 2) + " Hz", juce::dontSendNotification);
     irInputGainReadout.setText (juce::String (juce::roundToInt (v ("inputGain"))) + " dB", juce::dontSendNotification);
     irInputDriveReadout.setText (juce::String (juce::roundToInt (v ("irInputDrive") * 100)) + "%", juce::dontSendNotification);
+
+    float erDb = v ("erLevel");
+    float tailDb = v ("tailLevel");
+    erLevelReadout.setText (erDb <= -47.0f ? "-inf dB" : juce::String (juce::roundToInt (erDb)) + " dB", juce::dontSendNotification);
+    tailLevelReadout.setText (tailDb <= -47.0f ? "-inf dB" : juce::String (juce::roundToInt (tailDb)) + " dB", juce::dontSendNotification);
 }
 
 void PingEditor::refreshIRList()
