@@ -7,8 +7,9 @@ const char* EQGraphComponent::bandIds[3][3] = {
     { "b2freq", "b2gain", "b2q" }
 };
 
-EQGraphComponent::EQGraphComponent (juce::AudioProcessorValueTreeState& state)
-    : apvts (state)
+EQGraphComponent::EQGraphComponent (juce::AudioProcessorValueTreeState& state, PingProcessor* proc)
+    : apvts (state),
+      processor (proc)
 {
     juce::Colour textCol (0xffe0e0e0);
     juce::Colour boxBg (0xff2a2a2a);
@@ -78,7 +79,15 @@ EQGraphComponent::EQGraphComponent (juce::AudioProcessorValueTreeState& state)
     addBandButton (band2Button, 1);
     addBandButton (band3Button, 2);
 
-    startTimerHz (20);
+    if (processor)
+    {
+        forwardFFT = std::make_unique<juce::dsp::FFT> (spectrumFftOrder);
+        spectrumWindow = std::make_unique<juce::dsp::WindowingFunction<float>> (spectrumFftSize, juce::dsp::WindowingFunction<float>::hann);
+        spectrumFftData.resize (spectrumFftSize * 2, 0.0f);
+        spectrumScopeData.resize (spectrumScopeSize, 0.0f);
+    }
+
+    startTimerHz (30);
 }
 
 static constexpr int bandButtonRowH = 20;
@@ -104,6 +113,32 @@ void EQGraphComponent::paint (juce::Graphics& g)
     auto inner = graphArea.reduced (margin);
     float w = inner.getWidth();
     float h = inner.getHeight();
+
+    // Live spectrum display (wet signal) — 2x width, full height, anchored bottom-left, clipped to EQ area
+    if (processor && ! spectrumScopeData.empty())
+    {
+        float specW = (float) graphArea.getWidth() * 2.0f;
+        float specH = (float) graphArea.getHeight();
+        float specLeft = (float) graphArea.getX();
+        float specBottom = (float) graphArea.getBottom();
+        juce::Path spectrumPath;
+        spectrumPath.startNewSubPath (specLeft, specBottom);
+        for (int i = 0; i < spectrumScopeSize; ++i)
+        {
+            float normX = (i < spectrumScopeSize - 1) ? (float) i / (float) (spectrumScopeSize - 1) : 1.0f;
+            float x = specLeft + normX * specW;
+            float level = juce::jlimit (0.0f, 1.0f, spectrumScopeData[(size_t) i] * 2.0f);
+            float y = specBottom - level * specH;
+            spectrumPath.lineTo (x, y);
+        }
+        spectrumPath.lineTo (specLeft + specW, specBottom);
+        spectrumPath.closeSubPath();
+        g.saveState();
+        g.reduceClipRegion (graphArea.toNearestInt());
+        g.setColour (juce::Colour (0xff505050).withAlpha (0.55f));
+        g.fillPath (spectrumPath);
+        g.restoreState();
+    }
 
     g.setColour (juce::Colour (0xff2a2a2a));
     for (int i = 1; i <= 4; ++i)
@@ -223,8 +258,39 @@ void EQGraphComponent::syncSlidersFromParams()
         qSlider.setValue (q, juce::dontSendNotification);
 }
 
+void EQGraphComponent::drawNextFrameOfSpectrum()
+{
+    if (! processor || ! forwardFFT || spectrumFftData.size() < (size_t) spectrumFftSize * 2)
+        return;
+    int n = processor->pullSpectrumSamples (spectrumFftData.data(), spectrumFftSize);
+    if (n == 0) return;
+
+    spectrumWindow->multiplyWithWindowingTable (spectrumFftData.data(), spectrumFftSize);
+    for (size_t i = (size_t) spectrumFftSize; i < spectrumFftData.size(); ++i)
+        spectrumFftData[i] = 0.0f;
+    forwardFFT->performFrequencyOnlyForwardTransform (spectrumFftData.data());
+
+    const float mindB = -60.0f;
+    const float maxdB = 0.0f;
+    for (int i = 0; i < spectrumScopeSize; ++i)
+    {
+        float skew = 1.0f - std::exp (std::log (1.0f - (float) i / (float) spectrumScopeSize) * 0.2f);
+        int fftIndex = juce::jlimit (0, spectrumFftSize / 2, (int) (skew * (float) spectrumFftSize * 0.5f));
+        float mag = spectrumFftData[(size_t) fftIndex];
+        float levelDb = juce::Decibels::gainToDecibels (mag) - juce::Decibels::gainToDecibels ((float) spectrumFftSize);
+        float level = juce::jmap (juce::jlimit (mindB, maxdB, levelDb), mindB, maxdB, 0.0f, 1.0f);
+        spectrumScopeData[(size_t) i] = level;
+    }
+}
+
 void EQGraphComponent::timerCallback()
 {
+    if (processor && forwardFFT)
+    {
+        drawNextFrameOfSpectrum();
+        repaint();  // spectrum and band buttons both need updates
+    }
+
     juce::Colour boxBg (0xff2a2a2a);
     juce::Colour accent (0xffe8a84a);
     for (int i = 0; i < numBands; ++i)

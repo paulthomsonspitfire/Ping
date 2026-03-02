@@ -134,7 +134,12 @@ std::vector<double> IRSynthEngine::calcRT60 (const IRSynthParams& p)
     auto mwIt = mats.find(p.wall_material);
     const auto& mf = mfIt != mats.end() ? mfIt->second : mats.find("Hardwood floor")->second;
     const auto& mc = mcIt != mats.end() ? mcIt->second : mats.find("Acoustic ceiling tile")->second;
-    const auto& mw = mwIt != mats.end() ? mwIt->second : mats.find("Painted plaster")->second;
+    const auto& mw_base = mwIt != mats.end() ? mwIt->second : mats.find("Painted plaster")->second;
+    const auto& mw_glass = mats.find("Glass (large pane)")->second;
+    std::array<double,6> mw;
+    double wf = std::max(0.0, std::min(1.0, p.window_fraction));
+    for (int i = 0; i < 6; ++i)
+        mw[i] = (1.0 - wf) * mw_base[i] + wf * mw_glass[i];
 
     std::vector<double> rt60(6);
     for (int i = 0; i < 6; ++i)
@@ -529,6 +534,19 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
         return r;
     };
     auto rF = rc(p.floor_material), rC = rc(p.ceiling_material), rW = rc(p.wall_material);
+    if (p.window_fraction > 1e-9)
+    {
+        auto mwIt = mats.find(p.wall_material);
+        auto mgIt = mats.find("Glass (large pane)");
+        const auto& aw = mwIt != mats.end() ? mwIt->second : mats.find("Painted plaster")->second;
+        const auto& ag = mgIt != mats.end() ? mgIt->second : aw;
+        double wf = std::max(0.0, std::min(1.0, p.window_fraction));
+        for (int i = 0; i < 6; ++i)
+        {
+            double a_blend = (1.0 - wf) * aw[i] + wf * ag[i];
+            rW[i] = std::sqrt(1.0 - a_blend);
+        }
+    }
 
     report(0.05, "Computing image sources…");
 

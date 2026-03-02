@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">
+  <!-- Outer track -->
+  <circle cx="40" cy="40" r="38" fill="none" stroke="#3a3a3a" stroke-width="1.2"/>
+  <!-- Filled arc -->
+  <path d="M 40 2 A 38 38 0 0 1 40 40" fill="none" stroke="#e8a84a" stroke-width="1.2" stroke-linecap="round"/>
+  <!-- Inner dark centre -->
+  <circle cx="40" cy="40" r="20" fill="#1a1a1a"/>
+  <!-- Thumb dot -->
+  <circle cx="40" cy="8" r="4" fill="#ffffff"/>
+  <!-- Dotted ring (optional) -->
+  <g fill="#3a3a3a" opacity="0.5">
+    <circle cx="40" cy="28" r="0.8"/><circle cx="43" cy="27" r="0.8"/><circle cx="46" cy="26" r="0.8"/>
+    <circle cx="48" cy="28" r="0.8"/><circle cx="49" cy="31" r="0.8"/><circle cx="50" cy="34" r="0.8"/>
+  </g>
+</svg>

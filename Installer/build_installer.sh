@@ -18,16 +18,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Check build exists
-AU_PLUGIN="$BUILD_DIR/Ping_artefacts/Release/AU/P!NG.component"
-VST3_PLUGIN="$BUILD_DIR/Ping_artefacts/Release/VST3/P!NG.vst3"
-
-if [[ ! -d "$AU_PLUGIN" ]]; then
+# Check build exists (JUCE may output to Release/ or directly under Ping_artefacts)
+if [[ -d "$BUILD_DIR/Ping_artefacts/Release/AU/P!NG.component" ]]; then
+    AU_PLUGIN="$BUILD_DIR/Ping_artefacts/Release/AU/P!NG.component"
+    VST3_PLUGIN="$BUILD_DIR/Ping_artefacts/Release/VST3/P!NG.vst3"
+elif [[ -d "$BUILD_DIR/Ping_artefacts/AU/P!NG.component" ]]; then
+    AU_PLUGIN="$BUILD_DIR/Ping_artefacts/AU/P!NG.component"
+    VST3_PLUGIN="$BUILD_DIR/Ping_artefacts/VST3/P!NG.vst3"
+else
     echo "Error: AU plugin not found. Build first: cmake --build build"
     exit 1
 fi
 if [[ ! -d "$VST3_PLUGIN" ]]; then
-    echo "Error: VST3 plugin not found. Build first: cmake --build build"
+    echo "Error: VST3 plugin not found at $VST3_PLUGIN"
     exit 1
 fi
 

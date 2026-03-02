@@ -83,6 +83,8 @@ private:
     // Surfaces (Character tab)
     juce::ComboBox floorCombo, ceilingCombo, wallCombo;
     juce::Label floorLabel, ceilingLabel, wallLabel;
+    juce::Slider windowsSlider;
+    juce::Label windowsLabel, windowsReadout;
 
     // Contents (Character tab)
     juce::Slider audienceSlider, diffusionSlider;

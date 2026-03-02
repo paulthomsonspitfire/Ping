@@ -19,6 +19,7 @@ struct IRSynthParams
     std::string floor_material   = "Hardwood floor";
     std::string ceiling_material = "Acoustic ceiling tile";
     std::string wall_material    = "Painted plaster";
+    double window_fraction       = 0.0;   // 0..1 fraction of wall area that is glazing (brick + glass blend)
 
     // Contents
     double audience  = 0.0;   // 0..1

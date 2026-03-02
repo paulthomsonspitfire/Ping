@@ -42,7 +42,7 @@ private:
     juce::ComboBox presetCombo;
     juce::TextButton savePresetButton { "Save" };
     juce::TextButton reverseButton { "REVERSE" };
-    juce::TextButton irSynthButton { "IR Synth" };
+    juce::TextButton irSynthButton { "IR SYNTH" };
 
     juce::Slider dryWetSlider;
     juce::Slider predelaySlider, decaySlider, modDepthSlider;

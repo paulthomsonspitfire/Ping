@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="18" viewBox="0 0 120 18">
+  <!-- Track background -->
+  <rect x="2" y="6" width="116" height="6" rx="3" fill="#3a3a3a"/>
+  <!-- Fill (40% example) -->
+  <rect x="2" y="6" width="46" height="6" rx="3" fill="#e8a84a"/>
+  <!-- Thumb -->
+  <rect x="44" y="3" width="8" height="12" rx="2" fill="#e8a84a"/>
+</svg>

@@ -105,6 +105,13 @@ IRSynthComponent::IRSynthComponent()
     floorLabel.setText ("Floor", juce::dontSendNotification);
     ceilingLabel.setText ("Ceiling", juce::dontSendNotification);
     wallLabel.setText ("Walls", juce::dontSendNotification);
+    windowsSlider.setRange (0.0, 1.0, 0.01);
+    windowsSlider.setValue (0.0);
+    windowsSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    windowsSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+    windowsSlider.setColour (juce::Slider::thumbColourId, accent);
+    windowsSlider.setColour (juce::Slider::trackColourId, panelBorder);
+    windowsLabel.setText ("Windows", juce::dontSendNotification);
     // Contents
     audienceSlider.setRange (0.0, 1.0, 0.01);
     diffusionSlider.setRange (0.0, 1.0, 0.01);
@@ -168,6 +175,9 @@ IRSynthComponent::IRSynthComponent()
     characterContent.addAndMakeVisible (floorLabel);
     characterContent.addAndMakeVisible (ceilingLabel);
     characterContent.addAndMakeVisible (wallLabel);
+    characterContent.addAndMakeVisible (windowsSlider);
+    characterContent.addAndMakeVisible (windowsLabel);
+    characterContent.addAndMakeVisible (windowsReadout);
     characterContent.addAndMakeVisible (audienceSlider);
     characterContent.addAndMakeVisible (diffusionSlider);
     characterContent.addAndMakeVisible (audienceLabel);
@@ -253,7 +263,7 @@ IRSynthComponent::IRSynthComponent()
     doneButton.setColour (juce::TextButton::textColourOffId, textDim);
 
     for (auto* l : { &widthLabel, &depthLabel, &heightLabel, &widthValueLabel, &depthValueLabel, &heightValueLabel,
-                     &floorLabel, &ceilingLabel, &wallLabel,
+                     &floorLabel, &ceilingLabel, &wallLabel, &windowsLabel,
                      &audienceLabel, &diffusionLabel, &vaultLabel, &organLabel, &balconiesLabel,
                      &micPatternLabel, &sampleRateLabel })
         l->setColour (juce::Label::textColourId, textDim);
@@ -371,7 +381,8 @@ void IRSynthComponent::layoutCharacterTab (juce::Rectangle<int> b)
     // Surfaces — narrow combos
     rowCombo (y, floorLabel, floorCombo);    y += rowH;
     rowCombo (y, ceilingLabel, ceilingCombo); y += rowH;
-    rowCombo (y, wallLabel, wallCombo);      y += rowH + secPad;
+    rowCombo (y, wallLabel, wallCombo);      y += rowH;
+    rowSlider (y, windowsLabel, windowsSlider, windowsReadout); y += rowH + secPad;
 
     // Contents — narrow sliders
     rowSlider (y, audienceLabel, audienceSlider, audienceReadout);  y += rowH;
@@ -443,6 +454,7 @@ IRSynthParams IRSynthComponent::getParams() const
     p.floor_material = comboSelection (floorCombo, materialOptions, 14).toStdString();
     p.ceiling_material = comboSelection (ceilingCombo, materialOptions, 14).toStdString();
     p.wall_material = comboSelection (wallCombo, materialOptions, 14).toStdString();
+    p.window_fraction = windowsSlider.getValue();
     p.audience = audienceSlider.getValue();
     p.diffusion = diffusionSlider.getValue();
     p.vault_type = comboSelection (vaultCombo, vaultOptions, 6).toStdString();
@@ -471,6 +483,8 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     setComboTo (floorCombo, p.floor_material, materialOptions, 14);
     setComboTo (ceilingCombo, p.ceiling_material, materialOptions, 14);
     setComboTo (wallCombo, p.wall_material, materialOptions, 14);
+    windowsSlider.setValue (p.window_fraction, juce::dontSendNotification);
+    windowsReadout.setText (juce::String (juce::roundToInt (p.window_fraction * 100)) + "%", juce::dontSendNotification);
     audienceSlider.setValue (p.audience, juce::dontSendNotification);
     diffusionSlider.setValue (p.diffusion, juce::dontSendNotification);
     setComboTo (vaultCombo, p.vault_type, vaultOptions, 6);
@@ -497,6 +511,7 @@ void IRSynthComponent::timerCallback()
     if (! heightValueLabel.hasKeyboardFocus (true))
         heightValueLabel.setText (juce::String (heightSlider.getValue(), 1), juce::dontSendNotification);
     floorPlanComponent.repaint();
+    windowsReadout.setText (juce::String (juce::roundToInt (windowsSlider.getValue() * 100)) + "%", juce::dontSendNotification);
     audienceReadout.setText (juce::String (audienceSlider.getValue(), 2), juce::dontSendNotification);
     diffusionReadout.setText (juce::String (diffusionSlider.getValue(), 2), juce::dontSendNotification);
     organReadout.setText (juce::String (organSlider.getValue(), 2), juce::dontSendNotification);

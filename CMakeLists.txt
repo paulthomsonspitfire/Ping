@@ -31,11 +31,15 @@ if(APPLE)
     set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY JUCE_VST3_COPY_DIR  "/Library/Audio/Plug-Ins/VST3")
 endif()
 
-# libsodium for licence verification
+# libsodium for licence verification — MUST use static .a so plugin works without Homebrew on user machines
 find_path(SODIUM_INCLUDE_DIR sodium.h
     HINTS /opt/homebrew/opt/libsodium/include /usr/local/include)
+# Prefer static .a over .dylib (avoids runtime dependency on /opt/homebrew/...)
+set(CMAKE_FIND_LIBRARY_SUFFIXES_BACKUP "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".dylib" ".so")
 find_library(SODIUM_LIBRARY sodium
     HINTS /opt/homebrew/opt/libsodium/lib /usr/local/lib)
+set(CMAKE_FIND_LIBRARY_SUFFIXES "${CMAKE_FIND_LIBRARY_SUFFIXES_BACKUP}")
 if(NOT SODIUM_INCLUDE_DIR OR NOT SODIUM_LIBRARY)
     message(FATAL_ERROR "libsodium not found. Install with: brew install libsodium")
 endif()
@@ -63,8 +67,8 @@ juce_add_binary_data(PingData
     SOURCES
         Resources/ping_logo.png
         Resources/spitfire_logo.png
-        Resources/drywet_legend.png
         Resources/reverse_button.png
+        Resources/reverse_button_glow.png
 )
 
 target_sources(Ping

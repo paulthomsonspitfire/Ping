@@ -1,56 +1,118 @@
 #include "PingLookAndFeel.h"
 #include "PingBinaryData.h"
 
-static const juce::Colour reverseRedFill { 0xffb83030 };
+static const juce::Colour reverseRedFill   { 0xffb83030 };
+static const juce::Colour reverseRedGlow   { 0xffe04040 };
+static const juce::Colour buttonBgDark     { 0xff1a1a1a };
+static const juce::Colour buttonBorder     { 0xff2a2a2a };
+static const juce::Colour accentOrange     { 0xffe8a84a };
 
 PingLookAndFeel::PingLookAndFeel() {}
 
 void PingLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button,
                                             const juce::Colour& bg, bool isOver, bool isDown)
 {
-    if (button.getComponentID() != "Reverse")
-    {
-        juce::LookAndFeel_V4::drawButtonBackground (g, button, bg, isOver, isDown);
-        return;
-    }
+    juce::String id = button.getComponentID();
     auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
     const float corner = 6.0f;
-    bool engaged = button.getToggleState();
-    if (engaged)
+
+    if (id == "Reverse")
     {
-        g.setColour (reverseRedFill);
-        g.fillRoundedRectangle (bounds, corner);
-        g.setColour (reverseRedFill.darker (0.3f));
-        g.drawRoundedRectangle (bounds, corner, 1.8f);
-    }
-    else
-    {
-        auto img = juce::ImageCache::getFromMemory (BinaryData::reverse_button_png, BinaryData::reverse_button_pngSize);
-        if (img.isValid())
-            g.drawImageWithin (img, (int) bounds.getX(), (int) bounds.getY(), (int) bounds.getWidth(), (int) bounds.getHeight(), juce::RectanglePlacement::stretchToFit);
+        bool engaged = button.getToggleState();
+        if (engaged)
+        {
+            // Red glow (soft shadow) for active state — red (not orange)
+            juce::DropShadow redGlow (reverseRedGlow, 14, { 0, 1 });
+            juce::Path p;
+            p.addRoundedRectangle (bounds, corner);
+            redGlow.drawForPath (g, p);
+
+            g.setColour (reverseRedFill);
+            g.fillRoundedRectangle (bounds, corner);
+            g.setColour (reverseRedFill.darker (0.2f));
+            g.drawRoundedRectangle (bounds, corner, 1.5f);
+
+            // Glowing version of Reverse icon for active state
+            auto img = juce::ImageCache::getFromMemory (BinaryData::reverse_button_glow_png, BinaryData::reverse_button_glow_pngSize);
+            if (img.isValid())
+                g.drawImageWithin (img, (int) bounds.getX(), (int) bounds.getY(),
+                                   (int) bounds.getWidth(), (int) bounds.getHeight(),
+                                   juce::RectanglePlacement::stretchToFit);
+        }
         else
         {
-            g.setColour (juce::Colour (0xff1a1a1a));
+            g.setColour (buttonBgDark);
             g.fillRoundedRectangle (bounds, corner);
-            g.setColour (juce::Colour (0xff8b2020));
-            g.drawRoundedRectangle (bounds, corner, 1.8f);
+            g.setColour (buttonBorder);
+            g.drawRoundedRectangle (bounds, corner, 1.2f);
+
+            auto img = juce::ImageCache::getFromMemory (BinaryData::reverse_button_png, BinaryData::reverse_button_pngSize);
+            if (img.isValid())
+                g.drawImageWithin (img, (int) bounds.getX(), (int) bounds.getY(),
+                                   (int) bounds.getWidth(), (int) bounds.getHeight(),
+                                   juce::RectanglePlacement::stretchToFit);
+            else
+            {
+                g.setColour (juce::Colour (0xff8b2020));
+                g.drawRoundedRectangle (bounds, corner, 1.8f);
+            }
         }
+        return;
     }
+
+    if (id == "SavePreset")
+    {
+        juce::Colour fill = button.findColour (juce::TextButton::buttonColourId);
+        if (isOver || isDown) fill = fill.brighter (isDown ? 0.1f : 0.05f);
+        g.setColour (fill);
+        g.fillRoundedRectangle (bounds, corner);
+        g.setColour (buttonBorder);
+        g.drawRoundedRectangle (bounds, corner, 1.2f);
+        return;
+    }
+
+    if (id == "IRSynth")
+    {
+        juce::Colour fill = button.findColour (juce::TextButton::buttonColourId);
+        if (isOver || isDown) fill = fill.brighter (isDown ? 0.1f : 0.05f);
+        g.setColour (fill);
+        g.fillRoundedRectangle (bounds, corner);
+        g.setColour ((isOver || isDown) ? accentOrange : buttonBorder);
+        g.drawRoundedRectangle (bounds, corner, 1.2f);
+        return;
+    }
+
+    juce::LookAndFeel_V4::drawButtonBackground (g, button, bg, isOver, isDown);
 }
 
 void PingLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button,
-                                      bool, bool)
+                                      bool isOver, bool isDown)
 {
-    if (button.getComponentID() != "Reverse")
+    juce::String id = button.getComponentID();
+
+    if (id == "Reverse")
     {
-        juce::LookAndFeel_V4::drawButtonText (g, button, false, false);
+        // Both inactive and active states use full button images (reverse_button / reverse_button_glow)
         return;
     }
-    if (! button.getToggleState())
+
+    if (id == "SavePreset")
+    {
+        g.setColour (button.findColour (juce::TextButton::textColourOffId));
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText (button.getButtonText(), button.getLocalBounds(), juce::Justification::centred, true);
         return;
-    g.setColour (juce::Colours::white);
-    g.setFont (juce::FontOptions (12.0f).withStyle ("Bold"));
-    g.drawText (button.getButtonText(), button.getLocalBounds(), juce::Justification::centred, true);
+    }
+
+    if (id == "IRSynth")
+    {
+        g.setColour (button.findColour (juce::TextButton::textColourOffId));
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText (button.getButtonText(), button.getLocalBounds(), juce::Justification::centred, true);
+        return;
+    }
+
+    juce::LookAndFeel_V4::drawButtonText (g, button, isOver, isDown);
 }
 
 void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
@@ -63,64 +125,48 @@ void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wid
     float centreY = bounds.getCentreY();
     float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
 
-    const bool isBigKnob = (width >= 72);
     juce::Colour fill = slider.findColour (juce::Slider::rotarySliderFillColourId);
-    juce::Colour thumb = slider.findColour (juce::Slider::thumbColourId);
 
-    if (isBigKnob)
+    const float knobRadius = radius - 2.0f;
+    const float shadowOffset = 2.5f;
+
+    // Soft shadow (below and to the right)
+    g.setColour (juce::Colour (0x28000000));
+    g.fillEllipse (centreX - knobRadius + shadowOffset, centreY - knobRadius + shadowOffset,
+                   knobRadius * 2.1f, knobRadius * 2.1f);
+
+    // Knob body — radial gradient for convex 3D gloss (lighter centre, darker edge)
+    juce::ColourGradient grad (knobBodyLight, centreX - knobRadius * 0.3f, centreY - knobRadius * 0.3f,
+                               knobBodyDark, centreX + knobRadius, centreY + knobRadius, true);
+    g.setGradientFill (grad);
+    g.fillEllipse (centreX - knobRadius, centreY - knobRadius, knobRadius * 2, knobRadius * 2);
+
+    // Subtle edge darkening for depth
+    g.setColour (juce::Colour (0x18000000));
+    g.drawEllipse (centreX - knobRadius, centreY - knobRadius, knobRadius * 2, knobRadius * 2, 1.0f);
+
+    // Dotted ring around perimeter — orange for active range, grey for inactive
+    const int numDots = (width >= 72) ? 36 : 28;
+    const float dotRadius = (width >= 72) ? 1.8f : 1.4f;
+    const float dotDist = knobRadius - 4.0f;
+
+    for (int i = 0; i < numDots; ++i)
     {
-        float outerRadius = radius;
-        float innerRadius = radius * 0.52f;
-        float lineW = 1.2f;
+        float a = rotaryStartAngle + (float) i / (float) numDots * (rotaryEndAngle - rotaryStartAngle);
+        bool inActiveRange = (rotaryStartAngle <= rotaryEndAngle) ? (a >= rotaryStartAngle && a <= angle)
+                                                                 : (a <= rotaryStartAngle && a >= angle);
 
-        g.setColour (trackColour);
-        g.drawEllipse (centreX - outerRadius, centreY - outerRadius, outerRadius * 2, outerRadius * 2, lineW);
-
-        g.setColour (fill);
-        juce::Path arc;
-        arc.addCentredArc (centreX, centreY, outerRadius - lineW * 0.5f, outerRadius - lineW * 0.5f, 0,
-                           rotaryStartAngle, angle, true);
-        g.strokePath (arc, juce::PathStrokeType (lineW));
-
-        float dotRadius = 4.0f;
-        float dotDist = innerRadius + (outerRadius - innerRadius) * 0.5f;
-        float dotX = centreX + dotDist * std::sin (angle);
-        float dotY = centreY - dotDist * std::cos (angle);
-        g.setColour (thumb);
-        g.fillEllipse (dotX - dotRadius, dotY - dotRadius, dotRadius * 2, dotRadius * 2);
-
-        float centreRadius = innerRadius * 0.85f;
-        g.setColour (centreDark);
-        g.fillEllipse (centreX - centreRadius, centreY - centreRadius, centreRadius * 2, centreRadius * 2);
-        g.setColour (trackColour.withAlpha (0.5f));
-        for (int i = 0; i < 24; ++i)
-        {
-            float a = (float) i * (juce::MathConstants<float>::twoPi / 24.0f);
-            float r = centreRadius * (0.7f + 0.15f * (float) (i % 3) / 2.0f);
-            float px = centreX + r * std::sin (a);
-            float py = centreY - r * std::cos (a);
-            g.fillEllipse (px - 0.8f, py - 0.8f, 1.6f, 1.6f);
-        }
+        g.setColour (inActiveRange ? fill : trackColour.withAlpha (0.6f));
+        float px = centreX + dotDist * std::sin (a);
+        float py = centreY - dotDist * std::cos (a);
+        g.fillEllipse (px - dotRadius, py - dotRadius, dotRadius * 2, dotRadius * 2);
     }
-    else
+
+    // Dry/Wet knob: centre label text (same style as other knob labels)
+    if (slider.getComponentID() == "DryWet")
     {
-        float trackRadius = radius - 3.0f;
-        float lineW = 1.2f;
-
-        g.setColour (trackColour);
-        g.drawEllipse (centreX - trackRadius, centreY - trackRadius, trackRadius * 2, trackRadius * 2, lineW);
-
-        g.setColour (fill);
-        juce::Path arc;
-        arc.addCentredArc (centreX, centreY, trackRadius - lineW * 0.5f, trackRadius - lineW * 0.5f, 0,
-                           rotaryStartAngle, angle, true);
-        g.strokePath (arc, juce::PathStrokeType (lineW));
-
-        float dotRadius = 3.0f;
-        float dotDist = trackRadius - 2.0f;
-        float dotX = centreX + dotDist * std::sin (angle);
-        float dotY = centreY - dotDist * std::cos (angle);
-        g.setColour (thumb);
-        g.fillEllipse (dotX - dotRadius, dotY - dotRadius, dotRadius * 2, dotRadius * 2);
+        g.setColour (juce::Colour (0xffe8e8e8));
+        g.setFont (juce::FontOptions (12.0f));
+        g.drawText ("DRY/WET", bounds.toNearestInt(), juce::Justification::centred, true);
     }
 }

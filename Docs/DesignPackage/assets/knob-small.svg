@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <!-- Track circle -->
+  <circle cx="24" cy="24" r="21" fill="none" stroke="#3a3a3a" stroke-width="1.2"/>
+  <!-- Filled arc (0-75% for example) -->
+  <path d="M 24 3 A 21 21 0 0 1 24 24" fill="none" stroke="#e8a84a" stroke-width="1.2" stroke-linecap="round"/>
+  <!-- Thumb dot at 12 o'clock position -->
+  <circle cx="24" cy="6" r="3" fill="#ffffff"/>
+</svg>

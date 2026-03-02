@@ -47,7 +47,7 @@ PingEditor::PingEditor (PingProcessor& p)
     : AudioProcessorEditor (&p),
       pingProcessor (p),
       apvts (p.getAPVTS()),
-      eqGraph (p.getAPVTS()),
+      eqGraph (p.getAPVTS(), &p),
       waveformComponent (p)
 {
     setSize (editorW, editorH);
@@ -72,6 +72,7 @@ PingEditor::PingEditor (PingProcessor& p)
     presetCombo.setEditableText (true);
 
     addAndMakeVisible (savePresetButton);
+    savePresetButton.setComponentID ("SavePreset");
     savePresetButton.onClick = [this]
     {
         juce::String name = presetCombo.getText().trim();
@@ -97,6 +98,8 @@ PingEditor::PingEditor (PingProcessor& p)
     };
 
     addAndMakeVisible (irSynthButton);
+    irSynthButton.setComponentID ("IRSynth");
+    irSynthButton.setButtonText ("IR SYNTH");
     irSynthButton.setColour (juce::TextButton::buttonColourId, panelBg);
     irSynthButton.setColour (juce::TextButton::textColourOffId, textDim);
     irSynthButton.onClick = [this]
@@ -209,6 +212,7 @@ PingEditor::PingEditor (PingProcessor& p)
         s.setColour (juce::Slider::trackColourId, panelBorder);
     };
 
+    dryWetSlider.setComponentID ("DryWet");
     makeSlider (dryWetSlider, "Dry/Wet");
     makeSlider (predelaySlider, "Predelay");
     makeSlider (decaySlider, "Decay");
@@ -297,7 +301,7 @@ PingEditor::PingEditor (PingProcessor& p)
     irInputDriveLabel.setText ("IR INPUT DRIVE", juce::dontSendNotification);
     irInputDriveLabel.setFont (juce::FontOptions (9.0f));
     erLevelLabel.setText ("ER", juce::dontSendNotification);
-    tailLevelLabel.setText ("Tail", juce::dontSendNotification);
+    tailLevelLabel.setText ("TAIL", juce::dontSendNotification);
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
@@ -307,7 +311,7 @@ PingEditor::PingEditor (PingProcessor& p)
     {
         addAndMakeVisible (r);
         r->setJustificationType (juce::Justification::centred);
-        r->setColour (juce::Label::textColourId, textDim);
+        r->setColour (juce::Label::textColourId, accent);
         r->setFont (11.0f);
     }
 
@@ -384,16 +388,13 @@ void PingEditor::paint (juce::Graphics& g)
     {
         auto pingImg = juce::ImageCache::getFromMemory (BinaryData::ping_logo_png, BinaryData::ping_logo_pngSize);
         if (pingImg.isValid())
-            g.drawImageWithin (pingImg, pingBounds.getX(), pingBounds.getY(), pingBounds.getWidth(), pingBounds.getHeight(),
+        {
+            const int pw = pingBounds.getWidth() * 2;
+            const int ph = pingBounds.getHeight() * 2;
+            auto drawRect = juce::Rectangle<int> (pingBounds.getRight() - pw, pingBounds.getCentreY() - ph / 2, pw, ph);
+            g.drawImageWithin (pingImg, drawRect.getX(), drawRect.getY(), drawRect.getWidth(), drawRect.getHeight(),
                               juce::RectanglePlacement (juce::RectanglePlacement::xRight | juce::RectanglePlacement::yMid));
-    }
-
-    auto dryWetImg = juce::ImageCache::getFromMemory (BinaryData::drywet_legend_png, BinaryData::drywet_legend_pngSize);
-    if (dryWetImg.isValid())
-    {
-        auto r = dryWetLabel.getBounds();
-        if (r.getWidth() > 0 && r.getHeight() > 0)
-            g.drawImageWithin (dryWetImg, r.getX(), r.getY(), r.getWidth(), r.getHeight(), juce::RectanglePlacement::centred);
+        }
     }
 
 }
@@ -488,15 +489,15 @@ void PingEditor::resized()
     irInputDriveReadout.setBounds (irKnobsCenterX - irLabelW / 2, irInputDriveSlider.getBottom() + labelH + 2, irLabelW, readoutH);
 
     dryWetSlider.setBounds (presetCenterX - bigKnobSize / 2, cy, bigKnobSize, bigKnobSize);
-    dryWetLabel.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + 2, bigKnobSize, labelH);
-    dryWetReadout.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + labelH + 2, bigKnobSize, readoutH);
+    dryWetLabel.setBounds (0, 0, 0, 0);  // unused: "dry/wet" text is drawn in knob centre
+    dryWetReadout.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + 2, bigKnobSize, readoutH);
 
     // IR combo + IR Synth: align IR Synth right edge with waveform left edge
     const int irSynthW = 64;
     const int irGap = 6;
     int irSynthX = waveformComponent.getX() - irSynthW;
     int irComboX = irSynthX - irGap - irComboW;
-    int irRowY = dryWetReadout.getBottom() + 6;
+    int irRowY = dryWetReadout.getBottom() + 6 + labelH;  // +labelH restores space from removed dry/wet image
     irCombo.setBounds (irComboX, irRowY, irComboW, irComboH);
     irSynthButton.setBounds (irSynthX, irRowY, irSynthW, irComboH);
     if (! irSynthComponent.isVisible())

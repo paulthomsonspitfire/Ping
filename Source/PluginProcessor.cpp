@@ -451,6 +451,13 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         }
     }
 
+    // Push wet signal for spectrum analyser (before dry/wet mix)
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float s = (buffer.getSample (0, i) + (numChannels > 1 ? buffer.getSample (1, i) : 0.0f)) * 0.5f;
+        pushWetSampleForSpectrum (s);
+    }
+
     // Mix dry/wet: output = dry * dryBuffer + wet * wetBuffer (buffer is currently wet)
     float dry = dryGain.getGainLinear();
     float wet = wetGain.getGainLinear();
@@ -485,6 +492,27 @@ float PingProcessor::getOutputLevelDb (int channel) const
     float peak = peakStore->load();
     if (peak < 1e-6f) return -60.0f;
     return juce::Decibels::gainToDecibels (peak);
+}
+
+void PingProcessor::pushWetSampleForSpectrum (float s) noexcept
+{
+    if (spectrumBlockReady.load()) return;
+    spectrumFifo[spectrumFifoIndex++] = s;
+    if (spectrumFifoIndex >= spectrumFftSize)
+    {
+        juce::zeromem (spectrumFftData, sizeof (spectrumFftData));
+        memcpy (spectrumFftData, spectrumFifo, (size_t) spectrumFftSize * sizeof (float));
+        spectrumBlockReady.store (true);
+        spectrumFifoIndex = 0;
+    }
+}
+
+int PingProcessor::pullSpectrumSamples (float* dest, int maxSamples)
+{
+    if (! spectrumBlockReady.load() || maxSamples < spectrumFftSize) return 0;
+    memcpy (dest, spectrumFftData, (size_t) spectrumFftSize * sizeof (float));
+    spectrumBlockReady.store (false);
+    return spectrumFftSize;
 }
 
 void PingProcessor::updateGains()
@@ -816,6 +844,7 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("floor", juce::String (p.floor_material));
     ir->setAttribute ("ceiling", juce::String (p.ceiling_material));
     ir->setAttribute ("wall", juce::String (p.wall_material));
+    ir->setAttribute ("windows", p.window_fraction);
     ir->setAttribute ("audience", p.audience);
     ir->setAttribute ("diffusion", p.diffusion);
     ir->setAttribute ("vault", juce::String (p.vault_type));
@@ -892,6 +921,7 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.floor_material = ir->getStringAttribute ("floor", "Hardwood floor").toStdString();
     p.ceiling_material = ir->getStringAttribute ("ceiling", "Acoustic ceiling tile").toStdString();
     p.wall_material  = ir->getStringAttribute ("wall", "Painted plaster").toStdString();
+    p.window_fraction = ir->getDoubleAttribute ("windows", 0.0);
     p.audience       = ir->getDoubleAttribute ("audience", 0.0);
     p.diffusion      = ir->getDoubleAttribute ("diffusion", 0.4);
     p.vault_type     = ir->getStringAttribute ("vault", "None (flat)").toStdString();

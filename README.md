@@ -13,7 +13,7 @@ P!NG is an audio plugin you can use in Logic Pro (and other hosts) to add reverb
      `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
    - Then run: `brew install cmake`
 
-4. **libsodium** – for licence verification. Run: `brew install libsodium`
+4. **libsodium** – for licence verification (build-time only; end users don’t need it). Run: `brew install libsodium`
 
 ---
 

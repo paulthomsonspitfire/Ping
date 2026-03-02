@@ -87,6 +87,9 @@ public:
 
     float getOutputLevelDb (int channel) const;  // 0 = L, 1 = R
 
+    /** Pull wet-spectrum samples for GUI (lock-free). Returns num samples copied, or 0 if not ready. */
+    int pullSpectrumSamples (float* dest, int maxSamples);
+
 private:
     juce::AudioProcessorValueTreeState apvts;
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -120,6 +123,13 @@ private:
 
     std::atomic<float> outputLevelPeakL { 0.0f };
     std::atomic<float> outputLevelPeakR { 0.0f };
+
+    static constexpr int spectrumFftSize = 2048;
+    float spectrumFifo[spectrumFftSize];
+    int spectrumFifoIndex = 0;
+    float spectrumFftData[spectrumFftSize * 2];
+    std::atomic<bool> spectrumBlockReady { false };
+    void pushWetSampleForSpectrum (float s) noexcept;
 
     LicenceResult currentLicence;
     juce::String savedLicenceSerial;

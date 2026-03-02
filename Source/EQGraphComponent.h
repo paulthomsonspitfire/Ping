@@ -2,11 +2,13 @@
 
 #include <JuceHeader.h>
 
+class PingProcessor;
+
 class EQGraphComponent : public juce::Component,
-                         private juce::Timer
+                        private juce::Timer
 {
 public:
-    explicit EQGraphComponent (juce::AudioProcessorValueTreeState& apvts);
+    explicit EQGraphComponent (juce::AudioProcessorValueTreeState& apvts, PingProcessor* processor = nullptr);
     void paint (juce::Graphics& g) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent& e) override;
@@ -23,6 +25,16 @@ private:
     void syncSlidersFromParams();
 
     juce::AudioProcessorValueTreeState& apvts;
+    PingProcessor* processor = nullptr;
+
+    static constexpr int spectrumFftOrder = 11;
+    static constexpr int spectrumFftSize = 1 << spectrumFftOrder;
+    static constexpr int spectrumScopeSize = 256;
+    std::unique_ptr<juce::dsp::FFT> forwardFFT;
+    std::unique_ptr<juce::dsp::WindowingFunction<float>> spectrumWindow;
+    std::vector<float> spectrumFftData;
+    std::vector<float> spectrumScopeData;
+    void drawNextFrameOfSpectrum();
     juce::Slider freqSlider;
     juce::Slider gainSlider;
     juce::Slider qSlider;

@@ -19,5 +19,7 @@ private:
     juce::Colour trackColour    { 0xff3a3a3a };
     juce::Colour fillColour    { 0xffe0e0e0 };
     juce::Colour thumbColour   { 0xffffffff };
-    juce::Colour centreDark   { 0xff1a1a1a };
+    juce::Colour centreDark    { 0xff1a1a1a };
+    juce::Colour knobBodyDark  { 0xff1e1e1e };
+    juce::Colour knobBodyLight { 0xff353535 };
 };

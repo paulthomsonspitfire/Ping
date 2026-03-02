@@ -1,0 +1,62 @@
+{
+  "colors": {
+    "background": {
+      "dark": "#141414",
+      "panel": "#1e1e1e",
+      "border": "#2a2a2a"
+    },
+    "accent": {
+      "primary": "#e8a84a",
+      "dim": "#c48938"
+    },
+    "text": {
+      "primary": "#e8e8e8",
+      "dim": "#909090"
+    },
+    "controls": {
+      "track": "#3a3a3a",
+      "fill": "#e0e0e0",
+      "thumb": "#ffffff",
+      "centreDark": "#1a1a1a"
+    },
+    "sliders": {
+      "accent": "#e8a84a",
+      "greyAccent": "#909090",
+      "irInputGain": "#4caf50",
+      "irInputDrive": "#e53935"
+    },
+    "reverse": {
+      "engaged": "#b83030",
+      "border": "#8b2020",
+      "idleBg": "#1a1a1a"
+    }
+  },
+  "sizes": {
+    "editor": {
+      "minWidth": 720,
+      "minHeight": 440,
+      "defaultWidth": 920,
+      "defaultHeight": 440
+    },
+    "knobs": {
+      "small": 40,
+      "medium": 48,
+      "big": 80
+    },
+    "sliders": {
+      "horizontalHeight": 18
+    },
+    "labels": {
+      "height": 10,
+      "fontSize": 12
+    },
+    "readouts": {
+      "height": 10,
+      "fontSize": 11
+    }
+  },
+  "radii": {
+    "button": 6,
+    "panel": 6
+  }
+}
