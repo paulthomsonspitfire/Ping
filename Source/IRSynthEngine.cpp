@@ -168,6 +168,8 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
     const std::string& micPat,
     double spkFaceAngle, double micFaceAngle)
 {
+    (void) eo;
+    (void) ec;
     double W = p.width, D = p.depth;
     Rng rng = mkRng(seed);
     std::vector<Ref> refs;
@@ -183,15 +185,17 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                 if (dist < 1e-6) continue;
 
                 int t = (int)std::floor(dist / SPEED * sr);
-                if (eo && t > ec) continue;
                 if (ts > 0.05) t = std::max(1, t + (int)std::floor(rU(rng, -ts * 4.0, ts * 4.0) * sr / 1000.0));
 
-                double az = std::atan2(ix - rx, iy - ry);
-                double mg = micG(az, micPat, micFaceAngle);
-                double spkAz = std::atan2(ix - sx, iy - sy);
-                double sg = spkG(spkFaceAngle, spkAz);
-
                 int totalBounces = std::abs(nx) + std::abs(ny) + std::abs(nz);
+                // Screen-style room coordinates: 0 = right, +pi/2 = down.
+                double az = std::atan2(iy - ry, ix - rx);
+                double mg = micG(az, micPat, micFaceAngle);
+                // Image-source coordinates are not a physical emitter position.
+                // Using them here can make distant placements louder than nearby
+                // ones, so source directivity is based on the real source->mic ray.
+                double spkAz = std::atan2(ry - sy, rx - sx);
+                double sg = spkG(spkFaceAngle, spkAz);
                 double polarity = (totalBounces % 2 == 0) ? 1.0 : -1.0;
 
                 std::array<double,6> amps;
@@ -339,9 +343,34 @@ std::vector<double> IRSynthEngine::renderCh (
 
     if (diffusion > 0.02)
     {
+        // Deferred allpass diffusion: keep discrete early reflections sharp,
+        // then blend into diffused output from 65 ms with a 20 ms crossfade.
+        //
+        // IMPORTANT: start the allpass loop at dryEnd, NOT at sample 0.
+        // If we process from sample 0, strong early spikes create allpass
+        // echoes at 17.1 ms intervals that bleed into the wet region at 65 ms+
+        // and are audible as a clear repeating delay.  Starting at dryEnd means
+        // the allpass state is cold (zero) when diffusion kicks in, so no
+        // early-spike echoes can leak through.
+        const int dryEnd   = (int)std::round(0.065 * sr);  // pure-dry up to here
+        const int fadeLen  = (int)std::round(0.020 * sr);  // crossfade window
+        const int wetStart = dryEnd + fadeLen;              // fully-wet from here
+
+        std::vector<double> wet((size_t)irLen, 0.0);
         AllpassDiffuser diff = makeAllpassDiffuser(sr, diffusion);
-        for (int i = 0; i < irLen; ++i)
-            raw[(size_t)i] = diff.process(raw[(size_t)i]);
+        for (int i = dryEnd; i < irLen; ++i)
+            wet[(size_t)i] = diff.process(raw[(size_t)i]);
+
+        // 0 … dryEnd-1  →  raw unchanged (dry)
+        // dryEnd … wetStart-1  →  linear crossfade dry→wet
+        for (int i = dryEnd; i < wetStart && i < irLen; ++i)
+        {
+            const double t  = (double)(i - dryEnd) / (double)fadeLen;
+            raw[(size_t)i]  = raw[(size_t)i] * (1.0 - t) + wet[(size_t)i] * t;
+        }
+        // wetStart … irLen-1  →  fully wet
+        for (int i = wetStart; i < irLen; ++i)
+            raw[(size_t)i] = wet[(size_t)i];
     }
     return raw;
 }
@@ -387,7 +416,6 @@ std::vector<double> IRSynthEngine::renderFDNTail (
     double diffusion, int sr, uint32_t seed,
     double roomW, double roomD, double roomH)
 {
-    (void)diffusion;
     const int N = 16;
     double vol = roomW * roomD * roomH;
     double surf = 2.0 * (roomW * roomD + roomD * roomH + roomW * roomH);
@@ -469,17 +497,25 @@ std::vector<double> IRSynthEngine::renderFDNTail (
         return sum / N;
     };
 
-    int fadeLen = (int)std::floor(0.040 * sr);
-    int fadeStart = std::max(0, erCut - fadeLen);
+    int seedRampLen = std::max(1, (int)std::floor(0.020 * sr));
     for (int i = 0; i < erCut; ++i)
     {
-        double env = i < fadeStart ? 0.0 : (double)(i - fadeStart) / fadeLen;
+        double env = std::min(1.0, (double)i / (double)seedRampLen);
         fdnStep(erIR[(size_t)i] * env, i);
     }
 
     std::vector<double> out((size_t)irLen, 0.0);
     for (int i = erCut; i < irLen; ++i)
         out[(size_t)i] = fdnStep(0.0, i);
+
+    if (diffusion > 0.02)
+    {
+        // The tail starts after the ER crossover, so it can be fully diffused
+        // without blurring the initial discrete reflections.
+        AllpassDiffuser diff = makeAllpassDiffuser(sr, diffusion);
+        for (int i = 0; i < irLen; ++i)
+            out[(size_t)i] = diff.process(out[(size_t)i]);
+    }
 
     return out;
 }
@@ -513,16 +549,22 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
     double He = p.height * hm;
 
     std::vector<double> rt = calcRT60(p);
-    double rm = rt[2];
+    double rm = rt[2];  // MF (500 Hz) RT60 — used for reflection order
+    // irLen must be long enough for the slowest-decaying (usually LF) band.
+    // Using only the MF RT60 truncates the LF tail mid-decay, giving a gated sound.
+    // 8× RT60 gives a long natural decay before the end fade; peak normalisation keeps level safe.
+    double rmMax = *std::max_element(rt.begin(), rt.end());
     bool eo = p.er_only;
 
-    int irLen = (int)std::floor((eo ? 0.15 : std::max(0.3, std::min(rm * 1.5 + 0.1, 30.0))) * sr);
+    int irLen = (int)std::floor(std::max(0.3, std::min(8.0 * rmMax, 30.0)) * sr);
     int ec = (int)std::floor(0.085 * sr);
 
     double den = shapeDen(p.shape);
-    int mo = eo ? 3 : std::min(60, std::max(3, (int)std::floor(rm * SPEED / std::min(std::min(p.width, p.depth), He) / 2.0)));
+    int mo = std::min(60, std::max(3, (int)std::floor(rm * SPEED / std::min(std::min(p.width, p.depth), He) / 2.0)));
     double ts = std::min(0.95, vs + p.organ_case * 0.35 + p.balconies * 0.25 + p.diffusion * 0.3);
     double oF = 1.0 - p.organ_case * 0.4;
+    double bakedErGain = p.bake_er_tail_balance ? p.baked_er_gain : 1.0;
+    double bakedTailGain = p.bake_er_tail_balance ? p.baked_tail_gain : 1.0;
 
     auto& mats = getMats();
     auto rc = [&](const std::string& m) -> std::array<double,6>
@@ -564,10 +606,11 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size()) + " reflections…");
 
     double diff = p.diffusion;
-    std::vector<double> eLL = renderCh(rLL, irLen, den, sr, diff);
-    std::vector<double> eRL = renderCh(rRL, irLen, den, sr, diff);
-    std::vector<double> eLR = renderCh(rLR, irLen, den, sr, diff);
-    std::vector<double> eRR = renderCh(rRR, irLen, den, sr, diff);
+    double earlyDiff = eo ? 0.0 : diff;
+    std::vector<double> eLL = renderCh(rLL, irLen, den, sr, earlyDiff);
+    std::vector<double> eRL = renderCh(rRL, irLen, den, sr, earlyDiff);
+    std::vector<double> eLR = renderCh(rLR, irLen, den, sr, earlyDiff);
+    std::vector<double> eRR = renderCh(rRR, irLen, den, sr, earlyDiff);
 
     report(0.60, "Synthesising FDN reverb tail…");
 
@@ -581,6 +624,31 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
             eL[(size_t)i] = eLL[(size_t)i] + eRL[(size_t)i];
             eR[(size_t)i] = eLR[(size_t)i] + eRR[(size_t)i];
         }
+
+        // Pre-diffuse the FDN seed signals to prevent coherent echoes when speakers
+        // are placed off-centre.  When both speakers are far from one mic (e.g. both
+        // left, far-side = right mic), the direct-path pulse arrives late (~50 ms).
+        // That late pulse recirculates through FDN delay lines of ~63–72 ms and
+        // re-emerges as a clearly audible first-order echo at ~114–123 ms ≈ "120 ms
+        // delay".  For centred speakers the same-side direct path is only ~14 ms, so
+        // its echoes (14+63=77 ms etc.) fall inside the 85 ms seeding window and are
+        // absorbed before the output phase begins — but with off-centre speakers only
+        // 2 of the 16 delay lines are hidden.
+        //
+        // Applying the allpass diffuser to eL/eR before seeding spreads the sharp
+        // direct-path spike over ~17 ms, breaking up the coherent single-recurrence
+        // echo.  The actual ER output (eLL/eRL/eLR/eRR) is untouched — discrete
+        // early reflections remain sharp.
+        {
+            AllpassDiffuser dL = makeAllpassDiffuser(sr, 0.5);
+            AllpassDiffuser dR = makeAllpassDiffuser(sr, 0.5);
+            for (int i = 0; i < irLen; ++i)
+            {
+                eL[(size_t)i] = dL.process(eL[(size_t)i]);
+                eR[(size_t)i] = dR.process(eR[(size_t)i]);
+            }
+        }
+
         std::vector<double> tL = renderFDNTail(rt, irLen, ec, eL, diff, sr, 100, p.width, p.depth, He);
         std::vector<double> tR = renderFDNTail(rt, irLen, ec, eR, diff, sr, 101, p.width, p.depth, He);
 
@@ -591,22 +659,30 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
         int xfade = (int)std::floor(0.020 * sr);
         for (int i = 0; i < irLen; ++i)
         {
-            double ef = (i < ec - xfade) ? 1.0 : (i < ec) ? (double)(ec - i) / xfade : 0.0;
             double tf = (i < ec - xfade) ? 0.0 : (i < ec) ? (double)(i - (ec - xfade)) / xfade : 1.0;
-            double tailL = tL[(size_t)i] * tf * 0.5;
-            double tailR = tR[(size_t)i] * tf * 0.5;
-            iLL[(size_t)i] = eLL[(size_t)i] * ef + tailL;
-            iRL[(size_t)i] = eRL[(size_t)i] * ef + tailL;
-            iLR[(size_t)i] = eLR[(size_t)i] * ef + tailR;
-            iRR[(size_t)i] = eRR[(size_t)i] * ef + tailR;
+            double tailL = tL[(size_t)i] * tf * 0.5 * bakedTailGain;
+            double tailR = tR[(size_t)i] * tf * 0.5 * bakedTailGain;
+            // Keep the full image-source field and fade the diffuse tail in on top.
+            // Otherwise the later discrete reflections only survive in ER-only mode.
+            iLL[(size_t)i] = eLL[(size_t)i] * bakedErGain + tailL;
+            iRL[(size_t)i] = eRL[(size_t)i] * bakedErGain + tailL;
+            iLR[(size_t)i] = eLR[(size_t)i] * bakedErGain + tailR;
+            iRR[(size_t)i] = eRR[(size_t)i] * bakedErGain + tailR;
         }
     }
     else
     {
-        iLL = eLL;
-        iRL = eRL;
-        iLR = eLR;
-        iRR = eRR;
+        iLL.resize((size_t)irLen);
+        iRL.resize((size_t)irLen);
+        iLR.resize((size_t)irLen);
+        iRR.resize((size_t)irLen);
+        for (int i = 0; i < irLen; ++i)
+        {
+            iLL[(size_t)i] = eLL[(size_t)i] * bakedErGain;
+            iRL[(size_t)i] = eRL[(size_t)i] * bakedErGain;
+            iLR[(size_t)i] = eLR[(size_t)i] * bakedErGain;
+            iRR[(size_t)i] = eRR[(size_t)i] * bakedErGain;
+        }
     }
 
     report(0.85, "Finishing…");
@@ -616,28 +692,26 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
     iLR = hpF(lpF(iLR, 18000.0, sr), 20.0, sr);
     iRR = hpF(lpF(iRR, 18000.0, sr), 20.0, sr);
 
-    // Normalize against combined channels so mono input sounds identical to before
-    double pk = 0.0;
-    for (size_t i = 0; i < iLL.size(); ++i)
+    // Cosine fade-out over the last 500 ms so the tail eases to silence
+    // without a noticeable abrupt end (longer fade = smoother transition).
     {
-        pk = std::max(pk, std::abs(iLL[i] + iRL[i]));  // combined L — mono input safety
-        pk = std::max(pk, std::abs(iLR[i] + iRR[i]));  // combined R — mono input safety
-        pk = std::max(pk, std::abs(iLL[i]));             // individual — fully-left input safety
-        pk = std::max(pk, std::abs(iRL[i]));             // individual — fully-right input safety
-        pk = std::max(pk, std::abs(iLR[i]));             // individual — fully-left input safety
-        pk = std::max(pk, std::abs(iRR[i]));             // individual — fully-right input safety
+        const int endFade = (int)std::round(0.500 * sr);
+        const int fadeStart = std::max(0, irLen - endFade);
+        for (auto* v : { &iLL, &iRL, &iLR, &iRR })
+            for (int i = fadeStart; i < irLen; ++i)
+            {
+                double t = (double)(i - fadeStart) / (double)endFade;
+                (*v)[(size_t)i] *= 0.5 * (1.0 + std::cos(M_PI * t));
+            }
     }
-    if (pk > 1e-9)
-    {
-        double gv = 0.708 / pk;
-        for (size_t i = 0; i < iLL.size(); ++i)
-        {
-            iLL[i] *= gv;
-            iRL[i] *= gv;
-            iLR[i] *= gv;
-            iRR[i] *= gv;
-        }
-    }
+
+    // Peak normalisation intentionally removed.
+    // IR amplitude now scales naturally with speaker-to-mic distance (1/r law),
+    // preserving the proximity effect: speakers placed close to mics produce a
+    // louder wet signal; speakers placed far away produce a quieter one.
+    // Clipping only occurs below ~85 cm (cardioid default), which is an
+    // implausible placement in any real room.  The host wet-level control
+    // gives the user full range to compensate for overall level.
 
     res.iLL = std::move(iLL);
     res.iRL = std::move(iRL);

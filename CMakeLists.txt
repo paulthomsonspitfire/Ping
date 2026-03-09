@@ -14,7 +14,12 @@ if(APPLE)
     endif()
 endif()
 
-project(Ping VERSION 1.0.0)
+project(Ping VERSION 1.2.0)
+
+# Minimum macOS 13.0 (Ventura) for plugin compatibility
+if(APPLE)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS version")
+endif()
 
 # Download JUCE automatically (no separate install needed)
 include(FetchContent)

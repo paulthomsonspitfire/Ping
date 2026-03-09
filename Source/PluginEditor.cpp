@@ -126,8 +126,8 @@ PingEditor::PingEditor (PingProcessor& p)
             buf.setSample (2, (int) i, (float) result.iLR[i]);
             buf.setSample (3, (int) i, (float) result.iRR[i]);
         }
+        pingProcessor.setLastIRSynthParams (irSynthComponent.getLastRenderParams());
         pingProcessor.loadIRFromBuffer (std::move (buf), (double) result.sampleRate, true);
-        pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
         updateWaveform();
     });
     irSynthComponent.setOnDone ([this]
@@ -186,6 +186,14 @@ PingEditor::PingEditor (PingProcessor& p)
             updateWaveform();
         }
     });
+    irSynthComponent.setBakeLevelsGetter ([this]
+    {
+        auto* erParam = apvts.getRawParameterValue ("erLevel");
+        auto* tailParam = apvts.getRawParameterValue ("tailLevel");
+        float erDb = erParam != nullptr ? erParam->load() : 0.0f;
+        float tailDb = tailParam != nullptr ? tailParam->load() : 0.0f;
+        return std::pair<float, float> { erDb, tailDb };
+    });
     irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
 
     // Sliders - rotary style
@@ -229,6 +237,9 @@ PingEditor::PingEditor (PingProcessor& p)
     makeSlider (irInputDriveSlider, "IR Input Drive");
     irInputDriveSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xffe53935));
     irInputDriveSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xffe53935));
+    makeSlider (outputGainSlider, "Wet Output");
+    outputGainSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xff4caf50));
+    outputGainSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xff4caf50));
 
     auto makeHorizontalSlider = [this] (juce::Slider& s)
     {
@@ -252,6 +263,7 @@ PingEditor::PingEditor (PingProcessor& p)
     delayDepthSlider.setRange (0.5f, 8.0f, 0.01f);
     tailRateSlider.setRange (0.05f, 3.0f, 0.01f);
     irInputGainSlider.setRange (-24.0, 12.0, 0.5);
+    outputGainSlider.setRange (-24.0, 12.0, 0.5);
     irInputDriveSlider.setRange (0.0, 1.0, 0.01);
     erLevelSlider.setRange (-48.0, 6.0, 0.1);
     tailLevelSlider.setRange (-48.0, 6.0, 0.1);
@@ -267,6 +279,7 @@ PingEditor::PingEditor (PingProcessor& p)
     delayDepthAttach = std::make_unique<SliderAttachment> (apvts, "delaydepth", delayDepthSlider);
     tailRateAttach  = std::make_unique<SliderAttachment> (apvts, "tailrate", tailRateSlider);
     irInputGainAttach  = std::make_unique<SliderAttachment> (apvts, "inputGain", irInputGainSlider);
+    outputGainAttach   = std::make_unique<SliderAttachment> (apvts, "outputGain", outputGainSlider);
     irInputDriveAttach = std::make_unique<SliderAttachment> (apvts, "irInputDrive", irInputDriveSlider);
     erLevelAttach   = std::make_unique<SliderAttachment> (apvts, "erLevel", erLevelSlider);
     tailLevelAttach = std::make_unique<SliderAttachment> (apvts, "tailLevel", tailLevelSlider);
@@ -277,7 +290,7 @@ PingEditor::PingEditor (PingProcessor& p)
     for (auto* label : { &dryWetLabel, &predelayLabel, &decayLabel, &modDepthLabel,
                         &stretchLabel, &widthLabel, &modRateLabel,
                         &tailModLabel, &delayDepthLabel, &tailRateLabel,
-                        &irInputGainLabel, &irInputDriveLabel,
+                        &irInputGainLabel, &irInputDriveLabel, &outputGainLabel,
                         &erLevelLabel, &tailLevelLabel })
     {
         addAndMakeVisible (label);
@@ -298,6 +311,8 @@ PingEditor::PingEditor (PingProcessor& p)
     tailRateLabel.setText ("RATE", juce::dontSendNotification);
     irInputGainLabel.setText ("IR INPUT GAIN", juce::dontSendNotification);
     irInputGainLabel.setFont (juce::FontOptions (9.0f));
+    outputGainLabel.setText ("WET OUTPUT", juce::dontSendNotification);
+    outputGainLabel.setFont (juce::FontOptions (9.0f));
     irInputDriveLabel.setText ("IR INPUT DRIVE", juce::dontSendNotification);
     irInputDriveLabel.setFont (juce::FontOptions (9.0f));
     erLevelLabel.setText ("ER", juce::dontSendNotification);
@@ -306,7 +321,7 @@ PingEditor::PingEditor (PingProcessor& p)
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
                      &tailModReadout, &delayDepthReadout, &tailRateReadout,
-                     &irInputGainReadout, &irInputDriveReadout,
+                     &irInputGainReadout, &irInputDriveReadout, &outputGainReadout,
                      &erLevelReadout, &tailLevelReadout })
     {
         addAndMakeVisible (r);
@@ -492,12 +507,22 @@ void PingEditor::resized()
     dryWetLabel.setBounds (0, 0, 0, 0);  // unused: "dry/wet" text is drawn in knob centre
     dryWetReadout.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + 2, bigKnobSize, readoutH);
 
-    // IR combo + IR Synth: align IR Synth right edge with waveform left edge
+    // IR combo + IR Synth: align IR Synth right edge with waveform left edge (needed for output gain placement)
     const int irSynthW = 64;
     const int irGap = 6;
     int irSynthX = waveformComponent.getX() - irSynthW;
     int irComboX = irSynthX - irGap - irComboW;
     int irRowY = dryWetReadout.getBottom() + 6 + labelH;  // +labelH restores space from removed dry/wet image
+
+    // Wet Output: other side of dry/wet, same vertical level as second small knob (IR Input Drive)
+    const int outputGainGap = 8;
+    const int outputGainCenterX = juce::jmin (presetCenterX + bigKnobSize / 2 + outputGainGap + smallKnobSize / 2,
+                                              irComboX - smallKnobSize / 2 - 4);
+    const int outputGainY = irInputGainReadout.getBottom() + 4;
+    outputGainSlider.setBounds (outputGainCenterX - smallKnobSize / 2, outputGainY, smallKnobSize, smallKnobSize);
+    outputGainLabel.setBounds (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + 2, irLabelW, labelH);
+    outputGainReadout.setBounds (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
+
     irCombo.setBounds (irComboX, irRowY, irComboW, irComboH);
     irSynthButton.setBounds (irSynthX, irRowY, irSynthW, irComboH);
     if (! irSynthComponent.isVisible())
@@ -708,6 +733,7 @@ void PingEditor::updateAllReadouts()
     delayDepthReadout.setText (juce::String (v ("delaydepth"), 1) + " ms", juce::dontSendNotification);
     tailRateReadout.setText (juce::String (v ("tailrate"), 2) + " Hz", juce::dontSendNotification);
     irInputGainReadout.setText (juce::String (juce::roundToInt (v ("inputGain"))) + " dB", juce::dontSendNotification);
+    outputGainReadout.setText (juce::String (juce::roundToInt (v ("outputGain"))) + " dB", juce::dontSendNotification);
     irInputDriveReadout.setText (juce::String (juce::roundToInt (v ("irInputDrive") * 100)) + "%", juce::dontSendNotification);
 
     float erDb = v ("erLevel");

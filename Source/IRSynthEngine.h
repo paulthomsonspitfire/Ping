@@ -17,7 +17,7 @@ struct IRSynthParams
 
     // Surfaces
     std::string floor_material   = "Hardwood floor";
-    std::string ceiling_material = "Acoustic ceiling tile";
+    std::string ceiling_material = "Painted plaster";
     std::string wall_material    = "Painted plaster";
     double window_fraction       = 0.0;   // 0..1 fraction of wall area that is glazing (brick + glass blend)
 
@@ -51,6 +51,9 @@ struct IRSynthParams
     std::string mic_pattern = "cardioid"; // "omni"|"subcardioid"|"cardioid"|"figure8"
     bool        er_only     = false;
     int         sample_rate = 48000;      // 44100 | 48000
+    bool        bake_er_tail_balance = false;
+    double      baked_er_gain = 1.0;
+    double      baked_tail_gain = 1.0;
 };
 
 struct IRSynthResult

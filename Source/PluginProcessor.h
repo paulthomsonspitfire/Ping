@@ -105,6 +105,7 @@ private:
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand;
     juce::SmoothedValue<float> inputGainSmoothed;
+    juce::SmoothedValue<float> outputGainSmoothed;
     juce::SmoothedValue<float> saturatorDriveSmoothed;
     juce::SmoothedValue<float> erLevelSmoothed;
     juce::SmoothedValue<float> tailLevelSmoothed;

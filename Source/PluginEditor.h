@@ -48,26 +48,26 @@ private:
     juce::Slider predelaySlider, decaySlider, modDepthSlider;
     juce::Slider stretchSlider, widthSlider, modRateSlider;
     juce::Slider tailModSlider, delayDepthSlider, tailRateSlider;
-    juce::Slider irInputGainSlider, irInputDriveSlider;
+    juce::Slider irInputGainSlider, irInputDriveSlider, outputGainSlider;
     juce::Slider erLevelSlider, tailLevelSlider;
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     std::unique_ptr<SliderAttachment> dryWetAttach, predelayAttach, decayAttach;
     std::unique_ptr<SliderAttachment> stretchAttach, widthAttach, modDepthAttach, modRateAttach;
     std::unique_ptr<SliderAttachment> tailModAttach, delayDepthAttach, tailRateAttach;
-    std::unique_ptr<SliderAttachment> irInputGainAttach, irInputDriveAttach;
+    std::unique_ptr<SliderAttachment> irInputGainAttach, irInputDriveAttach, outputGainAttach;
     std::unique_ptr<SliderAttachment> erLevelAttach, tailLevelAttach;
 
     juce::Label dryWetLabel, predelayLabel, decayLabel, modDepthLabel;
     juce::Label stretchLabel, widthLabel, modRateLabel;
     juce::Label tailModLabel, delayDepthLabel, tailRateLabel;
-    juce::Label irInputGainLabel, irInputDriveLabel;
+    juce::Label irInputGainLabel, irInputDriveLabel, outputGainLabel;
     juce::Label erLevelLabel, tailLevelLabel;
 
     juce::Label dryWetReadout, predelayReadout, decayReadout, modDepthReadout;
     juce::Label stretchReadout, widthReadout, modRateReadout;
     juce::Label tailModReadout, delayDepthReadout, tailRateReadout;
-    juce::Label irInputGainReadout, irInputDriveReadout;
+    juce::Label irInputGainReadout, irInputDriveReadout, outputGainReadout;
     juce::Label erLevelReadout, tailLevelReadout;
 
     PingLookAndFeel pingLook;

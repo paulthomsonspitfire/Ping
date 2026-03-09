@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <functional>
 #include <memory>
+#include <utility>
 #include "IRSynthEngine.h"
 #include "FloorPlanComponent.h"
 
@@ -37,6 +38,9 @@ public:
     /** Called when user selects an IR to load. Passes 0-based index into the list. */
     void setOnLoadIR (std::function<void (int)> fn) { onLoadIRFn = std::move (fn); }
 
+    /** Returns the current main-page ER/Tail levels in dB for baked renders. */
+    void setBakeLevelsGetter (std::function<std::pair<float, float>()> fn) { bakeLevelsGetter = std::move (fn); }
+
     /** Refresh the IR combo from the given names (e.g. from IRManager). */
     void setIRList (const juce::StringArray& names);
 
@@ -45,6 +49,7 @@ public:
 
     /** Current params (read from UI). */
     IRSynthParams getParams() const;
+    const IRSynthParams& getLastRenderParams() const { return lastRenderParams; }
 
     /** Update UI from params (e.g. when loading a preset). */
     void setParams (const IRSynthParams& p);
@@ -53,7 +58,7 @@ private:
     void timerCallback() override;
     void buttonClicked (juce::Button* b) override;
     void comboBoxChanged (juce::ComboBox* combo) override;
-    void startSynthesis();
+    void startSynthesis (bool bakeCurrentBalance = false);
     void onDone();
     void updateRT60Display();
     void updateProgress (double fraction, const juce::String& message);
@@ -64,6 +69,7 @@ private:
     std::function<void()> onDoneFn;
     std::function<void (const juce::String&)> onSaveIRFn;
     std::function<void (int)> onLoadIRFn;
+    std::function<std::pair<float, float>()> bakeLevelsGetter;
 
     juce::TabbedComponent tabbedComponent { juce::TabbedButtonBar::TabsAtTop };
     juce::Component characterTab;
@@ -100,6 +106,7 @@ private:
     // Options (Character tab)
     juce::ComboBox micPatternCombo, sampleRateCombo;
     juce::ToggleButton erOnlyButton { "Early reflections only" };
+    juce::TextButton bakeBalanceButton { "Bake ER/Tail Balance" };
     juce::Label micPatternLabel, sampleRateLabel;
 
     // Bottom bar
@@ -117,6 +124,7 @@ private:
     juce::ThreadPool synthPool { 1 };
     std::atomic<bool> synthRunning { false };
     std::unique_ptr<IRSynthResult> pendingResult;
+    IRSynthParams lastRenderParams;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (IRSynthComponent)
 };

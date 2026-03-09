@@ -99,7 +99,7 @@ IRSynthComponent::IRSynthComponent()
     addOptions (ceilingCombo, materialOptions, 14);
     addOptions (wallCombo, materialOptions, 14);
     floorCombo.setSelectedId (3, juce::dontSendNotification);   // Hardwood floor
-    ceilingCombo.setSelectedId (8, juce::dontSendNotification); // Acoustic ceiling tile
+    ceilingCombo.setSelectedId (2, juce::dontSendNotification); // Painted plaster
     wallCombo.setSelectedId (2, juce::dontSendNotification);   // Painted plaster
 
     floorLabel.setText ("Floor", juce::dontSendNotification);
@@ -154,6 +154,9 @@ IRSynthComponent::IRSynthComponent()
     sampleRateCombo.addItem ("48000", 2);
     sampleRateCombo.setSelectedId (2, juce::dontSendNotification);
     erOnlyButton.setToggleState (false, juce::dontSendNotification);
+    bakeBalanceButton.addListener (this);
+    bakeBalanceButton.setColour (juce::TextButton::buttonColourId, panelBg);
+    bakeBalanceButton.setColour (juce::TextButton::textColourOffId, textDim);
     micPatternLabel.setText ("Mic Pattern", juce::dontSendNotification);
     sampleRateLabel.setText ("Sample Rate", juce::dontSendNotification);
 
@@ -195,6 +198,7 @@ IRSynthComponent::IRSynthComponent()
     characterContent.addAndMakeVisible (micPatternCombo);
     characterContent.addAndMakeVisible (sampleRateCombo);
     characterContent.addAndMakeVisible (erOnlyButton);
+    characterContent.addAndMakeVisible (bakeBalanceButton);
     characterContent.addAndMakeVisible (micPatternLabel);
     characterContent.addAndMakeVisible (sampleRateLabel);
 
@@ -409,6 +413,8 @@ void IRSynthComponent::layoutCharacterTab (juce::Rectangle<int> b)
     ry += rowH + secPad;
 
     erOnlyButton.setBounds (rightColX, ry, rightColW + 60, rowH);
+    ry += rowH + 8;
+    bakeBalanceButton.setBounds (rightColX, ry, juce::jmax (150, rightColW + 40), rowH + 2);
 }
 
 void IRSynthComponent::layoutPlacementTab (juce::Rectangle<int> b)
@@ -523,6 +529,8 @@ void IRSynthComponent::buttonClicked (juce::Button* b)
 {
     if (b == &previewButton && ! synthRunning.load())
         startSynthesis();
+    else if (b == &bakeBalanceButton && ! synthRunning.load())
+        startSynthesis (true);
     else if (b == &doneButton)
         onDone();
     else if (b == &saveIRButton && onSaveIRFn)
@@ -564,11 +572,30 @@ void IRSynthComponent::setSelectedIRDisplayName (const juce::String& name)
         irCombo.setText (name, juce::dontSendNotification);
 }
 
-void IRSynthComponent::startSynthesis()
+void IRSynthComponent::startSynthesis (bool bakeCurrentBalance)
 {
     IRSynthParams p = getParams();
+    if (bakeCurrentBalance)
+    {
+        p.bake_er_tail_balance = true;
+        if (bakeLevelsGetter)
+        {
+            auto [erDb, tailDb] = bakeLevelsGetter();
+            p.baked_er_gain = juce::Decibels::decibelsToGain (erDb);
+            p.baked_tail_gain = juce::Decibels::decibelsToGain (tailDb);
+        }
+    }
+    else
+    {
+        p.bake_er_tail_balance = false;
+        p.baked_er_gain = 1.0;
+        p.baked_tail_gain = 1.0;
+    }
+
+    lastRenderParams = p;
     synthRunning = true;
     previewButton.setEnabled (false);
+    bakeBalanceButton.setEnabled (false);
     pendingResult.reset();
     progressValue = 0.0;
     progressLabel.setText ("Starting…", juce::dontSendNotification);
@@ -589,6 +616,7 @@ void IRSynthComponent::startSynthesis()
         {
             synthRunning = false;
             previewButton.setEnabled (true);
+            bakeBalanceButton.setEnabled (true);
             progressValue = 1.0;
             progressLabel.setText ("Done.", juce::dontSendNotification);
 

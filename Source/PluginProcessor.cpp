@@ -16,6 +16,7 @@ namespace IDs
     static const juce::String delayDepth{ "delaydepth" };
     static const juce::String tailRate { "tailrate" };
     static const juce::String inputGain { "inputGain" };
+    static const juce::String outputGain { "outputGain" };
     static const juce::String irInputDrive { "irInputDrive" };
     static const juce::String erLevel { "erLevel" };
     static const juce::String tailLevel { "tailLevel" };
@@ -193,6 +194,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::delayDepth, "Delay Depth (ms)", 0.5f, 8.0f, 2.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailRate, "Tail Rate (Hz)", 0.05f, 3.0f, 0.5f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::inputGain, "IR Input Gain (dB)", -24.0f, 12.0f, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::outputGain, "Wet Output (dB)", -24.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::irInputDrive, "IR Input Drive", 0.0f, 1.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::erLevel, "Early Reflections",
         juce::NormalisableRange<float> (-48.0f, 6.0f, 0.1f), 0.0f));
@@ -247,6 +249,7 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     wetGain.prepare (spec);
 
     inputGainSmoothed.reset (sampleRate, 0.02);
+    outputGainSmoothed.reset (sampleRate, 0.02);
     saturatorDriveSmoothed.reset (sampleRate, 0.02);
 
     updateEQ();
@@ -362,22 +365,27 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         tsErConvRR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
         rEr.addFrom (0, 0, tmp, 0, 0, numSamples);
 
-        // Tail: use the regular stereo tailConvolver (IRSynthEngine calibrates tail
-        // to ER level, so Normalise::no preserves the correct balance).
-        juce::AudioBuffer<float> tailBuf (2, numSamples);
-        tailBuf.copyFrom (0, 0, lIn, 0, 0, numSamples);
-        tailBuf.copyFrom (1, 0, rIn, 0, 0, numSamples);
-        {
-            juce::dsp::AudioBlock<float> tailBlock (tailBuf);
-            tailConvolver.process (juce::dsp::ProcessContextReplacing<float> (tailBlock));
-        }
+        juce::AudioBuffer<float> lTail (1, numSamples), rTail (1, numSamples);
+        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
+        tsTailConvLL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+        lTail.copyFrom (0, 0, tmp, 0, 0, numSamples);
+        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
+        tsTailConvRL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+        lTail.addFrom (0, 0, tmp, 0, 0, numSamples);
+
+        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
+        tsTailConvLR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+        rTail.copyFrom (0, 0, tmp, 0, 0, numSamples);
+        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
+        tsTailConvRR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+        rTail.addFrom (0, 0, tmp, 0, 0, numSamples);
 
         for (int i = 0; i < numSamples; ++i)
         {
             float erG = erLevelSmoothed.getNextValue();
             float tailG = tailLevelSmoothed.getNextValue();
-            buffer.setSample (0, i, lEr.getSample (0, i) * erG + tailBuf.getSample (0, i) * tailG);
-            buffer.setSample (1, i, rEr.getSample (0, i) * erG + tailBuf.getSample (1, i) * tailG);
+            buffer.setSample (0, i, lEr.getSample (0, i) * erG + lTail.getSample (0, i) * tailG);
+            buffer.setSample (1, i, rEr.getSample (0, i) * erG + rTail.getSample (0, i) * tailG);
         }
     }
     else
@@ -398,6 +406,8 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             for (int ch = 0; ch < numChannels; ++ch)
                 buffer.setSample (ch, i, buffer.getSample (ch, i) * erG + tailBuffer.getSample (ch, i) * tailG);
         }
+        // Trim stereo (2ch) wet path so loaded stereo IRs are not louder than expected.
+        buffer.applyGain (0.5f);
     }
 
     // EQ
@@ -425,11 +435,13 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     float widthVal = apvts.getRawParameterValue (IDs::width)->load();
     applyWidth (buffer, widthVal);
 
-    // Chorus/tail modulation on wet signal (variable delay, LFO-modulated)
+    // Chorus/tail modulation on wet signal (variable delay, LFO-modulated).
+    // Skip when current IR is ER-only (synth or loaded from file) — discrete reflections get a strong delay-like repeat.
+    bool skipTailMod = getLastIRSynthParams().er_only;
     float tailAmt = apvts.getRawParameterValue (IDs::tailMod)->load();
     float depthMs = apvts.getRawParameterValue (IDs::delayDepth)->load();
     float rateHz = apvts.getRawParameterValue (IDs::tailRate)->load();
-    if (tailAmt > 0.0001f && depthMs > 0.1f && rateHz > 0.001f)
+    if (! skipTailMod && tailAmt > 0.0001f && depthMs > 0.1f && rateHz > 0.001f)
     {
         const float baseDelayMs = 2.5f;
         float phaseInc = (float) (rateHz / currentSampleRate);
@@ -449,6 +461,16 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                 buffer.setSample (ch, i, wetVal * (1.0f - tailAmt) + delayed * tailAmt);
             }
         }
+    }
+
+    // Wet output gain (boost/cut the whole wet signal, like input gain for output)
+    float outGainDb = apvts.getRawParameterValue (IDs::outputGain)->load();
+    outputGainSmoothed.setTargetValue (juce::Decibels::decibelsToGain (outGainDb));
+    for (int i = 0; i < numSamples; ++i)
+    {
+        float g = outputGainSmoothed.getNextValue();
+        for (int ch = 0; ch < numChannels; ++ch)
+            buffer.setSample (ch, i, buffer.getSample (ch, i) * g);
     }
 
     // Push wet signal for spectrum analyser (before dry/wet mix)
@@ -689,8 +711,11 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
     int numCh = buffer.getNumChannels();
     int fullLen = buffer.getNumSamples();
 
-    const int crossoverSamples = static_cast<int> (0.080 * bufferSampleRate);
-    const int fadeLength = static_cast<int> (0.010 * bufferSampleRate);
+    const bool synthErOnly = fromSynth && lastIRSynthParams.er_only;
+    const double crossoverSeconds = fromSynth ? 0.085 : 0.080;
+    const double fadeSeconds = fromSynth ? 0.020 : 0.010;
+    const int crossoverSamples = synthErOnly ? fullLen : static_cast<int> (crossoverSeconds * bufferSampleRate);
+    const int fadeLength = static_cast<int> (fadeSeconds * bufferSampleRate);
 
     if (numCh >= 4)
     {
@@ -707,7 +732,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         };
         auto makeMonoTail = [&] (int ch)
         {
-            if (fullLen <= crossoverSamples)
+            if (synthErOnly || fullLen <= crossoverSamples)
             {
                 juce::AudioBuffer<float> m (1, juce::jmax (64, fadeLength * 2));
                 m.clear();
@@ -722,52 +747,17 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         };
         juce::dsp::Convolution* tsEr[]  = { &tsErConvLL, &tsErConvRL, &tsErConvLR, &tsErConvRR };
         juce::dsp::Convolution* tsTail[] = { &tsTailConvLL, &tsTailConvRL, &tsTailConvLR, &tsTailConvRR };
-        // Group-normalise the 4 ER channels with a single shared scale factor.
-        // This preserves every inter-channel amplitude ratio (= all spatial information).
-        // We must bound both PEAK (for transients) and L1 sum (for sustained signals):
-        // convolution gain for steady input is proportional to sum(|IR|), not peak.
-        // Image-source ER IRs have many reflections that sum to 5–20x, causing ~20 dB
-        // overload. Scale by 1/max(grpPk, grpL1) so both are bounded to 1.0.
-        {
-            juce::AudioBuffer<float> erBuf[4];
-            for (int c = 0; c < 4; ++c) erBuf[c] = makeMonoEr (c);
-            float grpPk = 0.0f;
-            float grpL1L = 0.0f, grpL1R = 0.0f;
-            const int erN = erBuf[0].getNumSamples();
-            for (int i = 0; i < erN; ++i)
-            {
-                float s0 = erBuf[0].getSample (0, i), s1 = erBuf[1].getSample (0, i);
-                float s2 = erBuf[2].getSample (0, i), s3 = erBuf[3].getSample (0, i);
-                grpPk = std::max (grpPk, std::abs (s0 + s1));  // combined L
-                grpPk = std::max (grpPk, std::abs (s2 + s3));  // combined R
-                grpPk = std::max (grpPk, std::abs (s0));       // individual LL
-                grpPk = std::max (grpPk, std::abs (s1));       // individual RL
-                grpPk = std::max (grpPk, std::abs (s2));       // individual LR
-                grpPk = std::max (grpPk, std::abs (s3));       // individual RR
-                grpL1L += std::abs (s0 + s1);  // L1 of effective L-out IR
-                grpL1R += std::abs (s2 + s3);  // L1 of effective R-out IR
-            }
-            float grpL1 = std::max (grpL1L, grpL1R);
-            float scaleLimit = std::max (grpPk, grpL1);
-            if (scaleLimit > 1.0e-9f)
-            {
-                const float sc = 1.0f / scaleLimit;
-                for (int c = 0; c < 4; ++c) erBuf[c].applyGain (sc);
-            }
-            for (int c = 0; c < 4; ++c)
-                tsEr[c]->loadImpulseResponse (std::move (erBuf[c]), bufferSampleRate,
-                    juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no,
-                    juce::dsp::Convolution::Normalise::no);
-        }
+        for (int c = 0; c < 4; ++c)
+            tsEr[c]->loadImpulseResponse (makeMonoEr (c), bufferSampleRate,
+                juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no,
+                juce::dsp::Convolution::Normalise::no);
         for (int c = 0; c < 4; ++c)
             tsTail[c]->loadImpulseResponse (makeMonoTail (c), bufferSampleRate,
                 juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no,
                 juce::dsp::Convolution::Normalise::no);
 
         // Build a stereo combined-tail IR for the regular tailConvolver.
-        // iLL_tail == iRL_tail and iLR_tail == iRR_tail (the tail has no true-stereo
-        // spatial content), so combining them and normalising with ::yes restores the
-        // correct tail level without affecting spatial information.
+        // Keep Normalise::no so the ER/tail relationship from the source IR is preserved.
         {
             auto t0 = makeMonoTail (0);   // iLL tail
             auto t1 = makeMonoTail (1);   // iRL tail  (== t0)
@@ -783,7 +773,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             tailConvolver.loadImpulseResponse (std::move (combinedTail), bufferSampleRate,
                 juce::dsp::Convolution::Stereo::yes,
                 juce::dsp::Convolution::Trim::no,
-                juce::dsp::Convolution::Normalise::yes);
+                juce::dsp::Convolution::Normalise::no);
         }
     }
     else
@@ -793,7 +783,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         juce::AudioBuffer<float> erIR;
         juce::AudioBuffer<float> tailIR;
 
-        if (fullLen <= crossoverSamples)
+        if (synthErOnly || fullLen <= crossoverSamples)
         {
             erIR = std::move (buffer);
             tailIR = juce::AudioBuffer<float> (numCh, juce::jmax (64, fadeLength * 2));
@@ -825,11 +815,11 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         erConvolver.loadImpulseResponse (std::move (erIR), bufferSampleRate,
                                         isStereo ? juce::dsp::Convolution::Stereo::yes : juce::dsp::Convolution::Stereo::no,
                                         juce::dsp::Convolution::Trim::no,
-                                        juce::dsp::Convolution::Normalise::yes);
+                                        juce::dsp::Convolution::Normalise::no);
         tailConvolver.loadImpulseResponse (std::move (tailIR), bufferSampleRate,
                                            isStereo ? juce::dsp::Convolution::Stereo::yes : juce::dsp::Convolution::Stereo::no,
                                            juce::dsp::Convolution::Trim::no,
-                                           juce::dsp::Convolution::Normalise::yes);
+                                           juce::dsp::Convolution::Normalise::no);
     }
 }
 
@@ -867,6 +857,9 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("micPat", juce::String (p.mic_pattern));
     ir->setAttribute ("erOnly", p.er_only);
     ir->setAttribute ("sr", p.sample_rate);
+    ir->setAttribute ("bakeERTail", p.bake_er_tail_balance);
+    ir->setAttribute ("bakedERGain", p.baked_er_gain);
+    ir->setAttribute ("bakedTailGain", p.baked_tail_gain);
 }
 
 static void synthesizedIRToXml (const juce::AudioBuffer<float>& buf, double sampleRate, juce::XmlElement& elem)
@@ -919,7 +912,7 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.depth          = ir->getDoubleAttribute ("depth", 16.0);
     p.height         = ir->getDoubleAttribute ("height", 12.0);
     p.floor_material = ir->getStringAttribute ("floor", "Hardwood floor").toStdString();
-    p.ceiling_material = ir->getStringAttribute ("ceiling", "Acoustic ceiling tile").toStdString();
+    p.ceiling_material = ir->getStringAttribute ("ceiling", "Painted plaster").toStdString();
     p.wall_material  = ir->getStringAttribute ("wall", "Painted plaster").toStdString();
     p.window_fraction = ir->getDoubleAttribute ("windows", 0.0);
     p.audience       = ir->getDoubleAttribute ("audience", 0.0);
@@ -944,6 +937,9 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.mic_pattern    = ir->getStringAttribute ("micPat", "cardioid").toStdString();
     p.er_only        = ir->getBoolAttribute ("erOnly", false);
     p.sample_rate    = ir->getIntAttribute ("sr", 48000);
+    p.bake_er_tail_balance = ir->getBoolAttribute ("bakeERTail", false);
+    p.baked_er_gain  = ir->getDoubleAttribute ("bakedERGain", 1.0);
+    p.baked_tail_gain = ir->getDoubleAttribute ("bakedTailGain", 1.0);
     return p;
 }
 
