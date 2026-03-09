@@ -100,13 +100,13 @@ IRSynthComponent::IRSynthComponent()
     addOptions (wallCombo, materialOptions, 14);
     floorCombo.setSelectedId (3, juce::dontSendNotification);   // Hardwood floor
     ceilingCombo.setSelectedId (2, juce::dontSendNotification); // Painted plaster
-    wallCombo.setSelectedId (2, juce::dontSendNotification);   // Painted plaster
+    wallCombo.setSelectedId (1, juce::dontSendNotification);   // Concrete / bare brick
 
     floorLabel.setText ("Floor", juce::dontSendNotification);
     ceilingLabel.setText ("Ceiling", juce::dontSendNotification);
     wallLabel.setText ("Walls", juce::dontSendNotification);
     windowsSlider.setRange (0.0, 1.0, 0.01);
-    windowsSlider.setValue (0.0);
+    windowsSlider.setValue (0.27);
     windowsSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     windowsSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
     windowsSlider.setColour (juce::Slider::thumbColourId, accent);
@@ -115,8 +115,8 @@ IRSynthComponent::IRSynthComponent()
     // Contents
     audienceSlider.setRange (0.0, 1.0, 0.01);
     diffusionSlider.setRange (0.0, 1.0, 0.01);
-    audienceSlider.setValue (0.0);
-    diffusionSlider.setValue (0.4);
+    audienceSlider.setValue (0.45);
+    diffusionSlider.setValue (0.40);
     for (auto* s : { &audienceSlider, &diffusionSlider })
     {
         s->setSliderStyle (juce::Slider::LinearHorizontal);
@@ -131,11 +131,11 @@ IRSynthComponent::IRSynthComponent()
 
     // Interior
     addOptions (vaultCombo, vaultOptions, 6);
-    vaultCombo.setSelectedId (1, juce::dontSendNotification);
+    vaultCombo.setSelectedId (4, juce::dontSendNotification);  // Groin / cross vault (Lyndhurst Hall)
     organSlider.setRange (0.0, 1.0, 0.01);
     balconiesSlider.setRange (0.0, 1.0, 0.01);
-    organSlider.setValue (0.0);
-    balconiesSlider.setValue (0.0);
+    organSlider.setValue (0.59);
+    balconiesSlider.setValue (0.54);
     for (auto* s : { &organSlider, &balconiesSlider })
     {
         s->setSliderStyle (juce::Slider::LinearHorizontal);

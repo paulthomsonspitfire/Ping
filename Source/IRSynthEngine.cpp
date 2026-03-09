@@ -166,7 +166,9 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
     bool eo, int ec, int sr,
     uint32_t seed,
     const std::string& micPat,
-    double spkFaceAngle, double micFaceAngle)
+    double spkFaceAngle, double micFaceAngle,
+    double maxRefDist,
+    double minJitterMs)
 {
     (void) eo;
     (void) ec;
@@ -183,9 +185,14 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                 double iz = nz * He + (nz % 2 ? He - sz : sz);
                 double dist = std::sqrt((ix - rx) * (ix - rx) + (iy - ry) * (iy - ry) + (iz - rz) * (iz - rz));
                 if (dist < 1e-6) continue;
+                // Skip image sources beyond the target window — the FDN tail covers
+                // everything further out.  This bounds the reflection count to the
+                // sources that are actually distinct from diffuse reverberation.
+                if (dist > maxRefDist) continue;
 
                 int t = (int)std::floor(dist / SPEED * sr);
                 if (ts > 0.05) t = std::max(1, t + (int)std::floor(rU(rng, -ts * 4.0, ts * 4.0) * sr / 1000.0));
+                if (minJitterMs > 0.0) t = std::max(1, t + (int)std::floor(rU(rng, -minJitterMs, minJitterMs) * sr / 1000.0));
 
                 int totalBounces = std::abs(nx) + std::abs(ny) + std::abs(nz);
                 // Screen-style room coordinates: 0 = right, +pi/2 = down.
@@ -313,18 +320,43 @@ double IRSynthEngine::AllpassDiffuser::process (double x)
 // ── renderCh — verbatim from JS (per-band buffers, sum filtered, then diffuser) ─
 std::vector<double> IRSynthEngine::renderCh (
     const std::vector<Ref>& refs,
-    int irLen, double den, int sr, double diffusion)
+    int irLen, double den, int sr, double diffusion,
+    double reflectionSpreadMs)
 {
     std::vector<std::vector<double>> bi(6);
     for (int b = 0; b < 6; ++b)
         bi[b].resize((size_t)irLen, 0.0);
 
+    const int spreadHalf = (reflectionSpreadMs > 0.0)
+        ? std::max(1, (int)std::round(reflectionSpreadMs * 0.001 * sr * 0.5))
+        : 0;
+
     for (const auto& r : refs)
     {
-        if (r.t >= irLen) continue;
         double lat = std::abs(std::sin(r.az));
-        for (int b = 0; b < 6; ++b)
-            bi[b][(size_t)r.t] += r.amps[b] * den * (1.0 - lat * (b / 5.0) * 0.5);
+        if (spreadHalf <= 0)
+        {
+            if (r.t >= irLen) continue;
+            for (int b = 0; b < 6; ++b)
+                bi[b][(size_t)r.t] += r.amps[b] * den * (1.0 - lat * (b / 5.0) * 0.5);
+        }
+        else
+        {
+            // Spread this reflection over ±spreadHalf samples with triangular envelope
+            // (weights sum to 1 so total energy is preserved).
+            double weightSum = 0.0;
+            for (int d = -spreadHalf; d <= spreadHalf; ++d)
+                weightSum += 1.0 - (double)std::abs(d) / (double)(spreadHalf + 1);
+            const double invSum = (weightSum > 1e-12) ? 1.0 / weightSum : 1.0;
+            for (int d = -spreadHalf; d <= spreadHalf; ++d)
+            {
+                int i = r.t + d;
+                if (i < 0 || i >= irLen) continue;
+                double w = (1.0 - (double)std::abs(d) / (double)(spreadHalf + 1)) * invSum;
+                for (int b = 0; b < 6; ++b)
+                    bi[b][(size_t)i] += r.amps[b] * den * (1.0 - lat * (b / 5.0) * 0.5) * w;
+            }
+        }
     }
 
     std::vector<double> raw((size_t)irLen, 0.0);
@@ -414,7 +446,8 @@ std::vector<double> IRSynthEngine::renderFDNTail (
     int irLen, int erCut,
     const std::vector<double>& erIR,
     double diffusion, int sr, uint32_t seed,
-    double roomW, double roomD, double roomH)
+    double roomW, double roomD, double roomH,
+    int maxRefCut)
 {
     const int N = 16;
     double vol = roomW * roomD * roomH;
@@ -422,12 +455,18 @@ std::vector<double> IRSynthEngine::renderFDNTail (
     double mfp = 4.0 * vol / surf;
     double mfpMs = mfp / SPEED * 1000.0;
     double minMs = std::max(20.0, mfpMs * 0.5);
-    double maxMs = std::max(150.0, mfpMs * 3.0);
+    // Avoid a fixed 150 ms longest line (was max(150, ...)) which caused an audible
+    // repeating delay when speakers were coincident or close to one mic.
+    double maxMs = std::max(130.0, mfpMs * 3.0);
 
+    // Power-law spacing so the longest delay lines are spread (not clustered at maxMs).
+    // Reduces the level of a single dominant recurrence; exponent 1.4 spreads the top.
     std::vector<int> delays(N);
+    const double power = 1.4;
     for (int i = 0; i < N; ++i)
     {
-        double t = minMs + (maxMs - minMs) * i / (N - 1.0);
+        double frac = (N > 1) ? std::pow((double)i / (double)(N - 1), power) : 1.0;
+        double t = minMs + (maxMs - minMs) * frac;
         delays[i] = nearestPrime((int)std::round(t * sr / 1000.0));
     }
     for (int i = 1; i < N; ++i)
@@ -497,7 +536,18 @@ std::vector<double> IRSynthEngine::renderFDNTail (
         return sum / N;
     };
 
+    // If maxRefCut was not supplied (or defaulted to -1) fall back to the old
+    // behaviour where seeding stops at erCut.
+    if (maxRefCut < 0) maxRefCut = erCut;
+    // Never extend beyond the buffer we were given.
+    maxRefCut = std::min(maxRefCut, (int)erIR.size());
+    maxRefCut = std::min(maxRefCut, irLen);
+
     int seedRampLen = std::max(1, (int)std::floor(0.020 * sr));
+
+    // Phase 1 — seed-only warmup (0 … erCut-1), output not captured.
+    // This matches the original JS: the FDN is loaded up by the early-reflection
+    // signal before it starts contributing to the IR.
     for (int i = 0; i < erCut; ++i)
     {
         double env = std::min(1.0, (double)i / (double)seedRampLen);
@@ -505,7 +555,23 @@ std::vector<double> IRSynthEngine::renderFDNTail (
     }
 
     std::vector<double> out((size_t)irLen, 0.0);
-    for (int i = erCut; i < irLen; ++i)
+
+    // Phase 2 — seed AND capture (erCut … maxRefCut-1).
+    // The image-source signal continues to feed the FDN while its output is
+    // simultaneously collected.  This accomplishes two things:
+    //   • It adds a smooth, diffuse background to the sparse late reflections in
+    //     eLL/eRL (filling the density gap that appears ~100 ms after the ER).
+    //   • It loads far more energy into the FDN delay lines than the original
+    //     85 ms warmup alone could provide.  Without this, the FDN level at 1 s
+    //     is much quieter than the image-source field it must replace, causing
+    //     the audible reverb cutoff at exactly maxRefDist.
+    for (int i = erCut; i < maxRefCut; ++i)
+        out[(size_t)i] = fdnStep(erIR[(size_t)i], i);
+
+    // Phase 3 — free-running (maxRefCut … irLen-1).
+    // Image sources are silent beyond maxRefDist; the FDN now carries the full
+    // reverb tail on its own, decaying naturally at the room's RT60.
+    for (int i = maxRefCut; i < irLen; ++i)
         out[(size_t)i] = fdnStep(0.0, i);
 
     if (diffusion > 0.02)
@@ -560,7 +626,15 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
     int ec = (int)std::floor(0.085 * sr);
 
     double den = shapeDen(p.shape);
-    int mo = std::min(60, std::max(3, (int)std::floor(rm * SPEED / std::min(std::min(p.width, p.depth), He) / 2.0)));
+
+    // Image-source order: sized so that every source within the room's full
+    // reverberant lifetime is visited.  Sources die away naturally through
+    // cumulative material absorption — no artificial distance gate is applied.
+    // Formula from the original JS source, capped at 60.
+    const double minDim    = std::min({ p.width, p.depth, He });
+    const double maxRefDist = 1e9;  // no gate — all sources within mo are used
+    int mo = std::min(60, std::max(3, (int)std::floor(rm * SPEED / minDim / 2.0)));
+
     double ts = std::min(0.95, vs + p.organ_case * 0.35 + p.balconies * 0.25 + p.diffusion * 0.3);
     double oF = 1.0 - p.organ_case * 0.4;
     double bakedErGain = p.bake_er_tail_balance ? p.baked_er_gain : 1.0;
@@ -598,19 +672,34 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
     double rlx = p.width * p.receiver_lx, rly = p.depth * p.receiver_ly;
     double rrx = p.width * p.receiver_rx, rry = p.depth * p.receiver_ry;
 
-    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 42, p.mic_pattern, p.spkl_angle, p.micl_angle);
-    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 43, p.mic_pattern, p.spkr_angle, p.micl_angle);
-    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 44, p.mic_pattern, p.spkl_angle, p.micr_angle);
-    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 45, p.mic_pattern, p.spkr_angle, p.micr_angle);
+    const double srcDist = std::sqrt((slx - srx) * (slx - srx) + (sly - sry) * (sly - sry));
+    const double roomMin = std::min(p.width, p.depth);
+    // Two tiers: "close" (break periodic delay with jitter only) vs "coincident" (soft FDN seed scale).
+    // We do NOT use reflection spread — it smears the early response and causes the sound to collapse.
+    const double closeThreshold = roomMin * 0.30;   // close: time jitter to break periodic delay
+    const double coincidentThreshold = roomMin * 0.10;  // very close: gentle FDN seed scale only
+    const bool close = (srcDist < closeThreshold);
+    const bool coincident = (srcDist < coincidentThreshold);
+    const double minJitterMs = close ? 1.2 : 0.0;  // jitter only (no spread) so level stays up
+    const double reflectionSpreadMs = 0.0;         // disabled — was causing collapse when close
+
+    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 42, p.mic_pattern, p.spkl_angle, p.micl_angle, maxRefDist, minJitterMs);
+    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 43, p.mic_pattern, p.spkr_angle, p.micl_angle, maxRefDist, minJitterMs);
+    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 44, p.mic_pattern, p.spkl_angle, p.micr_angle, maxRefDist, minJitterMs);
+    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 45, p.mic_pattern, p.spkr_angle, p.micr_angle, maxRefDist, minJitterMs);
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size()) + " reflections…");
 
     double diff = p.diffusion;
+    // When "early reflections only" is on we normally use no diffusion (sharp ER).
+    // If speakers are close, moderate diffusion helps break the periodic delay (jitter alone often isn't enough).
     double earlyDiff = eo ? 0.0 : diff;
-    std::vector<double> eLL = renderCh(rLL, irLen, den, sr, earlyDiff);
-    std::vector<double> eRL = renderCh(rRL, irLen, den, sr, earlyDiff);
-    std::vector<double> eLR = renderCh(rLR, irLen, den, sr, earlyDiff);
-    std::vector<double> eRR = renderCh(rRR, irLen, den, sr, earlyDiff);
+    if (eo && close)
+        earlyDiff = 0.50;
+    std::vector<double> eLL = renderCh(rLL, irLen, den, sr, earlyDiff, reflectionSpreadMs);
+    std::vector<double> eRL = renderCh(rRL, irLen, den, sr, earlyDiff, reflectionSpreadMs);
+    std::vector<double> eLR = renderCh(rLR, irLen, den, sr, earlyDiff, reflectionSpreadMs);
+    std::vector<double> eRR = renderCh(rRR, irLen, den, sr, earlyDiff, reflectionSpreadMs);
 
     report(0.60, "Synthesising FDN reverb tail…");
 
@@ -625,23 +714,51 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
             eR[(size_t)i] = eLR[(size_t)i] + eRR[(size_t)i];
         }
 
-        // Pre-diffuse the FDN seed signals to prevent coherent echoes when speakers
-        // are placed off-centre.  When both speakers are far from one mic (e.g. both
-        // left, far-side = right mic), the direct-path pulse arrives late (~50 ms).
-        // That late pulse recirculates through FDN delay lines of ~63–72 ms and
-        // re-emerges as a clearly audible first-order echo at ~114–123 ms ≈ "120 ms
-        // delay".  For centred speakers the same-side direct path is only ~14 ms, so
-        // its echoes (14+63=77 ms etc.) fall inside the 85 ms seeding window and are
-        // absorbed before the output phase begins — but with off-centre speakers only
-        // 2 of the 16 delay lines are hidden.
-        //
-        // Applying the allpass diffuser to eL/eR before seeding spreads the sharp
-        // direct-path spike over ~17 ms, breaking up the coherent single-recurrence
-        // echo.  The actual ER output (eLL/eRL/eLR/eRR) is untouched — discrete
-        // early reflections remain sharp.
+        // When sources are very close (coincident), eL/eR have nearly identical direct
+        // paths so the FDN seed spike is 2x and recirculates as a repeat. Scale down
+        // gently (0.8) so we don't collapse the tail; 0.5 was too aggressive.
+        if (coincident)
         {
-            AllpassDiffuser dL = makeAllpassDiffuser(sr, 0.5);
-            AllpassDiffuser dR = makeAllpassDiffuser(sr, 0.5);
+            for (int i = 0; i < irLen; ++i)
+            {
+                eL[(size_t)i] *= 0.8;
+                eR[(size_t)i] *= 0.8;
+            }
+        }
+
+        // Pre-diffuse the FDN seed to prevent coherent echoes when speakers are
+        // coincident or close to one mic.  A sharp spike recirculates in the FDN
+        // and re-emerges at the longest delay as a repeating ping.  Use three
+        // stages: short (17 ms spread) -> long (35 ms spread) -> short again, so
+        // the seed is smeared over 50+ ms and no single FDN line gets a clean repeat.
+        {
+            AllpassDiffuser dL = makeAllpassDiffuser(sr, 0.80);
+            AllpassDiffuser dR = makeAllpassDiffuser(sr, 0.80);
+            for (int i = 0; i < irLen; ++i)
+            {
+                eL[(size_t)i] = dL.process(eL[(size_t)i]);
+                eR[(size_t)i] = dR.process(eR[(size_t)i]);
+            }
+            // Long allpass (31.7, 17.3, 11.2, 5.7 ms) spreads seed over ~35 ms.
+            {
+                AllpassDiffuser longL, longR;
+                longL.g = longR.g = 0.62;
+                for (int i = 0; i < 4; ++i)
+                {
+                    int d = (int)std::round(sr * (i == 0 ? 0.0317 : i == 1 ? 0.0173 : i == 2 ? 0.0112 : 0.0057));
+                    longL.delays[i] = longR.delays[i] = d;
+                    longL.bufs[i].resize((size_t)d, 0.0);
+                    longR.bufs[i].resize((size_t)d, 0.0);
+                    longL.ptrs[i] = longR.ptrs[i] = 0;
+                }
+                for (int i = 0; i < irLen; ++i)
+                {
+                    eL[(size_t)i] = longL.process(eL[(size_t)i]);
+                    eR[(size_t)i] = longR.process(eR[(size_t)i]);
+                }
+            }
+            dL = makeAllpassDiffuser(sr, 0.80);
+            dR = makeAllpassDiffuser(sr, 0.80);
             for (int i = 0; i < irLen; ++i)
             {
                 eL[(size_t)i] = dL.process(eL[(size_t)i]);
@@ -649,21 +766,68 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
             }
         }
 
-        std::vector<double> tL = renderFDNTail(rt, irLen, ec, eL, diff, sr, 100, p.width, p.depth, He);
-        std::vector<double> tR = renderFDNTail(rt, irLen, ec, eR, diff, sr, 101, p.width, p.depth, He);
+        // Start FDN seeding at the first reflection arrival (t_first), not at
+        // sample 0.  Before t_first the eL/eR signals are silent — seeding silence
+        // into the FDN wastes the ec warmup window.  By starting at t_first we
+        // guarantee the full ec (85 ms) is spent on real reverberant signal, so
+        // the FDN delay lines are properly loaded before output begins.
+        //
+        // ecFdn = t_first + ec  (new warmup-end / output-start sample)
+        //
+        // Echo absorption: any spike at T in eL echoes at T + fdnMaxMs.  For this
+        // to be absorbed inside Phase 2 (seed+output window) we need:
+        //   fdnMaxRefCut > T_spike + fdnMaxMs
+        //
+        // The worst-case spike is the direct-path at t_first, so:
+        //   fdnMaxRefCut > t_first + fdnMaxMs = (ecFdn - ec) + fdnMaxMs
+        //
+        // In practice we use (ecFdn + fdnMaxMs) × 1.1, which always satisfies
+        // the constraint regardless of speaker–mic distance.
+
+        // longest FDN delay line (same formula as inside renderFDNTail)
+        const double fdnVol  = p.width * p.depth * He;
+        const double fdnSurf = 2.0 * (p.width * p.depth + p.depth * He + p.width * He);
+        const double fdnMfp  = 4.0 * fdnVol / fdnSurf;
+        const double fdnMaxMs = std::max(130.0, fdnMfp / SPEED * 1000.0 * 3.0);
+
+        auto dist3d = [](double ax, double ay, double az,
+                         double bx, double by, double bz) -> double {
+            double dx = ax-bx, dy = ay-by, dz = az-bz;
+            return std::sqrt(dx*dx + dy*dy + dz*dz);
+        };
+        // t_first: first sample where eL/eR carry real signal (min direct-path).
+        // Subtract one sample as a small safety margin against flooring errors.
+        const double minDirectDistM = std::min({
+            dist3d(rlx, rly, rz, slx, sly, sz),
+            dist3d(rlx, rly, rz, srx, sry, sz),
+            dist3d(rrx, rry, rz, slx, sly, sz),
+            dist3d(rrx, rry, rz, srx, sry, sz)
+        });
+        const int t_first      = std::max(0, (int)std::floor(minDirectDistM / SPEED * sr) - 1);
+        const int ecFdn        = std::min(irLen, t_first + ec);
+        const int fdnMaxRefCut = std::min(irLen,
+            (int)std::ceil((ecFdn + fdnMaxMs * sr / 1000.0) * 1.1));
+
+        std::vector<double> tL = renderFDNTail(rt, irLen, ecFdn, eL, diff, sr, 100, p.width, p.depth, He, fdnMaxRefCut);
+        std::vector<double> tR = renderFDNTail(rt, irLen, ecFdn, eR, diff, sr, 101, p.width, p.depth, He, fdnMaxRefCut);
 
         iLL.resize((size_t)irLen);
         iRL.resize((size_t)irLen);
         iLR.resize((size_t)irLen);
         iRR.resize((size_t)irLen);
         int xfade = (int)std::floor(0.020 * sr);
+
         for (int i = 0; i < irLen; ++i)
         {
-            double tf = (i < ec - xfade) ? 0.0 : (i < ec) ? (double)(i - (ec - xfade)) / xfade : 1.0;
+            // FDN tail fades in as it starts outputting at ecFdn.
+            // For centred speakers ecFdn ≈ ec so behaviour is unchanged.
+            // For far speakers ecFdn is later; tL/tR are zero before ecFdn anyway.
+            double tf = (i < ecFdn - xfade) ? 0.0
+                      : (i < ecFdn)         ? (double)(i - (ecFdn - xfade)) / xfade
+                      : 1.0;
+
             double tailL = tL[(size_t)i] * tf * 0.5 * bakedTailGain;
             double tailR = tR[(size_t)i] * tf * 0.5 * bakedTailGain;
-            // Keep the full image-source field and fade the diffuse tail in on top.
-            // Otherwise the later discrete reflections only survive in ER-only mode.
             iLL[(size_t)i] = eLL[(size_t)i] * bakedErGain + tailL;
             iRL[(size_t)i] = eRL[(size_t)i] * bakedErGain + tailL;
             iLR[(size_t)i] = eLR[(size_t)i] * bakedErGain + tailR;

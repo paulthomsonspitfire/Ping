@@ -18,17 +18,17 @@ struct IRSynthParams
     // Surfaces
     std::string floor_material   = "Hardwood floor";
     std::string ceiling_material = "Painted plaster";
-    std::string wall_material    = "Painted plaster";
-    double window_fraction       = 0.0;   // 0..1 fraction of wall area that is glazing (brick + glass blend)
+    std::string wall_material    = "Concrete / bare brick";
+    double window_fraction       = 0.27;   // 0..1 fraction of wall area that is glazing (brick + glass blend)
 
     // Contents
-    double audience  = 0.0;   // 0..1
-    double diffusion = 0.4;   // 0..1
+    double audience  = 0.45;   // 0..1
+    double diffusion = 0.40;   // 0..1
 
     // Architecture
-    std::string vault_type = "None (flat)";
-    double organ_case = 0.0;  // 0..1
-    double balconies  = 0.0;  // 0..1
+    std::string vault_type = "Groin / cross vault  (Lyndhurst Hall)";
+    double organ_case = 0.59;  // 0..1
+    double balconies  = 0.54;  // 0..1
 
     // Air
     double temperature = 20.0; // °C  (currently only affects speed-of-sound display, not used in engine in v5)
@@ -134,7 +134,9 @@ private:
         bool eo, int ec, int sr,
         uint32_t seed,
         const std::string& micPat,
-        double spkFaceAngle, double micFaceAngle);
+        double spkFaceAngle, double micFaceAngle,
+        double maxRefDist,
+        double minJitterMs = 0.0);
 
     static std::vector<double> bpF (const std::vector<double>& buf, double fc, int sr);
     static std::vector<double> lpF (const std::vector<double>& buf, double fc, int sr);
@@ -153,12 +155,14 @@ private:
 
     static std::vector<double> renderCh (
         const std::vector<Ref>& refs,
-        int irLen, double den, int sr, double diffusion);
+        int irLen, double den, int sr, double diffusion,
+        double reflectionSpreadMs = 0.0);
 
     static std::vector<double> renderFDNTail (
         const std::vector<double>& rt60s,
         int irLen, int erCut,
         const std::vector<double>& erIR,
         double diffusion, int sr, uint32_t seed,
-        double roomW, double roomD, double roomH);
+        double roomW, double roomD, double roomH,
+        int maxRefCut = -1);  // -1 → same as erCut (old behaviour)
 };
