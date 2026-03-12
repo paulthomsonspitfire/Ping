@@ -168,10 +168,9 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
     const std::string& micPat,
     double spkFaceAngle, double micFaceAngle,
     double maxRefDist,
-    double minJitterMs)
+    double minJitterMs,
+    double highOrderJitterMs)
 {
-    (void) eo;
-    (void) ec;
     double W = p.width, D = p.depth;
     Rng rng = mkRng(seed);
     std::vector<Ref> refs;
@@ -180,6 +179,7 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
         for (int ny = -mo; ny <= mo; ++ny)
             for (int nz = -mo; nz <= mo; ++nz)
             {
+                int totalBounces = std::abs(nx) + std::abs(ny) + std::abs(nz);
                 double ix = nx * W + (nx % 2 ? W - sx : sx);
                 double iy = ny * D + (ny % 2 ? D - sy : sy);
                 double iz = nz * He + (nz % 2 ? He - sz : sz);
@@ -192,17 +192,30 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
 
                 int t = (int)std::floor(dist / SPEED * sr);
                 if (ts > 0.05) t = std::max(1, t + (int)std::floor(rU(rng, -ts * 4.0, ts * 4.0) * sr / 1000.0));
-                if (minJitterMs > 0.0) t = std::max(1, t + (int)std::floor(rU(rng, -minJitterMs, minJitterMs) * sr / 1000.0));
-
-                int totalBounces = std::abs(nx) + std::abs(ny) + std::abs(nz);
+                // Order-dependent jitter when sources are close: keep direct and first-order
+                // tight (small jitter); scramble order 2+ to break the periodic decaying echo
+                // that comes from repeated bounces (e.g. floor-ceiling at 2*H/c).
+                double jitterMs = (totalBounces >= 2) ? highOrderJitterMs : minJitterMs;
+                if (jitterMs > 0.0) t = std::max(1, t + (int)std::floor(rU(rng, -jitterMs, jitterMs) * sr / 1000.0));
+                // In ER-only mode, skip image sources that arrive at or beyond the ER
+                // window boundary.  In full-reverb mode keep all sources — late ones seed
+                // the FDN (ef=0 after ecFdn prevents them appearing in the ER output).
+                if (eo && t >= ec) continue;
                 // Screen-style room coordinates: 0 = right, +pi/2 = down.
                 double az = std::atan2(iy - ry, ix - rx);
                 double mg = micG(az, micPat, micFaceAngle);
-                // Image-source coordinates are not a physical emitter position.
-                // Using them here can make distant placements louder than nearby
-                // ones, so source directivity is based on the real source->mic ray.
+                // Source directivity: direct (0) and first-order (1) use speaker pattern;
+                // from order 2 onwards, blend to omnidirectional so late reflections
+                // are not over-attenuated by the cardioid.
                 double spkAz = std::atan2(ry - sy, rx - sx);
-                double sg = spkG(spkFaceAngle, spkAz);
+                double sgDir = spkG(spkFaceAngle, spkAz);
+                double sg;
+                if (totalBounces <= 1)
+                    sg = sgDir;
+                else if (totalBounces == 2)
+                    sg = 0.5 * sgDir + 0.5;   // blend directional -> omni
+                else
+                    sg = 1.0;                 // order 3+ fully omnidirectional
                 double polarity = (totalBounces % 2 == 0) ? 1.0 : -1.0;
 
                 std::array<double,6> amps;
@@ -217,6 +230,29 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                     amps[b] = a * std::pow(10.0, -AIR[b] * dist / 20.0) * mg * sg * polarity;
                 }
                 refs.push_back({ t, amps, az });
+
+                // Feature A — Lambert diffuse scattering: add N_SCATTER secondary refs per
+                // bounce at orders 1–3 so the space between specular spikes is filled.
+#if 1  // Feature A — Lambert diffuse scattering (set to 0 to disable)
+                const int N_SCATTER = 2;
+                if (ts > 0.05 && totalBounces >= 1 && totalBounces <= 3)
+                {
+                    double scatterWeight = (ts * 0.08) / (double)N_SCATTER * std::pow(0.6, totalBounces - 1);
+                    for (int s = 0; s < N_SCATTER; ++s)
+                    {
+                        double scatterAz = rU(rng, -3.141592653589793, 3.141592653589793);
+                        int scatterT = t + (int)std::round(rU(rng, 0.0, 4.0) * sr / 1000.0);
+                        scatterT = std::max(1, scatterT);
+                        // Gate scatter refs beyond the ER window in ER-only mode.
+                        // Parent t < ec, but the +0–4 ms scatter offset could push it over.
+                        if (eo && scatterT >= ec) continue;
+                        std::array<double,6> scatterAmps;
+                        for (int b = 0; b < 6; ++b)
+                            scatterAmps[b] = amps[b] * scatterWeight;
+                        refs.push_back({ scatterT, scatterAmps, scatterAz });
+                    }
+                }
+#endif
             }
     return refs;
 }
@@ -284,6 +320,68 @@ std::vector<double> IRSynthEngine::hpF (const std::vector<double>& buf, double f
     return out;
 }
 
+// ── bpFQ — high-Q bandpass biquad for modal resonators ─────────────────────
+// Same design as bpF but with explicit Q instead of the fixed octave-band Q.
+std::vector<double> IRSynthEngine::bpFQ (const std::vector<double>& buf, double fc, double Q, int sr)
+{
+    double K = std::tan(3.141592653589793 * fc / (double)sr);
+    double n = 1.0 / (1.0 + K / Q + K * K);
+    double b0 = K / Q * n, b2 = -b0;
+    double a1 = 2.0 * (K * K - 1.0) * n;
+    double a2 = (1.0 - K / Q + K * K) * n;
+    std::vector<double> out(buf.size());
+    double x1=0, x2=0, y1=0, y2=0;
+    for (size_t i = 0; i < buf.size(); ++i)
+    {
+        double x = buf[i];
+        double y = b0*x + b2*x2 - a1*y1 - a2*y2;
+        out[i] = y;  x2=x1; x1=x; y2=y1; y1=y;
+    }
+    return out;
+}
+
+// ── applyModalBank — add axial room-mode resonances below ~250 Hz ───────────
+// The image-source method is ray-based and under-represents low-frequency
+// standing-wave energy.  A parallel bank of IIR resonators tuned to the axial
+// modes of the room adds the modal ringing characteristic of large enclosed spaces.
+// Each resonator's Q is derived from the 125 Hz RT60 so modes decay correctly.
+std::vector<double> IRSynthEngine::applyModalBank (
+    const std::vector<double>& buf,
+    double W, double D, double He,
+    double rt60_125, double gain, int sr)
+{
+    // Axial mode frequencies: f_n = c*n / (2*L), n = 1..4 per dimension
+    std::vector<double> modes;
+    for (int n = 1; n <= 4; ++n)
+    {
+        double fx = SPEED * n / (2.0 * W);
+        double fy = SPEED * n / (2.0 * D);
+        double fz = SPEED * n / (2.0 * He);
+        if (fx > 10.0 && fx < 250.0) modes.push_back(fx);
+        if (fy > 10.0 && fy < 250.0) modes.push_back(fy);
+        if (fz > 10.0 && fz < 250.0) modes.push_back(fz);
+    }
+    if (modes.empty()) return buf;
+
+    std::vector<double> modal(buf.size(), 0.0);
+    for (double fc : modes)
+    {
+        // Q = π*fc*RT60 / ln(1000) — standard decay-rate / bandwidth relationship
+        double Q = std::clamp(3.141592653589793 * fc * rt60_125 / 6.908, 8.0, 80.0);
+        // Lower modes carry more energy; weight ∝ 60/fc, clamped to avoid extreme boosts
+        double modeGain = gain * std::min(60.0 / fc, 2.0);
+        std::vector<double> res = bpFQ(buf, fc, Q, sr);
+        for (size_t i = 0; i < modal.size(); ++i)
+            modal[i] += res[i] * modeGain;
+    }
+    // Normalise by mode count so total level is stable regardless of room dimensions
+    const double norm = 1.0 / (double)modes.size();
+    std::vector<double> out(buf.size());
+    for (size_t i = 0; i < out.size(); ++i)
+        out[i] = buf[i] + modal[i] * norm;
+    return out;
+}
+
 // ── makeAllpassDiffuser — verbatim from JS ─────────────────────────────────
 IRSynthEngine::AllpassDiffuser IRSynthEngine::makeAllpassDiffuser (int sr, double diffusion)
 {
@@ -293,6 +391,26 @@ IRSynthEngine::AllpassDiffuser IRSynthEngine::makeAllpassDiffuser (int sr, doubl
     ap.delays[1] = (int)std::round(sr * 0.0063);
     ap.delays[2] = (int)std::round(sr * 0.0023);
     ap.delays[3] = (int)std::round(sr * 0.0008);
+    for (int i = 0; i < 4; ++i)
+    {
+        ap.bufs[i].resize((size_t)ap.delays[i], 0.0);
+        ap.ptrs[i] = 0;
+    }
+    return ap;
+}
+
+// ── makeAllpassDiffuserForER — ER diffusion without dominant 17 ms repeat ─
+// The default allpass (17.1, 6.3, 2.3, 0.8 ms) creates a clear repeating delay
+// at 17.1 ms when used on the early reflections. Use shorter incommensurate
+// delays so no single period dominates.
+IRSynthEngine::AllpassDiffuser IRSynthEngine::makeAllpassDiffuserForER (int sr, double diffusion)
+{
+    AllpassDiffuser ap;
+    ap.g = 0.5 + diffusion * 0.25;
+    ap.delays[0] = (int)std::round(sr * 0.0081);
+    ap.delays[1] = (int)std::round(sr * 0.0047);
+    ap.delays[2] = (int)std::round(sr * 0.0023);
+    ap.delays[3] = (int)std::round(sr * 0.0007);
     for (int i = 0; i < 4; ++i)
     {
         ap.bufs[i].resize((size_t)ap.delays[i], 0.0);
@@ -321,7 +439,8 @@ double IRSynthEngine::AllpassDiffuser::process (double x)
 std::vector<double> IRSynthEngine::renderCh (
     const std::vector<Ref>& refs,
     int irLen, double den, int sr, double diffusion,
-    double reflectionSpreadMs)
+    double reflectionSpreadMs,
+    double freqScatterMs)
 {
     std::vector<std::vector<double>> bi(6);
     for (int b = 0; b < 6; ++b)
@@ -338,7 +457,22 @@ std::vector<double> IRSynthEngine::renderCh (
         {
             if (r.t >= irLen) continue;
             for (int b = 0; b < 6; ++b)
-                bi[b][(size_t)r.t] += r.amps[b] * den * (1.0 - lat * (b / 5.0) * 0.5);
+            {
+                int bt = r.t;
+                if (freqScatterMs > 0.0 && b > 0)
+                {
+                    // Frequency-dependent scattering: higher frequency bands scatter more
+                    // because shorter wavelengths interact with surface micro-structure.
+                    // A deterministic hash of (arrival_sample, band) gives reproducible,
+                    // per-band uncorrelated offsets — no extra RNG state needed.
+                    uint32_t h = ((uint32_t)(r.t + 1) * 2654435769u) ^ ((uint32_t)b * 1234567891u);
+                    double frac = (double)(h & 0xFFFF) / 65535.0 - 0.5;  // −0.5 … +0.5
+                    double scale = (double)b / 5.0;                        // 0 @ 125Hz → 1 @ 4kHz
+                    bt += (int)std::round(frac * 2.0 * freqScatterMs * scale * sr / 1000.0);
+                    bt = std::clamp(bt, 0, irLen - 1);
+                }
+                bi[b][(size_t)bt] += r.amps[b] * den * (1.0 - lat * (b / 5.0) * 0.5);
+            }
         }
         else
         {
@@ -373,6 +507,17 @@ std::vector<double> IRSynthEngine::renderCh (
         }
     }
 
+    // Temporal smoothing DISABLED: a 5 ms moving average replaces each sample with
+    // the window mean, which divides each reflection peak by ~(window length).
+    // That attenuated content after 60 ms by ~200× and caused "extremely quiet
+    // reverb". To soften periodic peaks without killing level, use a gentler
+    // method (e.g. very short window, or envelope-based smoothing).
+    // {
+    //     const int smoothStart = (int)std::round(0.060 * sr);
+    //     const int halfWin    = (int)std::round(0.0025 * sr);
+    //     ...
+    // }
+
     if (diffusion > 0.02)
     {
         // Deferred allpass diffusion: keep discrete early reflections sharp,
@@ -380,16 +525,16 @@ std::vector<double> IRSynthEngine::renderCh (
         //
         // IMPORTANT: start the allpass loop at dryEnd, NOT at sample 0.
         // If we process from sample 0, strong early spikes create allpass
-        // echoes at 17.1 ms intervals that bleed into the wet region at 65 ms+
-        // and are audible as a clear repeating delay.  Starting at dryEnd means
-        // the allpass state is cold (zero) when diffusion kicks in, so no
-        // early-spike echoes can leak through.
+        // echoes that bleed into the wet region.  Starting at dryEnd means
+        // the allpass state is cold (zero) when diffusion kicks in.
+        // Use ER-specific allpass (shorter incommensurate delays) so we don't
+        // get a dominant 17.1 ms repeating delay from the default allpass.
         const int dryEnd   = (int)std::round(0.065 * sr);  // pure-dry up to here
         const int fadeLen  = (int)std::round(0.020 * sr);  // crossfade window
         const int wetStart = dryEnd + fadeLen;              // fully-wet from here
 
         std::vector<double> wet((size_t)irLen, 0.0);
-        AllpassDiffuser diff = makeAllpassDiffuser(sr, diffusion);
+        AllpassDiffuser diff = makeAllpassDiffuserForER(sr, diffusion);
         for (int i = dryEnd; i < irLen; ++i)
             wet[(size_t)i] = diff.process(raw[(size_t)i]);
 
@@ -680,13 +825,16 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
     const double coincidentThreshold = roomMin * 0.10;  // very close: gentle FDN seed scale only
     const bool close = (srcDist < closeThreshold);
     const bool coincident = (srcDist < coincidentThreshold);
-    const double minJitterMs = close ? 1.2 : 0.0;  // jitter only (no spread) so level stays up
-    const double reflectionSpreadMs = 0.0;         // disabled — was causing collapse when close
+    // When close: small jitter on direct/first-order (keep them tight), larger jitter on
+    // order 2+ to break the periodic echo from repeated wall/floor/ceiling bounces.
+    const double jitterOrder01Ms = close ? 0.25 : 0.0;
+    const double jitterOrder2PlusMs = close ? 2.5 : 0.0;
+    const double reflectionSpreadMs = 0.0;  // disabled — was causing collapse when close
 
-    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 42, p.mic_pattern, p.spkl_angle, p.micl_angle, maxRefDist, minJitterMs);
-    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 43, p.mic_pattern, p.spkr_angle, p.micl_angle, maxRefDist, minJitterMs);
-    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 44, p.mic_pattern, p.spkl_angle, p.micr_angle, maxRefDist, minJitterMs);
-    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 45, p.mic_pattern, p.spkr_angle, p.micr_angle, maxRefDist, minJitterMs);
+    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 42, p.mic_pattern, p.spkl_angle, p.micl_angle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 43, p.mic_pattern, p.spkr_angle, p.micl_angle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 44, p.mic_pattern, p.spkl_angle, p.micr_angle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 45, p.mic_pattern, p.spkr_angle, p.micr_angle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size()) + " reflections…");
 
@@ -696,10 +844,15 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
     double earlyDiff = eo ? 0.0 : diff;
     if (eo && close)
         earlyDiff = 0.50;
-    std::vector<double> eLL = renderCh(rLL, irLen, den, sr, earlyDiff, reflectionSpreadMs);
-    std::vector<double> eRL = renderCh(rRL, irLen, den, sr, earlyDiff, reflectionSpreadMs);
-    std::vector<double> eLR = renderCh(rLR, irLen, den, sr, earlyDiff, reflectionSpreadMs);
-    std::vector<double> eRR = renderCh(rRR, irLen, den, sr, earlyDiff, reflectionSpreadMs);
+    // Frequency-dependent scatter: scales with diffusion; 0 when diffusion is off.
+    // Scale is kept to ~one 4 kHz filter time-constant (≈0.4 ms) so the scatter
+    // is perceptible but does not diffuse the high-frequency reverb into a noise floor.
+    // At default settings (ts≈0.74), freqScatterMs ≈ 0.37 ms → ±18 samples at 4 kHz.
+    const double freqScatterMs = ts * 0.5;  // Feature C — frequency-dependent scatter (0 = off)
+    std::vector<double> eLL = renderCh(rLL, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
+    std::vector<double> eRL = renderCh(rRL, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
+    std::vector<double> eLR = renderCh(rLR, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
+    std::vector<double> eRR = renderCh(rRR, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
 
     report(0.60, "Synthesising FDN reverb tail…");
 
@@ -817,21 +970,108 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
         iRR.resize((size_t)irLen);
         int xfade = (int)std::floor(0.020 * sr);
 
+        // ── FDN level-match + ef residual floor ──────────────────────────────
+        // Problem: the ER boundary fix (ef=0 after ecFdn) removed late-ISM energy
+        // that was previously masking the FDN's low starting level.  The FDN IS
+        // seeded by the full ER, but the three-stage pre-diffusion cascade spreads
+        // its energy over time and the delay lines haven't all completed a full cycle
+        // by ecFdn.  Fix: two complementary techniques applied together.
+        //
+        // A — ef residual floor (erFloor): instead of ef → 0, decay to a small
+        //     constant so the already-fully-diffuse late-ISM contributes a natural
+        //     undertone.  eLL/eRL themselves decay at the room RT60, so no extra
+        //     envelope is needed — the contribution decays automatically.
+        //
+        // B — dynamic FDN gain (fdnGainL/R): windowed-RMS comparison at the
+        //     crossfade boundary produces a per-channel multiplier so that
+        //     tailL fills the (1 − erFloor) portion of the ER level, ensuring
+        //     iLL+iRL is continuous at ecFdn.
+        //
+        // Math: target at ecFdn  →  (eLL+eRL)·bakedErGain·erFloor  +  tL·bakedTailGain·fdnGainL
+        //                        =  (eLL+eRL)·bakedErGain
+        //     ∴  fdnGainL = RMS(eLL+eRL, ref)·bakedErGain·(1−erFloor) / (RMS(tL, fdn)·bakedTailGain)
+        const double erFloor  = 0.05;   // 5 % ER residual amplitude — fully diffuse past ecFdn
+        const double kMaxGain = 16.0;   // hard cap: +24 dB
+        const double kMinRms  = 1e-7;   // silence guard
+
+        auto wRMS = [&](const std::vector<double>& v, int a, int b) -> double {
+            a = std::max(a, 0); b = std::min(b, irLen);
+            if (b <= a) return 0.0;
+            double s = 0.0;
+            for (int i = a; i < b; ++i) s += v[(size_t)i] * v[(size_t)i];
+            return std::sqrt(s / (b - a));
+        };
+
+        double fdnGainL = 1.0, fdnGainR = 1.0;
+        {
+            // ER reference window: [ecFdn-xfade, ecFdn] — the last 20 ms before the
+            // crossfade starts, where ef=1.  The previous window ([ecFdn-2·xfade,
+            // ecFdn-xfade] ≈ [55–75 ms]) straddled the sparse-ISM / allpass-onset
+            // boundary, giving near-zero windowed RMS. This window sits further into
+            // the allpass diffusion zone (renderCh is fully diffused past 85 ms;
+            // ecFdn-xfade ≈ 79–95 ms for typical placements) and is therefore denser.
+            const int rA = ecFdn - xfade, rB = ecFdn;
+            int a = std::max(rA, 0), b = std::min(rB, irLen);
+            double sL = 0.0, sR = 0.0;
+            int n = std::max(b - a, 1);
+            for (int i = a; i < b; ++i)
+            {
+                double l = eLL[(size_t)i] + eRL[(size_t)i];
+                double r = eLR[(size_t)i] + eRR[(size_t)i];
+                sL += l * l; sR += r * r;
+            }
+            double erRmsL = std::sqrt(sL / n) * bakedErGain;
+            double erRmsR = std::sqrt(sR / n) * bakedErGain;
+
+            // FDN measurement window: [ecFdn+fdnMaxMs, ecFdn+fdnMaxMs+2·xfade].
+            // The previous window ([ecFdn, ecFdn+xfade]) captured the FDN's initial
+            // energy burst (16 delay lines releasing 99 ms of accumulated warmup), which
+            // can be much larger than the sparse ER reference, giving fdnGain < 1 and
+            // silencing the tail.  By waiting until the longest delay line has completed
+            // its first full recirculation cycle (fdnMaxMs ≈ 130 ms), the FDN is at a
+            // quasi-steady-state level that correctly represents the ongoing tail.
+            //
+            // The 0.5 blend factor is included in the denominator because the actual
+            // tail contribution is   tL * 0.5 * bakedTailGain * fdnGainL.
+            // Omitting it made fdnGain 2× too small in the previous version.
+            //
+            // fdnGain is clamped to [1.0, kMaxGain]: we only ever boost the tail,
+            // never attenuate it, so a mis-calibrated measurement cannot silence the FDN.
+            const int fdnMaxSamp = (int)std::ceil(fdnMaxMs * sr / 1000.0);
+            double fdnRmsL = wRMS(tL, ecFdn + fdnMaxSamp, ecFdn + fdnMaxSamp + 2 * xfade) * 0.5 * bakedTailGain;
+            double fdnRmsR = wRMS(tR, ecFdn + fdnMaxSamp, ecFdn + fdnMaxSamp + 2 * xfade) * 0.5 * bakedTailGain;
+
+            fdnGainL = (fdnRmsL > kMinRms)
+                ? std::min(std::max(erRmsL * (1.0 - erFloor) / fdnRmsL, 1.0), kMaxGain) : 1.0;
+            fdnGainR = (fdnRmsR > kMinRms)
+                ? std::min(std::max(erRmsR * (1.0 - erFloor) / fdnRmsR, 1.0), kMaxGain) : 1.0;
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         for (int i = 0; i < irLen; ++i)
         {
-            // FDN tail fades in as it starts outputting at ecFdn.
+            // FDN fade-in: 0→1 linear over [ecFdn-xfade, ecFdn] (unchanged).
             // For centred speakers ecFdn ≈ ec so behaviour is unchanged.
             // For far speakers ecFdn is later; tL/tR are zero before ecFdn anyway.
             double tf = (i < ecFdn - xfade) ? 0.0
                       : (i < ecFdn)         ? (double)(i - (ecFdn - xfade)) / xfade
                       : 1.0;
 
-            double tailL = tL[(size_t)i] * tf * 0.5 * bakedTailGain;
-            double tailR = tR[(size_t)i] * tf * 0.5 * bakedTailGain;
-            iLL[(size_t)i] = eLL[(size_t)i] * bakedErGain + tailL;
-            iRL[(size_t)i] = eRL[(size_t)i] * bakedErGain + tailL;
-            iLR[(size_t)i] = eLR[(size_t)i] * bakedErGain + tailR;
-            iRR[(size_t)i] = eRR[(size_t)i] * bakedErGain + tailR;
+            // ER fade-out: 1→erFloor cosine over [ecFdn-xfade, ecFdn], then constant
+            // erFloor thereafter.  Fading to erFloor (not 0) avoids a hard silence just
+            // before the FDN onset; the residual decays naturally at the room RT60
+            // because eLL/eRL are already decaying image-source signals.
+            double ef;
+            if      (i < ecFdn - xfade) ef = 1.0;
+            else if (i < ecFdn)         ef = erFloor + (1.0 - erFloor) * 0.5 * (1.0 + std::cos(M_PI * (double)(i - (ecFdn - xfade)) / xfade));
+            else                        ef = erFloor;
+
+            double tailL = tL[(size_t)i] * tf * 0.5 * bakedTailGain * fdnGainL;
+            double tailR = tR[(size_t)i] * tf * 0.5 * bakedTailGain * fdnGainR;
+            iLL[(size_t)i] = eLL[(size_t)i] * bakedErGain * ef + tailL;
+            iRL[(size_t)i] = eRL[(size_t)i] * bakedErGain * ef + tailL;
+            iLR[(size_t)i] = eLR[(size_t)i] * bakedErGain * ef + tailR;
+            iRR[(size_t)i] = eRR[(size_t)i] * bakedErGain * ef + tailR;
         }
     }
     else
@@ -840,13 +1080,32 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
         iRL.resize((size_t)irLen);
         iLR.resize((size_t)irLen);
         iRR.resize((size_t)irLen);
+        // Gentle 10 ms cosine taper approaching ec: avoids an abrupt silence
+        // boundary and prevents any sharp ISM spike right at the cut point from
+        // aliasing through the convolution engine.
+        const int erTaperLen   = (int)std::round(0.010 * sr);
+        const int erTaperStart = ec - erTaperLen;
         for (int i = 0; i < irLen; ++i)
         {
-            iLL[(size_t)i] = eLL[(size_t)i] * bakedErGain;
-            iRL[(size_t)i] = eRL[(size_t)i] * bakedErGain;
-            iLR[(size_t)i] = eLR[(size_t)i] * bakedErGain;
-            iRR[(size_t)i] = eRR[(size_t)i] * bakedErGain;
+            double erFade;
+            if      (i >= ec)           erFade = 0.0;
+            else if (i >= erTaperStart) erFade = 0.5 * (1.0 + std::cos(M_PI * (double)(i - erTaperStart) / erTaperLen));
+            else                        erFade = 1.0;
+
+            iLL[(size_t)i] = eLL[(size_t)i] * bakedErGain * erFade;
+            iRL[(size_t)i] = eRL[(size_t)i] * bakedErGain * erFade;
+            iLR[(size_t)i] = eLR[(size_t)i] * bakedErGain * erFade;
+            iRR[(size_t)i] = eRR[(size_t)i] * bakedErGain * erFade;
         }
+    }
+
+    // Feature B — modal resonance boost (axial room modes 10–250 Hz)
+    {
+        const double modalGain = 0.18;
+        iLL = applyModalBank(iLL, p.width, p.depth, He, rt[0], modalGain, sr);
+        iRL = applyModalBank(iRL, p.width, p.depth, He, rt[0], modalGain, sr);
+        iLR = applyModalBank(iLR, p.width, p.depth, He, rt[0], modalGain, sr);
+        iRR = applyModalBank(iRR, p.width, p.depth, He, rt[0], modalGain, sr);
     }
 
     report(0.85, "Finishing…");
@@ -876,6 +1135,16 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
     // Clipping only occurs below ~85 cm (cardioid default), which is an
     // implausible placement in any real room.  The host wet-level control
     // gives the user full range to compensate for overall level.
+
+    // Output level trim: +15 dB applied to all four channels at the very end,
+    // after all processing is complete.  This corrects for the observed level
+    // shortfall without touching any of the synthesis calculations.
+    {
+        const double gain15dB = std::pow(10.0, 15.0 / 20.0); // ≈ 5.6234
+        for (auto* v : { &iLL, &iRL, &iLR, &iRR })
+            for (double& s : *v)
+                s *= gain15dB;
+    }
 
     res.iLL = std::move(iLL);
     res.iRL = std::move(iRL);

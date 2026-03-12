@@ -136,11 +136,18 @@ private:
         const std::string& micPat,
         double spkFaceAngle, double micFaceAngle,
         double maxRefDist,
-        double minJitterMs = 0.0);
+        double minJitterMs = 0.0,
+        double highOrderJitterMs = 0.0);  // jitter for order 2+ (when close, breaks periodic echo)
 
-    static std::vector<double> bpF (const std::vector<double>& buf, double fc, int sr);
-    static std::vector<double> lpF (const std::vector<double>& buf, double fc, int sr);
-    static std::vector<double> hpF (const std::vector<double>& buf, double fc, int sr);
+    static std::vector<double> bpF  (const std::vector<double>& buf, double fc, int sr);
+    static std::vector<double> bpFQ (const std::vector<double>& buf, double fc, double Q, int sr);
+    static std::vector<double> lpF  (const std::vector<double>& buf, double fc, int sr);
+    static std::vector<double> hpF  (const std::vector<double>& buf, double fc, int sr);
+
+    // Modal resonance boost: parallel IIR resonators tuned to axial modes below ~250 Hz
+    static std::vector<double> applyModalBank (const std::vector<double>& buf,
+                                               double W, double D, double He,
+                                               double rt60_125, double gain, int sr);
 
     // Allpass diffuser (matches JS makeAllpassDiffuser + inline processing)
     struct AllpassDiffuser
@@ -152,11 +159,14 @@ private:
         double process (double x);
     };
     static AllpassDiffuser makeAllpassDiffuser (int sr, double diffusion);
+    /** ER diffusion: shorter incommensurate delays to avoid the 17.1 ms repeat from the default allpass. */
+    static AllpassDiffuser makeAllpassDiffuserForER (int sr, double diffusion);
 
     static std::vector<double> renderCh (
         const std::vector<Ref>& refs,
         int irLen, double den, int sr, double diffusion,
-        double reflectionSpreadMs = 0.0);
+        double reflectionSpreadMs = 0.0,
+        double freqScatterMs = 0.0);  // per-band time scatter (0 = off); higher bands scatter more
 
     static std::vector<double> renderFDNTail (
         const std::vector<double>& rt60s,

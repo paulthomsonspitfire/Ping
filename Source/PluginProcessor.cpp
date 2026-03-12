@@ -380,12 +380,15 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         tsTailConvRR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
         rTail.addFrom (0, 0, tmp, 0, 0, numSamples);
 
+        // True-stereo IRs (from IR Synth) are not peak-normalised; level follows 1/r.
+        // Apply compensation so wet level is in a usable range at default ER/Tail settings.
+        const float trueStereoWetGain = 2.0f;
         for (int i = 0; i < numSamples; ++i)
         {
             float erG = erLevelSmoothed.getNextValue();
             float tailG = tailLevelSmoothed.getNextValue();
-            buffer.setSample (0, i, lEr.getSample (0, i) * erG + lTail.getSample (0, i) * tailG);
-            buffer.setSample (1, i, rEr.getSample (0, i) * erG + rTail.getSample (0, i) * tailG);
+            buffer.setSample (0, i, (lEr.getSample (0, i) * erG + lTail.getSample (0, i) * tailG) * trueStereoWetGain);
+            buffer.setSample (1, i, (rEr.getSample (0, i) * erG + rTail.getSample (0, i) * tailG) * trueStereoWetGain);
         }
     }
     else
