@@ -599,6 +599,12 @@ void PingProcessor::loadIRFromFile (const juce::File& file)
     loadIRFromBuffer (std::move (buf), currentIRSampleRate);
 }
 
+void PingProcessor::reloadSynthIR()
+{
+    if (rawSynthBuffer.getNumSamples() > 0)
+        loadIRFromBuffer (rawSynthBuffer, rawSynthSampleRate, true);
+}
+
 juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
 {
     if (currentIRBuffer.getNumSamples() == 0) return {};
@@ -634,6 +640,8 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         irFromSynth = true;
         selectedIRIndex = -1;
         synthesizedIRSampleRate = bufferSampleRate;
+        rawSynthBuffer = buffer;           // save raw copy before any transforms
+        rawSynthSampleRate = bufferSampleRate;
     }
     else
         irFromSynth = false;

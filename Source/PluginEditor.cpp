@@ -775,7 +775,12 @@ void PingEditor::refreshIRList()
 void PingEditor::loadSelectedIR()
 {
     int idx = irCombo.getSelectedId() - 2;  // id 1=Synth (idx -1), id 2+=file
-    if (idx < 0) return;  // Synthesized IR selected
+    if (idx < 0)
+    {
+        // Synth IR: re-process raw buffer with current reverse/trim/stretch/decay settings
+        pingProcessor.reloadSynthIR();
+        return;
+    }
     auto file = pingProcessor.getIRManager().getIRFileAt (idx);
     if (file.existsAsFile())
         pingProcessor.loadIRFromFile (file);

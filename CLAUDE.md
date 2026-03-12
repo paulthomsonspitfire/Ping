@@ -106,12 +106,14 @@ irInputGainSlider.setBounds (irKnobsCenterX - smallKnobSize/2 - irGainShift, ...
 
 ### Wet Output Gain position
 
-Wet Output Gain sits on the **same Y axis** as IR Input Gain (not below the Dry/Wet knob as originally). It is placed to the right of the already-shifted IR Input Gain slider with a gap of `smallKnobSize / 2` between their edges:
+Wet Output Gain sits on the **same Y axis** as IR Input Gain (not below the Dry/Wet knob as originally). It is placed to the right of the already-shifted IR Input Gain slider. The centre is computed as:
 
 ```cpp
-const int outputGainCenterX = irInputGainSlider.getRight() + smallKnobSize/2 + smallKnobSize/2;
+const int outputGainCenterX = irInputGainSlider.getRight() + smallKnobSize/2 + smallKnobSize/2 - smallKnobSize/4;
 const int outputGainY = dryWetCenterY - smallKnobSize - irKnobGap;
 ```
+
+Net gap between the right edge of IR Input Gain and the left edge of Wet Output Gain = `smallKnobSize/2 + smallKnobSize/2 - smallKnobSize/4` = `3/4 × smallKnobSize`.
 
 ### Version label
 
@@ -123,6 +125,46 @@ versionLabel.setBounds (tailRateSlider.getX(), getHeight() - 20, tailRateSlider.
 ```
 
 Because this references `tailRateSlider.getX()`, it must come **after** `tailRateSlider.setBounds()` in `resized()`.
+
+---
+
+## Reverse for synthesised IRs
+
+### Why it needs special handling
+
+`loadSelectedIR()` (PluginEditor.cpp) is the single entry point used by the Reverse button click handler and the waveform Trim-changed callback. For file-based IRs it calls `loadIRFromFile()` → `loadIRFromBuffer()`, which physically reverses the buffer if `reverse == true`. For the synth IR slot (`irCombo` id=1, idx=−1) it previously returned immediately, so toggling Reverse or moving the Trim handle had no effect on synth IRs.
+
+### Fix
+
+`PluginProcessor` stores a **raw (pre-processing) copy** of the last synthesised buffer. When `loadIRFromBuffer` is called with `fromSynth=true`, the buffer is saved before any reversal/trim/stretch/decay transforms are applied:
+
+```cpp
+// in loadIRFromBuffer(), inside the fromSynth block, BEFORE any transforms:
+rawSynthBuffer = buffer;
+rawSynthSampleRate = bufferSampleRate;
+```
+
+`reloadSynthIR()` re-calls `loadIRFromBuffer` with that stored raw copy, picking up the current `reverse`, `reversetrim`, `stretch`, and `decay` values:
+
+```cpp
+void PingProcessor::reloadSynthIR()
+{
+    if (rawSynthBuffer.getNumSamples() > 0)
+        loadIRFromBuffer (rawSynthBuffer, rawSynthSampleRate, true);
+}
+```
+
+`loadSelectedIR()` now calls `reloadSynthIR()` instead of silently returning:
+
+```cpp
+if (idx < 0)
+{
+    pingProcessor.reloadSynthIR();
+    return;
+}
+```
+
+The +15 dB output trim applied by `synthIR()` is already baked into the result vectors before `loadIRFromBuffer` is ever called, so it is preserved in `rawSynthBuffer` and survives every subsequent `reloadSynthIR()` call without double-boosting.
 
 ---
 
@@ -375,4 +417,5 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Waveform display uses dB scale, not linear** — Synthesised IRs are 8× the longest RT60 in length (up to 30 s). On a linear scale the entire tail collapses to a flat line 60+ dB below the onset spike. `dBFloor = −60.0f` maps the full decay range to [0, 1] so all room sizes produce a visible "ski-slope" shape. Do not revert to linear scale. The per-pixel peak-envelope scan (scanning every sample in each pixel's time range) is also essential — stride-based single-sample lookup misses the true peak because each pixel covers hundreds of samples.
 - **Version label is derived from `ProjectInfo::versionString`** — Do not hard-code the version string in `PluginEditor.cpp`. JUCE generates `ProjectInfo::versionString` automatically from `project(Ping VERSION x.y.z)` in `CMakeLists.txt`, so the label is always in sync with the build. Update `CMakeLists.txt` version when cutting a release; do not update `PluginEditor.cpp` separately.
 - **IR Input Gain and Wet Output Gain share the same Y row** — The two knobs are positioned on the same horizontal band (same `outputGainY = dryWetCenterY − smallKnobSize − irKnobGap`). IR Input Gain is to the left, shifted `(smallKnobSize * 3) / 4` west of `irKnobsCenterX`; Wet Output Gain anchors off `irInputGainSlider.getRight()` with a `smallKnobSize / 2` gap. Preserve this relationship if changing knob sizing — both derive from the same `smallKnobSize` constant.
+- **`rawSynthBuffer` stores the pre-processing synth IR — do not save it after any transforms** — It must be saved as the very first thing inside the `fromSynth` block of `loadIRFromBuffer`, before reverse/trim/stretch/decay are applied. If it were saved after transforms, `reloadSynthIR()` would double-apply them on every Reverse or Trim interaction.
 - **+15 dB output trim is intentional** — `synthIR()` applies a fixed `+15 dB` scalar (`gain15dB = pow(10, 15/20)`) to all four IR channels as the very last step, correcting for the observed output level shortfall. Do not remove this. It does not affect the synthesis calculations, RT60, ER/tail balance, or FDN gain calibration — it is a pure post-process scalar applied after everything else.

@@ -47,6 +47,7 @@ public:
     /** Load IR from buffer (e.g. reversed). Call from message thread.
         If fromSynth is true, marks current IR as synthesized and persists it with plugin state. */
     void loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth = false);
+    void reloadSynthIR();
 
     /** True when current IR came from IR Synth (not from file list). */
     bool isIRFromSynth() const { return irFromSynth; }
@@ -111,6 +112,8 @@ private:
     juce::SmoothedValue<float> tailLevelSmoothed;
 
     juce::AudioBuffer<float> currentIRBuffer;
+    juce::AudioBuffer<float> rawSynthBuffer;      // raw (pre-processing) copy of last synth IR
+    double rawSynthSampleRate = 48000.0;
     double currentSampleRate = 48000.0;
     int selectedIRIndex = -1;
     bool irFromSynth = false;
