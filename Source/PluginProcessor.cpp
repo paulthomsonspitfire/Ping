@@ -640,7 +640,52 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         irFromSynth = true;
         selectedIRIndex = -1;
         synthesizedIRSampleRate = bufferSampleRate;
-        rawSynthBuffer = buffer;           // save raw copy before any transforms
+
+        // Auto-trim trailing silence: scan for last sample above -80 dB, add 200 ms safety tail.
+        // Must run BEFORE rawSynthBuffer is saved so the stored raw copy is already trimmed.
+        {
+            const int nSamples = buffer.getNumSamples();
+            const int nCh      = buffer.getNumChannels();
+
+            float peak = 1.0e-6f;
+            for (int ch = 0; ch < nCh; ++ch)
+            {
+                const float* p = buffer.getReadPointer (ch);
+                for (int i = 0; i < nSamples; ++i)
+                    peak = juce::jmax (peak, std::abs (p[i]));
+            }
+
+            const float threshold = peak * 1.0e-4f; // −80 dB below peak
+
+            int lastSignificant = 0;
+            for (int ch = 0; ch < nCh; ++ch)
+            {
+                const float* p = buffer.getReadPointer (ch);
+                for (int i = nSamples - 1; i >= 0; --i)
+                {
+                    if (std::abs (p[i]) > threshold)
+                    {
+                        lastSignificant = juce::jmax (lastSignificant, i);
+                        break;
+                    }
+                }
+            }
+
+            const int safetyTail = (int) (0.2 * bufferSampleRate); // 200 ms
+            const int minLen     = (int) (0.3 * bufferSampleRate); // 300 ms floor
+            int newLen = juce::jmin (lastSignificant + safetyTail + 1, nSamples);
+            newLen     = juce::jmax (newLen, minLen);
+
+            if (newLen < nSamples)
+            {
+                juce::AudioBuffer<float> trimmed (nCh, newLen);
+                for (int ch = 0; ch < nCh; ++ch)
+                    trimmed.copyFrom (ch, 0, buffer, ch, 0, newLen);
+                buffer = std::move (trimmed);
+            }
+        }
+
+        rawSynthBuffer = buffer;           // save raw copy before any transforms (silence already trimmed)
         rawSynthSampleRate = bufferSampleRate;
     }
     else

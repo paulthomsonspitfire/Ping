@@ -991,8 +991,9 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
         //                        =  (eLL+eRL)·bakedErGain
         //     ∴  fdnGainL = RMS(eLL+eRL, ref)·bakedErGain·(1−erFloor) / (RMS(tL, fdn)·bakedTailGain)
         const double erFloor  = 0.05;   // 5 % ER residual amplitude — fully diffuse past ecFdn
-        const double kMaxGain = 16.0;   // hard cap: +24 dB
-        const double kMinRms  = 1e-7;   // silence guard
+        const double kMaxGain = 16.0;           // hard cap: +24 dB
+        const double kMinGain = 1.0 / kMaxGain; // floor: −24 dB — allows tail attenuation to match ER at distance
+        const double kMinRms  = 1e-7;           // silence guard
 
         auto wRMS = [&](const std::vector<double>& v, int a, int b) -> double {
             a = std::max(a, 0); b = std::min(b, irLen);
@@ -1035,16 +1036,18 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
             // tail contribution is   tL * 0.5 * bakedTailGain * fdnGainL.
             // Omitting it made fdnGain 2× too small in the previous version.
             //
-            // fdnGain is clamped to [1.0, kMaxGain]: we only ever boost the tail,
-            // never attenuate it, so a mis-calibrated measurement cannot silence the FDN.
+            // fdnGain is clamped to [kMinGain, kMaxGain] (±24 dB): the tail can be
+            // attenuated as well as boosted so that ER/tail balance stays consistent
+            // as speaker-to-mic distance changes.  kMinRms silence guard keeps the
+            // fallback at 1.0 if the FDN measurement window is silent.
             const int fdnMaxSamp = (int)std::ceil(fdnMaxMs * sr / 1000.0);
             double fdnRmsL = wRMS(tL, ecFdn + fdnMaxSamp, ecFdn + fdnMaxSamp + 2 * xfade) * 0.5 * bakedTailGain;
             double fdnRmsR = wRMS(tR, ecFdn + fdnMaxSamp, ecFdn + fdnMaxSamp + 2 * xfade) * 0.5 * bakedTailGain;
 
             fdnGainL = (fdnRmsL > kMinRms)
-                ? std::min(std::max(erRmsL * (1.0 - erFloor) / fdnRmsL, 1.0), kMaxGain) : 1.0;
+                ? std::min(std::max(erRmsL * (1.0 - erFloor) / fdnRmsL, kMinGain), kMaxGain) : 1.0;
             fdnGainR = (fdnRmsR > kMinRms)
-                ? std::min(std::max(erRmsR * (1.0 - erFloor) / fdnRmsR, 1.0), kMaxGain) : 1.0;
+                ? std::min(std::max(erRmsR * (1.0 - erFloor) / fdnRmsR, kMinGain), kMaxGain) : 1.0;
         }
         // ─────────────────────────────────────────────────────────────────────
 
