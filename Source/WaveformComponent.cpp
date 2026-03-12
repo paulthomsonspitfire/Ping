@@ -10,7 +10,8 @@ namespace
     const juce::Colour waveLine   { 0xffe8e8e8 };
     const juce::Colour textDim    { 0xff909090 };
     const juce::Colour trimLineColour { 0xffe8a84a };
-    constexpr float waveformGain = 1.5f;
+    constexpr float waveformMargin = 0.9f;  // fraction of half-height used (leaves a small border)
+    constexpr float dBFloor        = -60.0f; // level that maps to zero height (one full RT60 of range)
 }
 
 WaveformComponent::WaveformComponent (PingProcessor& p) : processor (p) {}
@@ -67,36 +68,100 @@ void WaveformComponent::paint (juce::Graphics& g)
     const float* ch2 = buf.getNumChannels() > 2 ? buf.getReadPointer (2) : nullptr;
     const float* ch3 = buf.getNumChannels() > 3 ? buf.getReadPointer (3) : nullptr;
 
+    // Find the true peak across every sample in every displayed channel.
+    // This must match exactly what the per-pixel max scan below will find, so both
+    // use the same channel-mixing formula.
+    float peakSample = 1.0e-6f;  // non-zero floor prevents divide-by-zero on silence
+    for (int i = 0; i < numSamples; ++i)
+    {
+        if (numChannels >= 4)
+        {
+            peakSample = juce::jmax (peakSample, std::abs ((ch0[i] + ch1[i]) * 0.5f));
+            peakSample = juce::jmax (peakSample, std::abs ((ch2[i] + ch3[i]) * 0.5f));
+        }
+        else
+        {
+            if (ch0) peakSample = juce::jmax (peakSample, std::abs (ch0[i]));
+            if (ch1) peakSample = juce::jmax (peakSample, std::abs (ch1[i]));
+        }
+    }
     for (int dispCh = 0; dispCh < displayChannels; ++dispCh)
     {
         int chY = (int) (inner.getY() + dispCh * (hPerCh + gapBetweenChannels));
         auto area = inner.withHeight ((int) hPerCh).withY ((float) chY).reduced (3);
-        juce::Path path;
-        juce::Path fillPath;
+        const int pixelW = (int) area.getWidth();
         float centreY = area.getCentreY();
-        path.startNewSubPath ((float) area.getX(), centreY);
-        fillPath.startNewSubPath ((float) area.getX(), centreY);
-        for (int x = 0; x < area.getWidth(); ++x)
+        float halfH   = area.getHeight() * 0.5f;
+
+        // For each pixel: scan every sample in its range for the peak absolute value,
+        // then convert to dB relative to the overall peak.  This gives the classic
+        // IR "ski-slope" decay shape and makes short/long rooms look equally useful.
+        auto pixelPeakAbs = [&] (int x) -> float
         {
-            int sampleIdx = (int) ((double) x / (double) area.getWidth() * numSamples);
-            if (sampleIdx >= numSamples) sampleIdx = numSamples - 1;
-            float level;
-            if (numChannels >= 4)
-                level = (dispCh == 0) ? (ch0[sampleIdx] + ch1[sampleIdx]) * 0.5f : (ch2[sampleIdx] + ch3[sampleIdx]) * 0.5f;
+            int s0 = (int) ((double) x      / pixelW * numSamples);
+            int s1 = (int) ((double)(x + 1) / pixelW * numSamples);
+            s0 = juce::jlimit (0, numSamples - 1, s0);
+            s1 = juce::jlimit (s0, numSamples - 1, s1);
+            float pk = 0.0f;
+            for (int i = s0; i <= s1; ++i)
+            {
+                float s;
+                if (numChannels >= 4)
+                    s = (dispCh == 0) ? (ch0[i] + ch1[i]) * 0.5f : (ch2[i] + ch3[i]) * 0.5f;
+                else
+                    s = (dispCh == 0 && ch0) ? ch0[i] : (dispCh == 1 && ch1) ? ch1[i] : 0.0f;
+                pk = juce::jmax (pk, std::abs (s));
+            }
+            return pk;
+        };
+
+        // Convert a peak absolute value to a height fraction in [0, 1].
+        // 0 dB (== overall peak)  →  1.0  (full half-height)
+        // dBFloor                 →  0.0  (centre line)
+        auto peakToFrac = [&] (float pk) -> float
+        {
+            if (pk <= 0.0f) return 0.0f;
+            float dB = 20.0f * std::log10 (pk / peakSample);
+            dB = juce::jmax (dB, dBFloor);
+            return (dB - dBFloor) / (-dBFloor);   // maps [dBFloor, 0] → [0, 1]
+        };
+
+        juce::Path fillPath;
+        juce::Path topPath;
+
+        // Forward pass — top edge of the symmetric fill
+        for (int x = 0; x < pixelW; ++x)
+        {
+            float deviation = peakToFrac (pixelPeakAbs (x)) * halfH * waveformMargin;
+            float px  = area.getX() + (float) x;
+            float yTop = centreY - deviation;
+
+            if (x == 0)
+            {
+                fillPath.startNewSubPath (px, centreY);
+                fillPath.lineTo (px, yTop);
+                topPath.startNewSubPath (px, yTop);
+            }
             else
-                level = (dispCh == 0 && ch0) ? ch0[sampleIdx] : (dispCh == 1 && ch1) ? ch1[sampleIdx] : 0.0f;
-            level *= waveformGain;
-            float y = centreY - level * area.getHeight();
-            float px = (float) area.getX() + x;
-            path.lineTo (px, y);
-            fillPath.lineTo (px, y);
+            {
+                fillPath.lineTo (px, yTop);
+                topPath.lineTo (px, yTop);
+            }
         }
-        fillPath.lineTo ((float) area.getRight(), centreY);
+
+        // Reverse pass — bottom edge mirrors the top
+        for (int x = pixelW - 1; x >= 0; --x)
+        {
+            float deviation = peakToFrac (pixelPeakAbs (x)) * halfH * waveformMargin;
+            float px = area.getX() + (float) x;
+            fillPath.lineTo (px, centreY + deviation);
+        }
         fillPath.closeSubPath();
+
         g.setColour (waveFill);
         g.fillPath (fillPath);
         g.setColour (waveLine);
-        g.strokePath (path, juce::PathStrokeType (1.8f));
+        g.strokePath (topPath, juce::PathStrokeType (1.8f));
     }
 
     // Reverse trim line overlay (only when Reverse is engaged)

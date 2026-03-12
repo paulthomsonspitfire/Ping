@@ -80,6 +80,7 @@ private:
     IRSynthComponent irSynthComponent;
     OutputLevelMeter outputLevelMeter;
     juce::Label licenceLabel;
+    juce::Label versionLabel;
     juce::Rectangle<int> spitfireBounds;
     juce::Rectangle<int> pingBounds;
 

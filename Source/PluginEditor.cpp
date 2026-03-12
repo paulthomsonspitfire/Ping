@@ -340,6 +340,12 @@ PingEditor::PingEditor (PingProcessor& p)
     licenceLabel.setColour (juce::Label::textColourId, textDim);
     licenceLabel.setFont (juce::FontOptions (11.0f));
 
+    addAndMakeVisible (versionLabel);
+    versionLabel.setJustificationType (juce::Justification::centred);
+    versionLabel.setColour (juce::Label::textColourId, textDim);
+    versionLabel.setFont (juce::FontOptions (11.0f));
+    versionLabel.setText (juce::String ("v") + ProjectInfo::versionString, juce::dontSendNotification);
+
     addChildComponent (licenceScreen);
     licenceScreen.onActivationSuccess = [this] (LicenceResult r, juce::String serial, juce::String displayName)
     {
@@ -495,9 +501,11 @@ void PingEditor::resized()
 
     const int irLabelW = juce::jmax (90, smallKnobSize * 2);
 
-    irInputGainSlider.setBounds (irKnobsCenterX - smallKnobSize / 2, dryWetCenterY - smallKnobSize - irKnobGap, smallKnobSize, smallKnobSize);
-    irInputGainLabel.setBounds (irKnobsCenterX - irLabelW / 2, irInputGainSlider.getBottom() + 2, irLabelW, labelH);
-    irInputGainReadout.setBounds (irKnobsCenterX - irLabelW / 2, irInputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
+    // IR Input Gain shifted left by 3/4 of the knob size
+    const int irGainShift = (smallKnobSize * 3) / 4;
+    irInputGainSlider.setBounds (irKnobsCenterX - smallKnobSize / 2 - irGainShift, dryWetCenterY - smallKnobSize - irKnobGap, smallKnobSize, smallKnobSize);
+    irInputGainLabel.setBounds (irKnobsCenterX - irLabelW / 2 - irGainShift, irInputGainSlider.getBottom() + 2, irLabelW, labelH);
+    irInputGainReadout.setBounds (irKnobsCenterX - irLabelW / 2 - irGainShift, irInputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
 
     irInputDriveSlider.setBounds (irKnobsCenterX - smallKnobSize / 2, irInputGainReadout.getBottom() + 4, smallKnobSize, smallKnobSize);
     irInputDriveLabel.setBounds (irKnobsCenterX - irLabelW / 2, irInputDriveSlider.getBottom() + 2, irLabelW, labelH);
@@ -514,11 +522,9 @@ void PingEditor::resized()
     int irComboX = irSynthX - irGap - irComboW;
     int irRowY = dryWetReadout.getBottom() + 6 + labelH;  // +labelH restores space from removed dry/wet image
 
-    // Wet Output: other side of dry/wet, same vertical level as second small knob (IR Input Drive)
-    const int outputGainGap = 8;
-    const int outputGainCenterX = juce::jmin (presetCenterX + bigKnobSize / 2 + outputGainGap + smallKnobSize / 2,
-                                              irComboX - smallKnobSize / 2 - 4);
-    const int outputGainY = irInputGainReadout.getBottom() + 4;
+    // Wet Output: same Y as IR Input Gain, placed to its right with a gap of smallKnobSize/2 minus smallKnobSize/4
+    const int outputGainCenterX = irInputGainSlider.getRight() + smallKnobSize / 2 + smallKnobSize / 2 - smallKnobSize / 4;
+    const int outputGainY = dryWetCenterY - smallKnobSize - irKnobGap;
     outputGainSlider.setBounds (outputGainCenterX - smallKnobSize / 2, outputGainY, smallKnobSize, smallKnobSize);
     outputGainLabel.setBounds (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + 2, irLabelW, labelH);
     outputGainReadout.setBounds (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
@@ -602,6 +608,7 @@ void PingEditor::resized()
     eqGraph.setBounds (eqRect);
 
     licenceLabel.setBounds (12, getHeight() - 20, getWidth() - 24, 16);
+    versionLabel.setBounds (tailRateSlider.getX(), getHeight() - 20, tailRateSlider.getWidth(), 16);
 }
 
 void PingEditor::comboBoxChanged (juce::ComboBox* combo)
