@@ -381,8 +381,8 @@ PingEditor::~PingEditor()
 
 void PingEditor::parameterChanged (const juce::String& parameterID, float)
 {
-    if ((parameterID == "stretch" || parameterID == "decay") && pingProcessor.getLastLoadedIRFile().existsAsFile())
-        pingProcessor.loadIRFromFile (pingProcessor.getLastLoadedIRFile());
+    if (parameterID == "stretch" || parameterID == "decay")
+        loadSelectedIR();
 }
 
 void PingEditor::paint (juce::Graphics& g)
