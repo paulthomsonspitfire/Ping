@@ -627,10 +627,26 @@ std::vector<double> IRSynthEngine::renderFDNTail (
 
     std::vector<int> writePtr(N, 0);
     std::vector<double> lfoRates(N), lfoPhaseAcc(N);
-    for (int i = 0; i < N; ++i)
     {
-        lfoRates[i] = (0.07 + i * 0.025) * 2.0 * 3.141592653589793 / sr;
-        lfoPhaseAcc[i] = (seed == 101 ? 3.141592653589793 : 0.0) + i * 0.7853;
+        // Use geometric (not linear/arithmetic) spacing for LFO rates so that no
+        // two delay lines share a rational beat frequency.  Linear spacing
+        // (0.07 + i*0.025 Hz) creates beats at exact multiples of 0.025 Hz; the
+        // worst pair (line 0 vs 15) beats at 0.375 Hz (~2.7 s period), which is
+        // audible as a periodic density fluctuation in a long tail.
+        //
+        // Geometric spacing: rate_i = r_base * k^i  where k is derived so the
+        // series spans 0.07 – 0.45 Hz over N=16 lines.  Because k is irrational,
+        // no two rates have a rational ratio, so their beats are aperiodic.
+        const double r_base_hz = 0.07;
+        const double r_top_hz  = 0.45;
+        const double k = std::pow(r_top_hz / r_base_hz, 1.0 / (N - 1)); // ≈ 1.1321
+        const double twoPiOverSr = 2.0 * 3.141592653589793 / sr;
+        const double channelPhaseOffset = (seed == 101 ? 3.141592653589793 : 0.0);
+        for (int i = 0; i < N; ++i)
+        {
+            lfoRates[i]    = r_base_hz * std::pow(k, i) * twoPiOverSr;
+            lfoPhaseAcc[i] = channelPhaseOffset + i * 0.7853;
+        }
     }
 
     auto readFrac = [&](int ch, int delaySamp) -> double
