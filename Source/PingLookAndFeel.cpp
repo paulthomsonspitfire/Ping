@@ -82,8 +82,16 @@ void PingLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& but
         return;
     }
 
+    juce::LookAndFeel_V4::drawButtonBackground (g, button, bg, isOver, isDown);
+}
+
+void PingLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
+                                        bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown)
+{
+    juce::String id = button.getComponentID();
     if (id == "ERCrossfeedSwitch" || id == "TailCrossfeedSwitch")
     {
+        auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
         bool on = button.getToggleState();
         float pillRadius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
         g.setColour (buttonBgDark);
@@ -99,8 +107,7 @@ void PingLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& but
         g.drawEllipse (cx - thumbRadius, cy - thumbRadius, thumbRadius * 2.0f, thumbRadius * 2.0f, 1.0f);
         return;
     }
-
-    juce::LookAndFeel_V4::drawButtonBackground (g, button, bg, isOver, isDown);
+    juce::LookAndFeel_V4::drawToggleButton (g, button, shouldDrawButtonAsHighlighted, shouldDrawButtonAsDown);
 }
 
 void PingLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& button,

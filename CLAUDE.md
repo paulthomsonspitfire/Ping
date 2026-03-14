@@ -297,6 +297,15 @@ The mode is set by `useTrueStereo` (bool, set when loading the IR).
 - `lIn → LL + RL → lEr`;  `rIn → LR + RR → rEr`.
 - Tail channels are summed the same way then mixed back.
 
+### Post-convolution crossfeed (ER and Tail)
+
+After convolution and **before** the ER/tail mix (and before EQ), each path can add a **delayed** and **attenuated** copy of the opposite channel (L→R and R→L) to improve stereo imaging and pan-tracking (e.g. tight early image with wider tail, or vice versa).
+
+- **Two independent paths:** **ER crossfeed** (early reflections only) and **Tail crossfeed** (tail only), each with its own on/off switch, delay (5–15 ms), and attenuation (−24–0 dB). When a path’s switch is off, that path’s crossfeed is skipped; delay/att knobs have no “off” meaning.
+- **Processing:** For each path that is on, the corresponding buffer(s) are processed in place: L += gain × delayed(R), R += gain × delayed(L), using circular delay lines (max 15 ms at current sample rate). Same logic for both true-stereo (separate lEr/rEr and lTail/rTail) and stereo 2ch (buffer = ER, tailBuffer = tail).
+- **State:** Four delay lines in `PluginProcessor` (`crossfeedErBufRtoL`, `crossfeedErBufLtoR`, `crossfeedTailBufRtoL`, `crossfeedTailBufLtoR`), initialised in `prepareToPlay()`, used only in `processBlock()`. No IR Synth engine changes.
+- **UI (Placement tab, IR Synth dialog):** Below the Height row, left column. One row of four rotary knobs: ER Delay, ER Att, Tail Delay, Tail Att (labels and readouts under each). Under the first pair, a pill-style on/off switch centred below the two knobs, with the label **ER CROSSFADE** in small caps below the switch. Under the second pair, same layout with **TAIL CROSSFADE**. Controls are wired to APVTS via `IRSynthComponent::setApvts()`; the switches use `PingLookAndFeel` (component IDs `ERCrossfeedSwitch`, `TailCrossfeedSwitch`) for the pill-switch drawing. Knobs use `rotarySliderFillColourId = accent` so the active arc is visible (yellow/orange).
+
 ---
 
 ## IR loading pipeline
@@ -433,7 +442,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Speaker directivity in image-source** — `spkG()` is applied using the real source→receiver angle, not the image-source position. This is deliberate: image-source positions aren't physical emitters and using them would give wrong distance-dependent directivity results.
 - **Deferred allpass diffusion** — The allpass starts at 65 ms (not sample 0) to prevent early-reflection spikes from creating audible 17ms-interval echoes in the tail.
 - **Stereo decorrelation allpass (R only)** — After EQ and before Width, the **right** channel of the wet buffer is passed through a 2-stage allpass (7.13 ms, 14.27 ms, g=0.5). Delays are incommensurate with FDN/diffuser times. Allpass has unity gain so the mono sum L+R is unchanged; the phase/time difference on R alone reduces stereo collapse at strong FDN modes and makes the tail feel more spacious. Implemented in `PluginProcessor` (decorrDelays, decorrBufs, decorrPtrs, decorrG); initialised in `prepareToPlay()`, processed in `processBlock()` before `applyWidth()`.
-- **Post-convolution crossfeed (ER and Tail)** — After convolution, before ER/tail mix: when **ER crossfeed on** or **Tail crossfeed on**, the corresponding buffer(s) get a delayed (5–15 ms) and attenuated (−24–0 dB) copy of the opposite channel (L→R, R→L). Four delay lines (two per path), on/off switch per path. Params: `erCrossfeedOn`, `erCrossfeedDelayMs`, `erCrossfeedAttDb`, `tailCrossfeedOn`, `tailCrossfeedDelayMs`, `tailCrossfeedAttDb`. UI: Placement tab (IR Synth), below Height, 3×2 block (switch + delay + att per row). No IR Synth engine changes.
+- **Post-convolution crossfeed (ER and Tail)** — After convolution, before ER/tail mix: when **ER crossfeed on** or **Tail crossfeed on**, the corresponding buffer(s) get a delayed (5–15 ms) and attenuated (−24–0 dB) copy of the opposite channel (L→R, R→L). Four delay lines (two per path), on/off switch per path. Params: `erCrossfeedOn`, `erCrossfeedDelayMs`, `erCrossfeedAttDb`, `tailCrossfeedOn`, `tailCrossfeedDelayMs`, `tailCrossfeedAttDb`. UI: Placement tab (IR Synth), below Height — one row of four knobs (ER Dly, ER Att, Tail Dly, Tail Att), then a pill-style switch and small-caps label (“ER CROSSFADE” / “TAIL CROSSFADE”) centred under each pair. No IR Synth engine changes.
 - **Constant-power dry/wet** — `√(mix)` / `√(1−mix)` crossfade. Don't change to linear without a reason.
 - **SmoothedValue everywhere** — All parameters that scale audio use `SmoothedValue` (20 ms). Any new audio-scaling parameter should do the same.
 - **loadIR from message thread only** — Convolver loading is not real-time safe. Always call `loadIRFromFile` / `loadIRFromBuffer` from the message thread (UI callbacks, timer, not processBlock).

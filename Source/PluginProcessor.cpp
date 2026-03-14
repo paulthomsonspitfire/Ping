@@ -1116,9 +1116,9 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.source_ly      = ir->getDoubleAttribute ("sly", 0.5);
     p.source_rx      = ir->getDoubleAttribute ("srx", 0.75);
     p.source_ry      = ir->getDoubleAttribute ("sry", 0.5);
-    p.receiver_lx     = ir->getDoubleAttribute ("rlx", 0.25);
+    p.receiver_lx     = ir->getDoubleAttribute ("rlx", 0.35);
     p.receiver_ly     = ir->getDoubleAttribute ("rly", 0.8);
-    p.receiver_rx     = ir->getDoubleAttribute ("rrx", 0.75);
+    p.receiver_rx     = ir->getDoubleAttribute ("rrx", 0.65);
     p.receiver_ry     = ir->getDoubleAttribute ("rry", 0.8);
     p.spkl_angle     = ir->getDoubleAttribute ("spkl", 1.57079632679);
     p.spkr_angle     = ir->getDoubleAttribute ("spkr", 1.57079632679);

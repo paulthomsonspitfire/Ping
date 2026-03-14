@@ -12,6 +12,8 @@ public:
                           juce::Slider& slider) override;
     void drawButtonBackground (juce::Graphics& g, juce::Button& button,
                                const juce::Colour&, bool isMouseOver, bool isButtonDown) override;
+    void drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,
+                           bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
     void drawButtonText (juce::Graphics& g, juce::TextButton& button,
                         bool isMouseOver, bool isButtonDown) override;
 
