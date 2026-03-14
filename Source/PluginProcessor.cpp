@@ -257,6 +257,14 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     midBand.prepare (spec);
     highBand.prepare (spec);
 
+    // Stereo decorrelation allpass (R channel only): 7.13 ms, 14.27 ms — incommensurate with FDN
+    decorrDelays[0] = std::max (1, (int)std::round (7.13 * sampleRate / 1000.0));
+    decorrDelays[1] = std::max (1, (int)std::round (14.27 * sampleRate / 1000.0));
+    decorrBufs[0].resize ((size_t)decorrDelays[0], 0.0f);
+    decorrBufs[1].resize ((size_t)decorrDelays[1], 0.0f);
+    decorrPtrs[0] = 0;
+    decorrPtrs[1] = 0;
+
     updateGains();
     updatePredelay();
     updateEQ();
@@ -417,6 +425,27 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     lowBand.process (context);
     midBand.process (context);
     highBand.process (context);
+
+    // Stereo decorrelation: 2-stage allpass on R channel only (preserves mono sum, widens tail image)
+    if (numChannels >= 2)
+    {
+        float* R = buffer.getWritePointer (1);
+        for (int i = 0; i < numSamples; ++i)
+        {
+            float s = R[i];
+            for (int stage = 0; stage < 2; ++stage)
+            {
+                const int d = decorrDelays[stage];
+                const int p = decorrPtrs[stage];
+                float delayed = decorrBufs[stage][(size_t)p];
+                float w = s + decorrG * delayed;
+                decorrBufs[stage][(size_t)p] = w;
+                decorrPtrs[stage] = (p + 1) % d;
+                s = -decorrG * w + delayed;
+            }
+            R[i] = s;
+        }
+    }
 
     // Modulation: LFO on wet gain (period 0.01..2 s, depth 0..100%) — UI reversed: left = slow, right = fast
     float modRateRaw = apvts.getRawParameterValue (IDs::modRate)->load();

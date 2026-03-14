@@ -1,6 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <array>
+#include <vector>
 #include "IRManager.h"
 #include "IRSynthEngine.h"
 #include "LicenceVerifier.h"
@@ -103,6 +105,11 @@ private:
     bool useTrueStereo = false;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> predelayLine;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> chorusDelayLine;
+    // Stereo decorrelation: 2-stage allpass on R only (7.13 ms, 14.27 ms), incommensurate with FDN
+    std::array<int, 2> decorrDelays {};
+    std::array<std::vector<float>, 2> decorrBufs;
+    std::array<int, 2> decorrPtrs {};
+    float decorrG = 0.5f;
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand;
     juce::SmoothedValue<float> inputGainSmoothed;
