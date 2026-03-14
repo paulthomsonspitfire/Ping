@@ -94,6 +94,41 @@ IRSynthComponent::IRSynthComponent()
     setupDimRow (depthLabel, depthValueLabel, depthSlider, "Depth");
     setupDimRow (heightLabel, heightValueLabel, heightSlider, "Height");
 
+    // Crossfeed (Placement tab): one row of 4 knobs; switch + label under each pair
+    erCrossfeedOnButton.setComponentID ("ERCrossfeedSwitch");
+    erCrossfeedOnButton.setButtonText ("");
+    tailCrossfeedOnButton.setComponentID ("TailCrossfeedSwitch");
+    tailCrossfeedOnButton.setButtonText ("");
+    erCrossfeedSectionLabel.setText ("ER CROSSFADE", juce::dontSendNotification);
+    tailCrossfeedSectionLabel.setText ("TAIL CROSSFADE", juce::dontSendNotification);
+    erCrossfeedSectionLabel.setFont (juce::FontOptions (10.0f));
+    tailCrossfeedSectionLabel.setFont (juce::FontOptions (10.0f));
+    erCrossfeedSectionLabel.setJustificationType (juce::Justification::centred);
+    tailCrossfeedSectionLabel.setJustificationType (juce::Justification::centred);
+    erCrossfeedSectionLabel.setColour (juce::Label::textColourId, textDim);
+    tailCrossfeedSectionLabel.setColour (juce::Label::textColourId, textDim);
+    for (auto* s : { &erCrossfeedDelaySlider, &erCrossfeedAttSlider, &tailCrossfeedDelaySlider, &tailCrossfeedAttSlider })
+    {
+        s->setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        s->setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+        s->setColour (juce::Slider::thumbColourId, accent);
+        s->setColour (juce::Slider::rotarySliderFillColourId, accent);
+    }
+    erCrossfeedDelaySlider.setRange (5.0, 15.0, 0.5);
+    erCrossfeedAttSlider.setRange (-24.0, 0.0, 0.5);
+    tailCrossfeedDelaySlider.setRange (5.0, 15.0, 0.5);
+    tailCrossfeedAttSlider.setRange (-24.0, 0.0, 0.5);
+    erCrossfeedDelayLabel.setText ("ER Dly", juce::dontSendNotification);
+    erCrossfeedAttLabel.setText ("ER Att", juce::dontSendNotification);
+    tailCrossfeedDelayLabel.setText ("Tail Dly", juce::dontSendNotification);
+    tailCrossfeedAttLabel.setText ("Tail Att", juce::dontSendNotification);
+    for (auto* l : { &erCrossfeedDelayLabel, &erCrossfeedAttLabel, &tailCrossfeedDelayLabel, &tailCrossfeedAttLabel,
+                     &erCrossfeedDelayReadout, &erCrossfeedAttReadout, &tailCrossfeedDelayReadout, &tailCrossfeedAttReadout })
+    {
+        l->setEditable (false);
+        l->setColour (juce::Label::textColourId, textDim);
+    }
+
     // Surfaces (Character tab)
     addOptions (floorCombo, materialOptions, 14);
     addOptions (ceilingCombo, materialOptions, 14);
@@ -212,6 +247,22 @@ IRSynthComponent::IRSynthComponent()
     placementContent.addAndMakeVisible (widthValueLabel);
     placementContent.addAndMakeVisible (depthValueLabel);
     placementContent.addAndMakeVisible (heightValueLabel);
+    placementContent.addAndMakeVisible (erCrossfeedOnButton);
+    placementContent.addAndMakeVisible (tailCrossfeedOnButton);
+    placementContent.addAndMakeVisible (erCrossfeedSectionLabel);
+    placementContent.addAndMakeVisible (tailCrossfeedSectionLabel);
+    placementContent.addAndMakeVisible (erCrossfeedDelaySlider);
+    placementContent.addAndMakeVisible (erCrossfeedAttSlider);
+    placementContent.addAndMakeVisible (tailCrossfeedDelaySlider);
+    placementContent.addAndMakeVisible (tailCrossfeedAttSlider);
+    placementContent.addAndMakeVisible (erCrossfeedDelayLabel);
+    placementContent.addAndMakeVisible (erCrossfeedAttLabel);
+    placementContent.addAndMakeVisible (tailCrossfeedDelayLabel);
+    placementContent.addAndMakeVisible (tailCrossfeedAttLabel);
+    placementContent.addAndMakeVisible (erCrossfeedDelayReadout);
+    placementContent.addAndMakeVisible (erCrossfeedAttReadout);
+    placementContent.addAndMakeVisible (tailCrossfeedDelayReadout);
+    placementContent.addAndMakeVisible (tailCrossfeedAttReadout);
     placementContent.addAndMakeVisible (floorPlanComponent);
     floorPlanComponent.setParamsGetter ([this] { return getParams(); });
 
@@ -417,6 +468,19 @@ void IRSynthComponent::layoutCharacterTab (juce::Rectangle<int> b)
     bakeBalanceButton.setBounds (rightColX, ry, juce::jmax (150, rightColW + 40), rowH + 2);
 }
 
+void IRSynthComponent::setApvts (juce::AudioProcessorValueTreeState* state)
+{
+    apvts = state;
+    if (apvts == nullptr)
+        return;
+    erCrossfeedOnAttach = std::make_unique<ButtonAttachment> (*apvts, "erCrossfeedOn", erCrossfeedOnButton);
+    tailCrossfeedOnAttach = std::make_unique<ButtonAttachment> (*apvts, "tailCrossfeedOn", tailCrossfeedOnButton);
+    erCrossfeedDelayAttach = std::make_unique<SliderAttachment> (*apvts, "erCrossfeedDelayMs", erCrossfeedDelaySlider);
+    erCrossfeedAttAttach = std::make_unique<SliderAttachment> (*apvts, "erCrossfeedAttDb", erCrossfeedAttSlider);
+    tailCrossfeedDelayAttach = std::make_unique<SliderAttachment> (*apvts, "tailCrossfeedDelayMs", tailCrossfeedDelaySlider);
+    tailCrossfeedAttAttach = std::make_unique<SliderAttachment> (*apvts, "tailCrossfeedAttDb", tailCrossfeedAttSlider);
+}
+
 void IRSynthComponent::layoutPlacementTab (juce::Rectangle<int> b)
 {
     const int rowH = 22;
@@ -446,6 +510,40 @@ void IRSynthComponent::layoutPlacementTab (juce::Rectangle<int> b)
     dimRow (widthLabel, widthValueLabel, widthSlider);
     dimRow (depthLabel, depthValueLabel, depthSlider);
     dimRow (heightLabel, heightValueLabel, heightSlider);
+
+    const int crossfeedKnobSize = 48;
+    const int crossfeedLabelH = 12;
+    const int crossfeedReadoutH = 10;
+    const int colGap = 6;
+    const int switchW = 36;
+    const int switchH = 18;
+    const int sectionLabelH = 12;
+    int cfy = y + gap;
+    int cfx = leftColX;
+    erCrossfeedDelaySlider.setBounds (cfx, cfy, crossfeedKnobSize, crossfeedKnobSize);
+    cfx += crossfeedKnobSize + colGap;
+    erCrossfeedAttSlider.setBounds (cfx, cfy, crossfeedKnobSize, crossfeedKnobSize);
+    cfx += crossfeedKnobSize + colGap;
+    tailCrossfeedDelaySlider.setBounds (cfx, cfy, crossfeedKnobSize, crossfeedKnobSize);
+    cfx += crossfeedKnobSize + colGap;
+    tailCrossfeedAttSlider.setBounds (cfx, cfy, crossfeedKnobSize, crossfeedKnobSize);
+    cfy += crossfeedKnobSize + 2;
+    erCrossfeedDelayLabel.setBounds (leftColX, cfy, crossfeedKnobSize, crossfeedLabelH);
+    erCrossfeedAttLabel.setBounds (leftColX + crossfeedKnobSize + colGap, cfy, crossfeedKnobSize, crossfeedLabelH);
+    tailCrossfeedDelayLabel.setBounds (leftColX + 2 * (crossfeedKnobSize + colGap), cfy, crossfeedKnobSize, crossfeedLabelH);
+    tailCrossfeedAttLabel.setBounds (leftColX + 3 * (crossfeedKnobSize + colGap), cfy, crossfeedKnobSize, crossfeedLabelH);
+    cfy += crossfeedLabelH + 2;
+    erCrossfeedDelayReadout.setBounds (leftColX, cfy, crossfeedKnobSize, crossfeedReadoutH);
+    erCrossfeedAttReadout.setBounds (leftColX + crossfeedKnobSize + colGap, cfy, crossfeedKnobSize, crossfeedReadoutH);
+    tailCrossfeedDelayReadout.setBounds (leftColX + 2 * (crossfeedKnobSize + colGap), cfy, crossfeedKnobSize, crossfeedReadoutH);
+    tailCrossfeedAttReadout.setBounds (leftColX + 3 * (crossfeedKnobSize + colGap), cfy, crossfeedKnobSize, crossfeedReadoutH);
+    cfy += crossfeedReadoutH + gap;
+    int pairW = 2 * crossfeedKnobSize + colGap;
+    erCrossfeedOnButton.setBounds (leftColX + (pairW - switchW) / 2, cfy, switchW, switchH);
+    tailCrossfeedOnButton.setBounds (leftColX + pairW + colGap + (pairW - switchW) / 2, cfy, switchW, switchH);
+    cfy += switchH + 2;
+    erCrossfeedSectionLabel.setBounds (leftColX, cfy, pairW, sectionLabelH);
+    tailCrossfeedSectionLabel.setBounds (leftColX + pairW + colGap, cfy, pairW, sectionLabelH);
 
     floorPlanComponent.setBounds (floorPlanX, secPad, floorPlanW, juce::jmax (120, floorPlanH));
 }
@@ -522,6 +620,12 @@ void IRSynthComponent::timerCallback()
     diffusionReadout.setText (juce::String (diffusionSlider.getValue(), 2), juce::dontSendNotification);
     organReadout.setText (juce::String (organSlider.getValue(), 2), juce::dontSendNotification);
     balconiesReadout.setText (juce::String (balconiesSlider.getValue(), 2), juce::dontSendNotification);
+    erCrossfeedDelayReadout.setText (juce::String (erCrossfeedDelaySlider.getValue(), 1) + " ms", juce::dontSendNotification);
+    float erAtt = (float) erCrossfeedAttSlider.getValue();
+    erCrossfeedAttReadout.setText (erAtt <= -23.5f ? "-inf dB" : juce::String (juce::roundToInt (erAtt)) + " dB", juce::dontSendNotification);
+    tailCrossfeedDelayReadout.setText (juce::String (tailCrossfeedDelaySlider.getValue(), 1) + " ms", juce::dontSendNotification);
+    float tailAtt = (float) tailCrossfeedAttSlider.getValue();
+    tailCrossfeedAttReadout.setText (tailAtt <= -23.5f ? "-inf dB" : juce::String (juce::roundToInt (tailAtt)) + " dB", juce::dontSendNotification);
     updateRT60Display();
 }
 

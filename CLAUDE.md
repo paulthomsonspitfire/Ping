@@ -213,6 +213,12 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `irInputDrive` | IR Input Drive | 0–1 | 0 |
 | `erLevel` | Early Reflections (dB) | -48–6 | 0 |
 | `tailLevel` | Tail (dB) | -48–6 | 0 |
+| `erCrossfeedOn` | ER Crossfeed On | bool | false |
+| `erCrossfeedDelayMs` | ER Crossfeed Delay (ms) | 5–15 | 10 |
+| `erCrossfeedAttDb` | ER Crossfeed Att (dB) | -24–0 | -6 |
+| `tailCrossfeedOn` | Tail Crossfeed On | bool | false |
+| `tailCrossfeedDelayMs` | Tail Crossfeed Delay (ms) | 5–15 | 10 |
+| `tailCrossfeedAttDb` | Tail Crossfeed Att (dB) | -24–0 | -6 |
 | `reversetrim` | Reverse Trim | 0–0.95 | 0 |
 | `b0freq/b0gain/b0q` | Band 0 EQ | 20–20k Hz / ±12 dB / 0.3–10 | 400 Hz, 0 dB, 0.707 |
 | `b1freq/b1gain/b1q` | Band 1 EQ | — | 1000 Hz, 0 dB, 0.707 |
@@ -245,7 +251,7 @@ Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix +
   │
   ▼
 Convolution  ── see "Convolution modes" below
-  │
+  │  (optional crossfeed: ER and Tail each get L↔R delayed/attenuated copy when on, then ER/Tail mix)
   ▼
 3-band Parametric EQ (JUCE makePeakFilter, peak IIR)
   │
@@ -427,6 +433,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Speaker directivity in image-source** — `spkG()` is applied using the real source→receiver angle, not the image-source position. This is deliberate: image-source positions aren't physical emitters and using them would give wrong distance-dependent directivity results.
 - **Deferred allpass diffusion** — The allpass starts at 65 ms (not sample 0) to prevent early-reflection spikes from creating audible 17ms-interval echoes in the tail.
 - **Stereo decorrelation allpass (R only)** — After EQ and before Width, the **right** channel of the wet buffer is passed through a 2-stage allpass (7.13 ms, 14.27 ms, g=0.5). Delays are incommensurate with FDN/diffuser times. Allpass has unity gain so the mono sum L+R is unchanged; the phase/time difference on R alone reduces stereo collapse at strong FDN modes and makes the tail feel more spacious. Implemented in `PluginProcessor` (decorrDelays, decorrBufs, decorrPtrs, decorrG); initialised in `prepareToPlay()`, processed in `processBlock()` before `applyWidth()`.
+- **Post-convolution crossfeed (ER and Tail)** — After convolution, before ER/tail mix: when **ER crossfeed on** or **Tail crossfeed on**, the corresponding buffer(s) get a delayed (5–15 ms) and attenuated (−24–0 dB) copy of the opposite channel (L→R, R→L). Four delay lines (two per path), on/off switch per path. Params: `erCrossfeedOn`, `erCrossfeedDelayMs`, `erCrossfeedAttDb`, `tailCrossfeedOn`, `tailCrossfeedDelayMs`, `tailCrossfeedAttDb`. UI: Placement tab (IR Synth), below Height, 3×2 block (switch + delay + att per row). No IR Synth engine changes.
 - **Constant-power dry/wet** — `√(mix)` / `√(1−mix)` crossfade. Don't change to linear without a reason.
 - **SmoothedValue everywhere** — All parameters that scale audio use `SmoothedValue` (20 ms). Any new audio-scaling parameter should do the same.
 - **loadIR from message thread only** — Convolver loading is not real-time safe. Always call `loadIRFromFile` / `loadIRFromBuffer` from the message thread (UI callbacks, timer, not processBlock).

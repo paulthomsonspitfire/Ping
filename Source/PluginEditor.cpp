@@ -113,6 +113,7 @@ PingEditor::PingEditor (PingProcessor& p)
 
     addChildComponent (irSynthComponent);
     irSynthComponent.setVisible (false);
+    irSynthComponent.setApvts (&apvts);
     irSynthComponent.setOnComplete ([this] (const IRSynthResult& result)
     {
         if (! result.success || result.iLL.empty() || result.iRL.empty() || result.iLR.empty() || result.iRR.empty())

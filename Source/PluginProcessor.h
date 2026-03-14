@@ -110,6 +110,11 @@ private:
     std::array<std::vector<float>, 2> decorrBufs;
     std::array<int, 2> decorrPtrs {};
     float decorrG = 0.5f;
+
+    // Post-convolution crossfeed (ER and Tail): L↔R delayed, attenuated copy; on/off per path
+    std::vector<float> crossfeedErBufRtoL, crossfeedErBufLtoR, crossfeedTailBufRtoL, crossfeedTailBufLtoR;
+    int crossfeedErWriteRtoL = 0, crossfeedErWriteLtoR = 0, crossfeedTailWriteRtoL = 0, crossfeedTailWriteLtoR = 0;
+    int crossfeedMaxSamples = 0;
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand;
     juce::SmoothedValue<float> inputGainSmoothed;

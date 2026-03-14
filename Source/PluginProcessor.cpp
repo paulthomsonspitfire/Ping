@@ -24,6 +24,12 @@ namespace IDs
     static const juce::String band0Freq { "b0freq" }, band0Gain { "b0gain" }, band0Q { "b0q" };
     static const juce::String band1Freq { "b1freq" }, band1Gain { "b1gain" }, band1Q { "b1q" };
     static const juce::String band2Freq { "b2freq" }, band2Gain { "b2gain" }, band2Q { "b2q" };
+    static const juce::String erCrossfeedOn { "erCrossfeedOn" };
+    static const juce::String erCrossfeedDelayMs { "erCrossfeedDelayMs" };
+    static const juce::String erCrossfeedAttDb { "erCrossfeedAttDb" };
+    static const juce::String tailCrossfeedOn { "tailCrossfeedOn" };
+    static const juce::String tailCrossfeedDelayMs { "tailCrossfeedDelayMs" };
+    static const juce::String tailCrossfeedAttDb { "tailCrossfeedAttDb" };
 }
 
 static juce::File getLicenceDirectory()
@@ -210,6 +216,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band2Freq, "Band 2 Freq (Hz)", 20.0f, 20000.0f, 4000.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band2Gain, "Band 2 Gain (dB)", -12.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band2Q, "Band 2 Q", 0.3f, 10.0f, 0.707f));
+    layout.add (std::make_unique<juce::AudioParameterBool> (IDs::erCrossfeedOn, "ER Crossfeed On", false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::erCrossfeedDelayMs, "ER Crossfeed Delay (ms)", 5.0f, 15.0f, 10.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::erCrossfeedAttDb, "ER Crossfeed Att (dB)", -24.0f, 0.0f, -6.0f));
+    layout.add (std::make_unique<juce::AudioParameterBool> (IDs::tailCrossfeedOn, "Tail Crossfeed On", false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailCrossfeedDelayMs, "Tail Crossfeed Delay (ms)", 5.0f, 15.0f, 10.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailCrossfeedAttDb, "Tail Crossfeed Att (dB)", -24.0f, 0.0f, -6.0f));
     return layout;
 }
 
@@ -264,6 +276,13 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     decorrBufs[1].resize ((size_t)decorrDelays[1], 0.0f);
     decorrPtrs[0] = 0;
     decorrPtrs[1] = 0;
+
+    crossfeedMaxSamples = std::max (1, (int)std::ceil (0.015 * sampleRate));
+    crossfeedErBufRtoL.resize ((size_t)crossfeedMaxSamples, 0.0f);
+    crossfeedErBufLtoR.resize ((size_t)crossfeedMaxSamples, 0.0f);
+    crossfeedTailBufRtoL.resize ((size_t)crossfeedMaxSamples, 0.0f);
+    crossfeedTailBufLtoR.resize ((size_t)crossfeedMaxSamples, 0.0f);
+    crossfeedErWriteRtoL = crossfeedErWriteLtoR = crossfeedTailWriteRtoL = crossfeedTailWriteLtoR = 0;
 
     updateGains();
     updatePredelay();
@@ -388,6 +407,49 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         tsTailConvRR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
         rTail.addFrom (0, 0, tmp, 0, 0, numSamples);
 
+        if (apvts.getRawParameterValue (IDs::erCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
+        {
+            float delayMs = apvts.getRawParameterValue (IDs::erCrossfeedDelayMs)->load();
+            float attDb = apvts.getRawParameterValue (IDs::erCrossfeedAttDb)->load();
+            int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1, (int)std::round (delayMs * (float)currentSampleRate / 1000.0f));
+            float gain = juce::Decibels::decibelsToGain (attDb);
+            float* lPtr = lEr.getWritePointer (0);
+            float* rPtr = rEr.getWritePointer (0);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                int readRtoL = (crossfeedErWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                int readLtoR = (crossfeedErWriteLtoR - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                float l = lPtr[i], r = rPtr[i];
+                lPtr[i] += gain * crossfeedErBufRtoL[(size_t)readRtoL];
+                rPtr[i] += gain * crossfeedErBufLtoR[(size_t)readLtoR];
+                crossfeedErBufRtoL[(size_t)crossfeedErWriteRtoL] = r;
+                crossfeedErBufLtoR[(size_t)crossfeedErWriteLtoR] = l;
+                crossfeedErWriteRtoL = (crossfeedErWriteRtoL + 1) % crossfeedMaxSamples;
+                crossfeedErWriteLtoR = (crossfeedErWriteLtoR + 1) % crossfeedMaxSamples;
+            }
+        }
+        if (apvts.getRawParameterValue (IDs::tailCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
+        {
+            float delayMs = apvts.getRawParameterValue (IDs::tailCrossfeedDelayMs)->load();
+            float attDb = apvts.getRawParameterValue (IDs::tailCrossfeedAttDb)->load();
+            int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1, (int)std::round (delayMs * (float)currentSampleRate / 1000.0f));
+            float gain = juce::Decibels::decibelsToGain (attDb);
+            float* lPtr = lTail.getWritePointer (0);
+            float* rPtr = rTail.getWritePointer (0);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                int readRtoL = (crossfeedTailWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                int readLtoR = (crossfeedTailWriteLtoR - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                float l = lPtr[i], r = rPtr[i];
+                lPtr[i] += gain * crossfeedTailBufRtoL[(size_t)readRtoL];
+                rPtr[i] += gain * crossfeedTailBufLtoR[(size_t)readLtoR];
+                crossfeedTailBufRtoL[(size_t)crossfeedTailWriteRtoL] = r;
+                crossfeedTailBufLtoR[(size_t)crossfeedTailWriteLtoR] = l;
+                crossfeedTailWriteRtoL = (crossfeedTailWriteRtoL + 1) % crossfeedMaxSamples;
+                crossfeedTailWriteLtoR = (crossfeedTailWriteLtoR + 1) % crossfeedMaxSamples;
+            }
+        }
+
         // True-stereo IRs (from IR Synth) are not peak-normalised; level follows 1/r.
         // Apply compensation so wet level is in a usable range at default ER/Tail settings.
         const float trueStereoWetGain = 2.0f;
@@ -409,6 +471,49 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         juce::dsp::AudioBlock<float> tailBlock (tailBuffer);
         erConvolver.process (juce::dsp::ProcessContextReplacing<float> (erBlock));
         tailConvolver.process (juce::dsp::ProcessContextReplacing<float> (tailBlock));
+
+        if (apvts.getRawParameterValue (IDs::erCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
+        {
+            float delayMs = apvts.getRawParameterValue (IDs::erCrossfeedDelayMs)->load();
+            float attDb = apvts.getRawParameterValue (IDs::erCrossfeedAttDb)->load();
+            int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1, (int)std::round (delayMs * (float)currentSampleRate / 1000.0f));
+            float gain = juce::Decibels::decibelsToGain (attDb);
+            float* lPtr = buffer.getWritePointer (0);
+            float* rPtr = buffer.getWritePointer (1);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                int readRtoL = (crossfeedErWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                int readLtoR = (crossfeedErWriteLtoR - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                float l = lPtr[i], r = rPtr[i];
+                lPtr[i] += gain * crossfeedErBufRtoL[(size_t)readRtoL];
+                rPtr[i] += gain * crossfeedErBufLtoR[(size_t)readLtoR];
+                crossfeedErBufRtoL[(size_t)crossfeedErWriteRtoL] = r;
+                crossfeedErBufLtoR[(size_t)crossfeedErWriteLtoR] = l;
+                crossfeedErWriteRtoL = (crossfeedErWriteRtoL + 1) % crossfeedMaxSamples;
+                crossfeedErWriteLtoR = (crossfeedErWriteLtoR + 1) % crossfeedMaxSamples;
+            }
+        }
+        if (apvts.getRawParameterValue (IDs::tailCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
+        {
+            float delayMs = apvts.getRawParameterValue (IDs::tailCrossfeedDelayMs)->load();
+            float attDb = apvts.getRawParameterValue (IDs::tailCrossfeedAttDb)->load();
+            int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1, (int)std::round (delayMs * (float)currentSampleRate / 1000.0f));
+            float gain = juce::Decibels::decibelsToGain (attDb);
+            float* lPtr = tailBuffer.getWritePointer (0);
+            float* rPtr = tailBuffer.getWritePointer (1);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                int readRtoL = (crossfeedTailWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                int readLtoR = (crossfeedTailWriteLtoR - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                float l = lPtr[i], r = rPtr[i];
+                lPtr[i] += gain * crossfeedTailBufRtoL[(size_t)readRtoL];
+                rPtr[i] += gain * crossfeedTailBufLtoR[(size_t)readLtoR];
+                crossfeedTailBufRtoL[(size_t)crossfeedTailWriteRtoL] = r;
+                crossfeedTailBufLtoR[(size_t)crossfeedTailWriteLtoR] = l;
+                crossfeedTailWriteRtoL = (crossfeedTailWriteRtoL + 1) % crossfeedMaxSamples;
+                crossfeedTailWriteLtoR = (crossfeedTailWriteLtoR + 1) % crossfeedMaxSamples;
+            }
+        }
 
         for (int i = 0; i < numSamples; ++i)
         {
