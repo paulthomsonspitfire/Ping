@@ -59,7 +59,7 @@ struct IRSynthParams
 struct IRSynthResult
 {
     std::vector<double> iLL, iRL, iLR, iRR;  // L→L, R→L, L→R, R→R
-    std::vector<double> rt60;   // 6 bands: 125 250 500 1k 2k 4k
+    std::vector<double> rt60;   // 8 bands: 125 250 500 1k 2k 4k 8k 16k
     int   irLen     = 0;
     int   sampleRate= 0;
     bool  success   = false;
@@ -82,7 +82,7 @@ public:
     /** Main entry point. Runs synchronously — call from a background thread. */
     static IRSynthResult synthIR (const IRSynthParams& p, IRSynthProgressFn cb);
 
-    /** Compute RT60 at 6 bands without doing a full synthesis. */
+    /** Compute RT60 at 8 bands without doing a full synthesis. */
     static std::vector<double> calcRT60 (const IRSynthParams& p);
 
     /** Encode stereo IR to 24-bit WAV bytes. */
@@ -93,18 +93,19 @@ public:
                                          int sampleRate);
 
 private:
-    // ── constants (match JS verbatim) ──────────────────────────────────────
-    static const double SPEED;   // 343.0
-    static const int    BANDS[6];// {125,250,500,1000,2000,4000}
+    // ── constants ──────────────────────────────────────────────────────────
+    static const double SPEED;      // 343.0
+    static const int    N_BANDS;    // 8
+    static const int    BANDS[8];   // {125,250,500,1000,2000,4000,8000,16000}
 
-    // Material absorption coefficients [14 materials × 6 bands]
-    static const std::map<std::string, std::array<double,6>>& getMats();
+    // Material absorption coefficients [14 materials × 8 bands]
+    static const std::map<std::string, std::array<double,8>>& getMats();
 
     // Vault profile table [name → {hm, vs, vHfA}]
     static const std::map<std::string, std::array<double,3>>& getVP();
 
-    // Audience/balcony/organ absorption arrays
-    static const double OA[6], BA[6], BSA[6], AIR[6];
+    // Audience/balcony/organ/air absorption arrays [8 bands]
+    static const double OA[8], BA[8], BSA[8], AIR[8];
 
     // Mic polar pattern {omni,subcardioid,cardioid,figure8} → {o, d}
     static const std::map<std::string, std::pair<double,double>>& getMIC();
@@ -120,16 +121,16 @@ private:
     static Rng mkRng (uint32_t seed);
     static double rU  (Rng& rng, double lo, double hi);
 
-    struct Ref { int t; std::array<double,6> amps; double az; };
+    struct Ref { int t; std::array<double,8> amps; double az; };
 
     static std::vector<Ref> calcRefs (
         double rx, double ry, double rz,
         double sx, double sy, double sz,
         const IRSynthParams& p,
         double He, int mo,
-        const std::array<double,6>& rF,
-        const std::array<double,6>& rC,
-        const std::array<double,6>& rW,
+        const std::array<double,8>& rF,
+        const std::array<double,8>& rC,
+        const std::array<double,8>& rW,
         double oF, double vHfA, double ts,
         bool eo, int ec, int sr,
         uint32_t seed,

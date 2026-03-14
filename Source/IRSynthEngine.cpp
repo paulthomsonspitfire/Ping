@@ -3,34 +3,38 @@
 #include <cstring>
 #include <algorithm>
 
-// ── constants (match JS verbatim) ──────────────────────────────────────────
-const double IRSynthEngine::SPEED = 343.0;
-const int    IRSynthEngine::BANDS[6] = { 125, 250, 500, 1000, 2000, 4000 };
+// ── constants ──────────────────────────────────────────────────────────────
+const double IRSynthEngine::SPEED   = 343.0;
+const int    IRSynthEngine::N_BANDS = 8;
+const int    IRSynthEngine::BANDS[8] = { 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
 
-// Material absorption coefficients [14 materials × 6 bands] — verbatim from JS MATS
-static std::map<std::string, std::array<double,6>> s_mats;
-static const std::map<std::string, std::array<double,6>>& initMats()
+// Material absorption coefficients [14 materials × 8 bands]
+// Columns: 125, 250, 500, 1k, 2k, 4k Hz (from JS MATS verbatim) + 8k, 16k Hz (ISO 354).
+// Hard surfaces plateau at 0.02–0.10 by 8 kHz; fibrous materials peak ~4–8 kHz then roll off.
+static std::map<std::string, std::array<double,8>> s_mats;
+static const std::map<std::string, std::array<double,8>>& initMats()
 {
     if (s_mats.empty())
     {
-        s_mats["Concrete / bare brick"]     = {{0.02, 0.03, 0.03, 0.04, 0.05, 0.07}};
-        s_mats["Painted plaster"]           = {{0.01, 0.02, 0.02, 0.03, 0.04, 0.05}};
-        s_mats["Hardwood floor"]            = {{0.04, 0.04, 0.07, 0.06, 0.06, 0.07}};
-        s_mats["Carpet (thin)"]              = {{0.03, 0.05, 0.10, 0.20, 0.30, 0.35}};
-        s_mats["Carpet (thick)"]             = {{0.08, 0.24, 0.57, 0.69, 0.71, 0.73}};
-        s_mats["Glass (large pane)"]         = {{0.18, 0.06, 0.04, 0.03, 0.02, 0.02}};
-        s_mats["Heavy curtains"]             = {{0.07, 0.31, 0.49, 0.75, 0.70, 0.60}};
-        s_mats["Acoustic ceiling tile"]     = {{0.25, 0.45, 0.78, 0.92, 0.89, 0.87}};
-        s_mats["Plywood panel"]             = {{0.28, 0.22, 0.17, 0.09, 0.10, 0.11}};
-        s_mats["Upholstered seats"]         = {{0.49, 0.66, 0.80, 0.88, 0.82, 0.70}};
-        s_mats["Bare wooden seats"]          = {{0.02, 0.03, 0.03, 0.06, 0.06, 0.05}};
-        s_mats["Water / pool surface"]      = {{0.01, 0.01, 0.01, 0.02, 0.02, 0.03}};
-        s_mats["Rough stone / rock"]         = {{0.02, 0.03, 0.03, 0.04, 0.04, 0.05}};
-        s_mats["Exposed brick (rough)"]      = {{0.03, 0.03, 0.03, 0.04, 0.05, 0.07}};
+        //                                              125    250    500     1k     2k     4k     8k    16k
+        s_mats["Concrete / bare brick"]     = {{0.02, 0.03, 0.03, 0.04, 0.05, 0.07, 0.09, 0.10}};
+        s_mats["Painted plaster"]           = {{0.01, 0.02, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07}};
+        s_mats["Hardwood floor"]            = {{0.04, 0.04, 0.07, 0.06, 0.06, 0.07, 0.10, 0.12}};
+        s_mats["Carpet (thin)"]              = {{0.03, 0.05, 0.10, 0.20, 0.30, 0.35, 0.50, 0.60}};
+        s_mats["Carpet (thick)"]             = {{0.08, 0.24, 0.57, 0.69, 0.71, 0.73, 0.78, 0.75}};
+        s_mats["Glass (large pane)"]         = {{0.18, 0.06, 0.04, 0.03, 0.02, 0.02, 0.02, 0.02}};
+        s_mats["Heavy curtains"]             = {{0.07, 0.31, 0.49, 0.75, 0.70, 0.60, 0.65, 0.62}};
+        s_mats["Acoustic ceiling tile"]     = {{0.25, 0.45, 0.78, 0.92, 0.89, 0.87, 0.88, 0.85}};
+        s_mats["Plywood panel"]             = {{0.28, 0.22, 0.17, 0.09, 0.10, 0.11, 0.12, 0.13}};
+        s_mats["Upholstered seats"]         = {{0.49, 0.66, 0.80, 0.88, 0.82, 0.70, 0.75, 0.72}};
+        s_mats["Bare wooden seats"]          = {{0.02, 0.03, 0.03, 0.06, 0.06, 0.05, 0.07, 0.08}};
+        s_mats["Water / pool surface"]      = {{0.01, 0.01, 0.01, 0.02, 0.02, 0.03, 0.03, 0.04}};
+        s_mats["Rough stone / rock"]         = {{0.02, 0.03, 0.03, 0.04, 0.04, 0.05, 0.07, 0.08}};
+        s_mats["Exposed brick (rough)"]      = {{0.03, 0.03, 0.03, 0.04, 0.05, 0.07, 0.09, 0.10}};
     }
     return s_mats;
 }
-const std::map<std::string, std::array<double,6>>& IRSynthEngine::getMats() { return initMats(); }
+const std::map<std::string, std::array<double,8>>& IRSynthEngine::getMats() { return initMats(); }
 
 // Vault profile [name → {hm, vs, vHfA}] — verbatim from JS VP (note: vault names with 2 spaces)
 static std::map<std::string, std::array<double,3>> s_vp;
@@ -53,11 +57,14 @@ static const std::map<std::string, std::array<double,3>>& initVP()
 }
 const std::map<std::string, std::array<double,3>>& IRSynthEngine::getVP() { return initVP(); }
 
-// Audience, balcony, organ, air — verbatim from JS
-const double IRSynthEngine::OA[6]  = { 0.06, 0.10, 0.14, 0.18, 0.22, 0.28 };
-const double IRSynthEngine::BA[6]   = { 0.03, 0.04, 0.05, 0.06, 0.07, 0.08 };
-const double IRSynthEngine::BSA[6]  = { 0.30, 0.45, 0.60, 0.72, 0.68, 0.58 };
-const double IRSynthEngine::AIR[6] = { 0.0003, 0.001, 0.002, 0.005, 0.011, 0.026 };
+// Audience, balcony, organ, air — 8 bands [125 250 500 1k 2k 4k 8k 16k]
+// OA/BA/BSA: 125–4k verbatim from JS; 8k/16k extended from ISO 354 / acoustic reference data.
+// AIR: 125–4k verbatim from JS; 8k/16k from ISO 9613-1 (20°C, 50% RH).
+// Usage in calcRefs: pow(10, -AIR[b] * dist_metres / 20) — amplitude attenuation dB/m.
+const double IRSynthEngine::OA[8]  = { 0.06, 0.10, 0.14, 0.18, 0.22, 0.28, 0.32, 0.35 };
+const double IRSynthEngine::BA[8]  = { 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10 };
+const double IRSynthEngine::BSA[8] = { 0.30, 0.45, 0.60, 0.72, 0.68, 0.58, 0.48, 0.40 };
+const double IRSynthEngine::AIR[8] = { 0.0003, 0.001, 0.002, 0.005, 0.011, 0.026, 0.066, 0.200 };
 
 // Mic polar pattern — verbatim from JS MIC
 static std::map<std::string, std::pair<double,double>> s_mic;
@@ -136,13 +143,13 @@ std::vector<double> IRSynthEngine::calcRT60 (const IRSynthParams& p)
     const auto& mc = mcIt != mats.end() ? mcIt->second : mats.find("Acoustic ceiling tile")->second;
     const auto& mw_base = mwIt != mats.end() ? mwIt->second : mats.find("Painted plaster")->second;
     const auto& mw_glass = mats.find("Glass (large pane)")->second;
-    std::array<double,6> mw;
+    std::array<double,8> mw;
     double wf = std::max(0.0, std::min(1.0, p.window_fraction));
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < N_BANDS; ++i)
         mw[i] = (1.0 - wf) * mw_base[i] + wf * mw_glass[i];
 
-    std::vector<double> rt60(6);
-    for (int i = 0; i < 6; ++i)
+    std::vector<double> rt60(N_BANDS);
+    for (int i = 0; i < N_BANDS; ++i)
     {
         double a = fA * mf[i] + cA * mc[i] + (sA + eA) * mw[i]
                  + p.audience * fA * 0.5 + bA * BA[i] + bA * 0.6 * BSA[i] + oA * OA[i];
@@ -159,9 +166,9 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
     double sx, double sy, double sz,
     const IRSynthParams& p,
     double He, int mo,
-    const std::array<double,6>& rF,
-    const std::array<double,6>& rC,
-    const std::array<double,6>& rW,
+    const std::array<double,8>& rF,
+    const std::array<double,8>& rC,
+    const std::array<double,8>& rW,
     double oF, double vHfA, double ts,
     bool eo, int ec, int sr,
     uint32_t seed,
@@ -218,8 +225,8 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                     sg = 1.0;                 // order 3+ fully omnidirectional
                 double polarity = (totalBounces % 2 == 0) ? 1.0 : -1.0;
 
-                std::array<double,6> amps;
-                for (int b = 0; b < 6; ++b)
+                std::array<double,8> amps;
+                for (int b = 0; b < N_BANDS; ++b)
                 {
                     double a = 1.0 / std::max(dist, 0.5);
                     a *= std::pow(rF[b], std::ceil(std::abs(nz) / 2.0));
@@ -246,8 +253,8 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                         // Gate scatter refs beyond the ER window in ER-only mode.
                         // Parent t < ec, but the +0–4 ms scatter offset could push it over.
                         if (eo && scatterT >= ec) continue;
-                        std::array<double,6> scatterAmps;
-                        for (int b = 0; b < 6; ++b)
+                        std::array<double,8> scatterAmps;
+                        for (int b = 0; b < N_BANDS; ++b)
                             scatterAmps[b] = amps[b] * scatterWeight;
                         refs.push_back({ scatterT, scatterAmps, scatterAz });
                     }
@@ -442,8 +449,8 @@ std::vector<double> IRSynthEngine::renderCh (
     double reflectionSpreadMs,
     double freqScatterMs)
 {
-    std::vector<std::vector<double>> bi(6);
-    for (int b = 0; b < 6; ++b)
+    std::vector<std::vector<double>> bi(N_BANDS);
+    for (int b = 0; b < N_BANDS; ++b)
         bi[b].resize((size_t)irLen, 0.0);
 
     const int spreadHalf = (reflectionSpreadMs > 0.0)
@@ -456,7 +463,7 @@ std::vector<double> IRSynthEngine::renderCh (
         if (spreadHalf <= 0)
         {
             if (r.t >= irLen) continue;
-            for (int b = 0; b < 6; ++b)
+            for (int b = 0; b < N_BANDS; ++b)
             {
                 int bt = r.t;
                 if (freqScatterMs > 0.0 && b > 0)
@@ -467,11 +474,11 @@ std::vector<double> IRSynthEngine::renderCh (
                     // per-band uncorrelated offsets — no extra RNG state needed.
                     uint32_t h = ((uint32_t)(r.t + 1) * 2654435769u) ^ ((uint32_t)b * 1234567891u);
                     double frac = (double)(h & 0xFFFF) / 65535.0 - 0.5;  // −0.5 … +0.5
-                    double scale = (double)b / 5.0;                        // 0 @ 125Hz → 1 @ 4kHz
+                    double scale = (double)b / (double)(N_BANDS - 1);     // 0 @ 125Hz → 1 @ 16kHz
                     bt += (int)std::round(frac * 2.0 * freqScatterMs * scale * sr / 1000.0);
                     bt = std::clamp(bt, 0, irLen - 1);
                 }
-                bi[b][(size_t)bt] += r.amps[b] * den * (1.0 - lat * (b / 5.0) * 0.5);
+                bi[b][(size_t)bt] += r.amps[b] * den * (1.0 - lat * ((double)b / (double)(N_BANDS - 1)) * 0.5);
             }
         }
         else
@@ -487,14 +494,14 @@ std::vector<double> IRSynthEngine::renderCh (
                 int i = r.t + d;
                 if (i < 0 || i >= irLen) continue;
                 double w = (1.0 - (double)std::abs(d) / (double)(spreadHalf + 1)) * invSum;
-                for (int b = 0; b < 6; ++b)
-                    bi[b][(size_t)i] += r.amps[b] * den * (1.0 - lat * (b / 5.0) * 0.5) * w;
+                for (int b = 0; b < N_BANDS; ++b)
+                    bi[b][(size_t)i] += r.amps[b] * den * (1.0 - lat * ((double)b / (double)(N_BANDS - 1)) * 0.5) * w;
             }
         }
     }
 
     std::vector<double> raw((size_t)irLen, 0.0);
-    for (int b = 0; b < 6; ++b)
+    for (int b = 0; b < N_BANDS; ++b)
     {
         double m = 0.0;
         for (size_t i = 0; i < bi[b].size(); ++i)
@@ -666,7 +673,10 @@ std::vector<double> IRSynthEngine::renderFDNTail (
     {
         int d = delays[i];
         double gLF = std::pow(10.0, -3.0 * d / (rt60s[0] * sr));
-        double gHF = std::pow(10.0, -3.0 * d / (rt60s[5] * sr));
+        // Use 16 kHz RT60 (rt60s[7]) as HF reference — more aggressive than the previous
+        // 4 kHz reference (rt60s[5]).  Air absorption above 8 kHz is substantial, so the
+        // 1-pole LP correctly darkens large-room tails in proportion to their size.
+        double gHF = std::pow(10.0, -3.0 * d / (rt60s[7] * sr));
         double alpha = std::min(0.9995, std::max(0.05, gHF / std::max(gLF, 1e-9)));
         lpAlpha[i] = { alpha, gLF };
     }
@@ -802,12 +812,12 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
     double bakedTailGain = p.bake_er_tail_balance ? p.baked_tail_gain : 1.0;
 
     auto& mats = getMats();
-    auto rc = [&](const std::string& m) -> std::array<double,6>
+    auto rc = [&](const std::string& m) -> std::array<double,8>
     {
         auto it = mats.find(m);
         if (it == mats.end()) it = mats.find("Painted plaster");
-        std::array<double,6> r;
-        for (int i = 0; i < 6; ++i) r[i] = std::sqrt(1.0 - it->second[i]);
+        std::array<double,8> r;
+        for (int i = 0; i < N_BANDS; ++i) r[i] = std::sqrt(1.0 - it->second[i]);
         return r;
     };
     auto rF = rc(p.floor_material), rC = rc(p.ceiling_material), rW = rc(p.wall_material);
@@ -818,7 +828,7 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
         const auto& aw = mwIt != mats.end() ? mwIt->second : mats.find("Painted plaster")->second;
         const auto& ag = mgIt != mats.end() ? mgIt->second : aw;
         double wf = std::max(0.0, std::min(1.0, p.window_fraction));
-        for (int i = 0; i < 6; ++i)
+        for (int i = 0; i < N_BANDS; ++i)
         {
             double a_blend = (1.0 - wf) * aw[i] + wf * ag[i];
             rW[i] = std::sqrt(1.0 - a_blend);
