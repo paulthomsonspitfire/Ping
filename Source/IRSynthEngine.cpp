@@ -625,12 +625,23 @@ std::vector<double> IRSynthEngine::renderFDNTail (
         if (delays[i] <= delays[i - 1])
             delays[i] = nearestPrime(delays[i - 1] + 2);
 
-    const double LFO_DEPTH_MS = 1.2;
-    int lfoDepthSamp = (int)std::round(LFO_DEPTH_MS * sr / 1000.0);
+    // LFO modulation depth varies per delay line depending on how HF-attenuated
+    // that line is.  A line with alpha ≈ 1.0 (LF-dominated, little HF content)
+    // can tolerate ±1.2 ms without audible chorusing.  A line with low alpha
+    // (fast HF decay, significant HF content) must use a much shallower depth
+    // (≈ ±0.3 ms) to avoid pitch-modulation artefacts on high-frequency transients.
+    // Linear interpolation on alpha: depth = MIN + (MAX – MIN) * alpha.
+    const double LFO_DEPTH_MAX_MS = 1.2;   // for LF-dominated lines (alpha → 1.0)
+    const double LFO_DEPTH_MIN_MS = 0.3;   // for HF-attenuated lines (alpha → 0.0)
+    // Per-line depths are populated after the lpAlpha loop below.
+    std::vector<int> lfoDepthSamp(N, 0);
+
+    // Buffer size is determined by the maximum possible modulation depth (LFO_DEPTH_MAX_MS).
+    int maxLfoDepthSamp = (int)std::round(LFO_DEPTH_MAX_MS * sr / 1000.0);
 
     std::vector<std::vector<double>> bufs(N);
     for (int i = 0; i < N; ++i)
-        bufs[i].resize((size_t)(delays[i] + lfoDepthSamp * 2 + 4), 0.0);
+        bufs[i].resize((size_t)(delays[i] + maxLfoDepthSamp * 2 + 4), 0.0);
 
     std::vector<int> writePtr(N, 0);
     std::vector<double> lfoRates(N), lfoPhaseAcc(N);
@@ -681,6 +692,16 @@ std::vector<double> IRSynthEngine::renderFDNTail (
         lpAlpha[i] = { alpha, gLF };
     }
 
+    // Compute per-line LFO modulation depth from each line's filter coefficient.
+    // alpha is already clamped to [0.05, 0.9995] above; the extra clamp here is
+    // defensive against any future floating-point edge cases.
+    for (int i = 0; i < N; ++i)
+    {
+        double a = std::max(0.0, std::min(1.0, lpAlpha[i].alpha));
+        double depthMs = LFO_DEPTH_MIN_MS + (LFO_DEPTH_MAX_MS - LFO_DEPTH_MIN_MS) * a;
+        lfoDepthSamp[i] = (int)std::round(depthMs * sr / 1000.0);
+    }
+
     std::vector<double> tmpMix(N);
 
     auto fdnStep = [&](double inject, int sampleIdx) -> double
@@ -689,7 +710,7 @@ std::vector<double> IRSynthEngine::renderFDNTail (
         for (int ch = 0; ch < N; ++ch)
         {
             lfoPhaseAcc[ch] += lfoRates[ch];
-            double lfoMod = lfoDepthSamp * std::sin(lfoPhaseAcc[ch]);
+            double lfoMod = lfoDepthSamp[ch] * std::sin(lfoPhaseAcc[ch]);
             tmpMix[ch] = readFrac(ch, delays[ch] + (int)lfoMod);
         }
         hadamard16(tmpMix);
