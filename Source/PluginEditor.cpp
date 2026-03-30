@@ -113,7 +113,6 @@ PingEditor::PingEditor (PingProcessor& p)
 
     addChildComponent (irSynthComponent);
     irSynthComponent.setVisible (false);
-    irSynthComponent.setApvts (&apvts);
     irSynthComponent.setOnComplete ([this] (const IRSynthResult& result)
     {
         if (! result.success || result.iLL.empty() || result.iRL.empty() || result.iLR.empty() || result.iRR.empty())
@@ -234,6 +233,19 @@ PingEditor::PingEditor (PingProcessor& p)
     makeHorizontalSlider (erLevelSlider);
     makeHorizontalSlider (tailLevelSlider);
 
+    // Crossfeed row knobs (accent colour, same rotary style)
+    for (auto* s : { &erCrossfeedDelaySlider, &erCrossfeedAttSlider,
+                     &tailCrossfeedDelaySlider, &tailCrossfeedAttSlider })
+        makeSlider (*s, "");
+    // Buttons
+    for (auto* b : { &erCrossfeedOnButton, &tailCrossfeedOnButton })
+    {
+        addAndMakeVisible (b);
+        b->setButtonText ("");
+    }
+    erCrossfeedOnButton.setComponentID ("ERCrossfeedSwitch");
+    tailCrossfeedOnButton.setComponentID ("TailCrossfeedSwitch");
+
     dryWetSlider.setRange (0.0, 1.0, 0.01);
     predelaySlider.setRange (0.0, 500.0, 1.0);
     decaySlider.setRange (0.0, 1.0, 0.01);
@@ -249,6 +261,10 @@ PingEditor::PingEditor (PingProcessor& p)
     irInputDriveSlider.setRange (0.0, 1.0, 0.01);
     erLevelSlider.setRange (-48.0, 6.0, 0.1);
     tailLevelSlider.setRange (-48.0, 6.0, 0.1);
+    erCrossfeedDelaySlider.setRange (5.0, 15.0, 0.5);
+    erCrossfeedAttSlider.setRange (-24.0, 0.0, 0.5);
+    tailCrossfeedDelaySlider.setRange (5.0, 15.0, 0.5);
+    tailCrossfeedAttSlider.setRange (-24.0, 0.0, 0.5);
 
     dryWetAttach    = std::make_unique<SliderAttachment> (apvts, "drywet",   dryWetSlider);
     predelayAttach  = std::make_unique<SliderAttachment> (apvts, "predelay", predelaySlider);
@@ -265,6 +281,12 @@ PingEditor::PingEditor (PingProcessor& p)
     irInputDriveAttach = std::make_unique<SliderAttachment> (apvts, "irInputDrive", irInputDriveSlider);
     erLevelAttach   = std::make_unique<SliderAttachment> (apvts, "erLevel", erLevelSlider);
     tailLevelAttach = std::make_unique<SliderAttachment> (apvts, "tailLevel", tailLevelSlider);
+    erCrossfeedDelayAttach   = std::make_unique<SliderAttachment> (apvts, "erCrossfeedDelayMs",   erCrossfeedDelaySlider);
+    erCrossfeedAttAttach     = std::make_unique<SliderAttachment> (apvts, "erCrossfeedAttDb",     erCrossfeedAttSlider);
+    tailCrossfeedDelayAttach = std::make_unique<SliderAttachment> (apvts, "tailCrossfeedDelayMs", tailCrossfeedDelaySlider);
+    tailCrossfeedAttAttach   = std::make_unique<SliderAttachment> (apvts, "tailCrossfeedAttDb",   tailCrossfeedAttSlider);
+    erCrossfeedOnAttach      = std::make_unique<ButtonAttachment> (apvts, "erCrossfeedOn",        erCrossfeedOnButton);
+    tailCrossfeedOnAttach    = std::make_unique<ButtonAttachment> (apvts, "tailCrossfeedOn",      tailCrossfeedOnButton);
 
     setLookAndFeel (&pingLook);
 
@@ -273,7 +295,9 @@ PingEditor::PingEditor (PingProcessor& p)
                         &stretchLabel, &widthLabel, &modRateLabel,
                         &tailModLabel, &delayDepthLabel, &tailRateLabel,
                         &irInputGainLabel, &irInputDriveLabel, &outputGainLabel,
-                        &erLevelLabel, &tailLevelLabel })
+                        &erLevelLabel, &tailLevelLabel,
+                        &erCrossfeedDelayLabel, &erCrossfeedAttLabel,
+                        &tailCrossfeedDelayLabel, &tailCrossfeedAttLabel })
     {
         addAndMakeVisible (label);
         label->setJustificationType (juce::Justification::centred);
@@ -297,12 +321,18 @@ PingEditor::PingEditor (PingProcessor& p)
     irInputDriveLabel.setText ("DRIVE", juce::dontSendNotification);
     erLevelLabel.setText ("ER", juce::dontSendNotification);
     tailLevelLabel.setText ("TAIL", juce::dontSendNotification);
+    erCrossfeedDelayLabel.setText   ("DELAY", juce::dontSendNotification);
+    erCrossfeedAttLabel.setText     ("ATT",   juce::dontSendNotification);
+    tailCrossfeedDelayLabel.setText ("DELAY", juce::dontSendNotification);
+    tailCrossfeedAttLabel.setText   ("ATT",   juce::dontSendNotification);
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
                      &tailModReadout, &delayDepthReadout, &tailRateReadout,
                      &irInputGainReadout, &irInputDriveReadout, &outputGainReadout,
-                     &erLevelReadout, &tailLevelReadout })
+                     &erLevelReadout, &tailLevelReadout,
+                     &erCrossfeedDelayReadout, &erCrossfeedAttReadout,
+                     &tailCrossfeedDelayReadout, &tailCrossfeedAttReadout })
     {
         addAndMakeVisible (r);
         r->setJustificationType (juce::Justification::centred);
@@ -412,6 +442,8 @@ void PingEditor::paint (juce::Graphics& g)
     };
     drawGroupHeader (irInputGroupBounds,    "IR Input");
     drawGroupHeader (irControlsGroupBounds, "IR Controls");
+    drawGroupHeader (erCrossfadeGroupBounds,   "ER Crossfade");
+    drawGroupHeader (tailCrossfadeGroupBounds, "Tail Crossfade");
 
 }
 
@@ -563,6 +595,47 @@ void PingEditor::resized()
         predelaySlider.getX(),
         topKnobRow.getY(),
         stretchSlider.getRight() - predelaySlider.getX(),
+        groupLabelH);
+
+    // —— Row 2: ER Crossfade (delay, att, switch) | Tail Crossfade (delay, att, switch) ——
+    const int switchH = 18;
+    const int switchW = 36;
+    const int row2TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6 + switchH + 4;
+    auto row2Area = mainArea.removeFromTop (row2TotalH);
+    const int row2KnobY = row2Area.getY() + groupLabelH;
+
+    auto placeRow2Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
+    {
+        const int extraGap = (idx >= 2) ? 5 : 0;
+        const int cx = rowStartX + rowKnobSize / 2 + idx * rowStep + extraGap;
+        s.setBounds    (cx - rowKnobSize / 2, row2KnobY,                    rowKnobSize, rowKnobSize);
+        lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,            rowLabelW,   labelH);
+        rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,   rowLabelW,   readoutH);
+    };
+    placeRow2Knob (erCrossfeedDelaySlider,   erCrossfeedDelayLabel,   erCrossfeedDelayReadout,   0);
+    placeRow2Knob (erCrossfeedAttSlider,     erCrossfeedAttLabel,     erCrossfeedAttReadout,     1);
+    placeRow2Knob (tailCrossfeedDelaySlider, tailCrossfeedDelayLabel, tailCrossfeedDelayReadout, 2);
+    placeRow2Knob (tailCrossfeedAttSlider,   tailCrossfeedAttLabel,   tailCrossfeedAttReadout,   3);
+
+    // Switches: centred under each 2-knob pair
+    {
+        const int erCentreX  = (erCrossfeedDelaySlider.getX()   + erCrossfeedAttSlider.getRight())   / 2;
+        const int tailCentreX = (tailCrossfeedDelaySlider.getX() + tailCrossfeedAttSlider.getRight()) / 2;
+        const int switchY = erCrossfeedAttReadout.getBottom() + 4;
+        erCrossfeedOnButton.setBounds   (erCentreX   - switchW / 2, switchY, switchW, switchH);
+        tailCrossfeedOnButton.setBounds (tailCentreX - switchW / 2, switchY, switchW, switchH);
+    }
+
+    // Store group header bounds for painting
+    erCrossfadeGroupBounds = juce::Rectangle<int> (
+        erCrossfeedDelaySlider.getX(),
+        row2Area.getY(),
+        erCrossfeedAttSlider.getRight() - erCrossfeedDelaySlider.getX(),
+        groupLabelH);
+    tailCrossfadeGroupBounds = juce::Rectangle<int> (
+        tailCrossfeedDelaySlider.getX(),
+        row2Area.getY(),
+        tailCrossfeedAttSlider.getRight() - tailCrossfeedDelaySlider.getX(),
         groupLabelH);
 
     // —— Remaining 6 knobs (grid): LFO Depth | Width | LFO Rate | Tail Mod | Delay Depth | Rate ——
@@ -719,6 +792,20 @@ void PingEditor::setMainPanelControlsVisible (bool visible)
     dryWetSlider.setVisible (visible);
     dryWetLabel.setVisible (visible);
     dryWetReadout.setVisible (visible);
+    erCrossfeedDelaySlider.setVisible (visible);
+    erCrossfeedDelayLabel.setVisible (visible);
+    erCrossfeedDelayReadout.setVisible (visible);
+    erCrossfeedAttSlider.setVisible (visible);
+    erCrossfeedAttLabel.setVisible (visible);
+    erCrossfeedAttReadout.setVisible (visible);
+    erCrossfeedOnButton.setVisible (visible);
+    tailCrossfeedDelaySlider.setVisible (visible);
+    tailCrossfeedDelayLabel.setVisible (visible);
+    tailCrossfeedDelayReadout.setVisible (visible);
+    tailCrossfeedAttSlider.setVisible (visible);
+    tailCrossfeedAttLabel.setVisible (visible);
+    tailCrossfeedAttReadout.setVisible (visible);
+    tailCrossfeedOnButton.setVisible (visible);
 }
 
 void PingEditor::savePreset (const juce::String& name)
@@ -875,6 +962,13 @@ void PingEditor::updateAllReadouts()
     float tailDb = v ("tailLevel");
     erLevelReadout.setText (erDb <= -47.0f ? "-inf dB" : juce::String (juce::roundToInt (erDb)) + " dB", juce::dontSendNotification);
     tailLevelReadout.setText (tailDb <= -47.0f ? "-inf dB" : juce::String (juce::roundToInt (tailDb)) + " dB", juce::dontSendNotification);
+
+    erCrossfeedDelayReadout.setText  (juce::String (v ("erCrossfeedDelayMs"),   1) + " ms", juce::dontSendNotification);
+    float erAttDb = v ("erCrossfeedAttDb");
+    erCrossfeedAttReadout.setText    (erAttDb <= -23.5f ? "-inf dB" : juce::String (juce::roundToInt (erAttDb)) + " dB", juce::dontSendNotification);
+    tailCrossfeedDelayReadout.setText(juce::String (v ("tailCrossfeedDelayMs"), 1) + " ms", juce::dontSendNotification);
+    float tailAttDb = v ("tailCrossfeedAttDb");
+    tailCrossfeedAttReadout.setText  (tailAttDb <= -23.5f ? "-inf dB" : juce::String (juce::roundToInt (tailAttDb)) + " dB", juce::dontSendNotification);
 }
 
 void PingEditor::refreshIRList()

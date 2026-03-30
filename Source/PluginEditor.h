@@ -53,24 +53,37 @@ private:
     juce::Slider irInputGainSlider, irInputDriveSlider, outputGainSlider;
     juce::Slider erLevelSlider, tailLevelSlider;
 
+    // Crossfeed controls (row 2)
+    juce::Slider erCrossfeedDelaySlider, erCrossfeedAttSlider;
+    juce::Slider tailCrossfeedDelaySlider, tailCrossfeedAttSlider;
+    juce::ToggleButton erCrossfeedOnButton, tailCrossfeedOnButton;
+
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
     std::unique_ptr<SliderAttachment> dryWetAttach, predelayAttach, decayAttach;
     std::unique_ptr<SliderAttachment> stretchAttach, widthAttach, modDepthAttach, modRateAttach;
     std::unique_ptr<SliderAttachment> tailModAttach, delayDepthAttach, tailRateAttach;
     std::unique_ptr<SliderAttachment> irInputGainAttach, irInputDriveAttach, outputGainAttach;
     std::unique_ptr<SliderAttachment> erLevelAttach, tailLevelAttach;
+    std::unique_ptr<SliderAttachment> erCrossfeedDelayAttach, erCrossfeedAttAttach;
+    std::unique_ptr<SliderAttachment> tailCrossfeedDelayAttach, tailCrossfeedAttAttach;
+    std::unique_ptr<ButtonAttachment> erCrossfeedOnAttach, tailCrossfeedOnAttach;
 
     juce::Label dryWetLabel, predelayLabel, decayLabel, modDepthLabel;
     juce::Label stretchLabel, widthLabel, modRateLabel;
     juce::Label tailModLabel, delayDepthLabel, tailRateLabel;
     juce::Label irInputGainLabel, irInputDriveLabel, outputGainLabel;
     juce::Label erLevelLabel, tailLevelLabel;
+    juce::Label erCrossfeedDelayLabel, erCrossfeedAttLabel;
+    juce::Label tailCrossfeedDelayLabel, tailCrossfeedAttLabel;
 
     juce::Label dryWetReadout, predelayReadout, decayReadout, modDepthReadout;
     juce::Label stretchReadout, widthReadout, modRateReadout;
     juce::Label tailModReadout, delayDepthReadout, tailRateReadout;
     juce::Label irInputGainReadout, irInputDriveReadout, outputGainReadout;
     juce::Label erLevelReadout, tailLevelReadout;
+    juce::Label erCrossfeedDelayReadout, erCrossfeedAttReadout;
+    juce::Label tailCrossfeedDelayReadout, tailCrossfeedAttReadout;
 
     PingLookAndFeel pingLook;
     EQGraphComponent eqGraph;
@@ -87,6 +100,8 @@ private:
     juce::Rectangle<int> pingBounds;
     juce::Rectangle<int> irInputGroupBounds;    // area above the "IR Input" knob pair (text + line)
     juce::Rectangle<int> irControlsGroupBounds; // area above the "IR Controls" knob triple (text + line)
+    juce::Rectangle<int> erCrossfadeGroupBounds;   // area above the ER Crossfade pair
+    juce::Rectangle<int> tailCrossfadeGroupBounds; // area above the Tail Crossfade pair
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PingEditor)
 };

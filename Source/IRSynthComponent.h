@@ -47,9 +47,6 @@ public:
     /** Set the IR combo to show the given display name (e.g. when loading from main UI). */
     void setSelectedIRDisplayName (const juce::String& name);
 
-    /** Set APVTS for crossfeed controls (Placement tab). Call from editor after addChildComponent. */
-    void setApvts (juce::AudioProcessorValueTreeState* apvts);
-
     /** Current selected IR item id in the IR combo (1-based, 0 if none). */
     int getSelectedIRId() const { return irCombo.getSelectedId(); }
 
@@ -98,20 +95,6 @@ private:
     juce::Slider widthSlider, depthSlider, heightSlider;
     juce::Label widthLabel, depthLabel, heightLabel;
     juce::Label widthValueLabel, depthValueLabel, heightValueLabel;  // Editable number only
-
-    // Crossfeed (Placement tab, below Height): one row of 4 knobs, switch + label under each pair
-    juce::ToggleButton erCrossfeedOnButton;
-    juce::ToggleButton tailCrossfeedOnButton;
-    juce::Label erCrossfeedSectionLabel;
-    juce::Label tailCrossfeedSectionLabel;
-    juce::Slider erCrossfeedDelaySlider, erCrossfeedAttSlider, tailCrossfeedDelaySlider, tailCrossfeedAttSlider;
-    juce::Label erCrossfeedDelayLabel, erCrossfeedAttLabel, tailCrossfeedDelayLabel, tailCrossfeedAttLabel;
-    juce::Label erCrossfeedDelayReadout, erCrossfeedAttReadout, tailCrossfeedDelayReadout, tailCrossfeedAttReadout;
-    juce::AudioProcessorValueTreeState* apvts = nullptr;
-    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
-    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
-    std::unique_ptr<ButtonAttachment> erCrossfeedOnAttach, tailCrossfeedOnAttach;
-    std::unique_ptr<SliderAttachment> erCrossfeedDelayAttach, erCrossfeedAttAttach, tailCrossfeedDelayAttach, tailCrossfeedAttAttach;
 
     // Surfaces (Character tab)
     juce::ComboBox floorCombo, ceilingCombo, wallCombo;
