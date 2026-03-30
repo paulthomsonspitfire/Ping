@@ -85,6 +85,8 @@ private:
     juce::Label versionLabel;
     juce::Rectangle<int> spitfireBounds;
     juce::Rectangle<int> pingBounds;
+    juce::Rectangle<int> irInputGroupBounds;    // area above the "IR Input" knob pair (text + line)
+    juce::Rectangle<int> irControlsGroupBounds; // area above the "IR Controls" knob triple (text + line)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PingEditor)
 };

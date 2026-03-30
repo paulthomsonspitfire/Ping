@@ -4,12 +4,12 @@
 
 namespace
 {
-    constexpr int editorW = 920;
-    constexpr int editorH = 440;
-    constexpr int minW = 720;
-    constexpr int minH = 440;
-    constexpr int maxW = 1600;
-    constexpr int maxH = 900;
+    constexpr int editorW = 1104;
+    constexpr int editorH = 528;
+    constexpr int minW = 864;
+    constexpr int minH = 528;
+    constexpr int maxW = 1920;
+    constexpr int maxH = 1080;
     const juce::Colour bgDark      { 0xff141414 };
     const juce::Colour panelBg     { 0xff1e1e1e };
     const juce::Colour panelBorder { 0xff2a2a2a };
@@ -291,12 +291,10 @@ PingEditor::PingEditor (PingProcessor& p)
     tailModLabel.setText ("TAIL MOD", juce::dontSendNotification);
     delayDepthLabel.setText ("DELAY DEPTH", juce::dontSendNotification);
     tailRateLabel.setText ("RATE", juce::dontSendNotification);
-    irInputGainLabel.setText ("IR INPUT GAIN", juce::dontSendNotification);
-    irInputGainLabel.setFont (juce::FontOptions (9.0f));
+    irInputGainLabel.setText ("GAIN", juce::dontSendNotification);
     outputGainLabel.setText ("WET OUTPUT", juce::dontSendNotification);
     outputGainLabel.setFont (juce::FontOptions (9.0f));
-    irInputDriveLabel.setText ("IR INPUT DRIVE", juce::dontSendNotification);
-    irInputDriveLabel.setFont (juce::FontOptions (9.0f));
+    irInputDriveLabel.setText ("DRIVE", juce::dontSendNotification);
     erLevelLabel.setText ("ER", juce::dontSendNotification);
     tailLevelLabel.setText ("TAIL", juce::dontSendNotification);
 
@@ -400,6 +398,21 @@ void PingEditor::paint (juce::Graphics& g)
         }
     }
 
+    // Group headers: label text above a horizontal line
+    g.setColour (textDim);
+    g.setFont (juce::FontOptions (9.0f));
+    auto drawGroupHeader = [&](const juce::Rectangle<int>& bounds, const juce::String& text)
+    {
+        if (bounds.getWidth() <= 0) return;
+        const float lineY = (float) bounds.getBottom() - 1.0f;
+        g.drawText (text, bounds.getX(), bounds.getY(),
+                    bounds.getWidth(), bounds.getHeight() - 3,
+                    juce::Justification::centredLeft, false);
+        g.drawLine ((float) bounds.getX(), lineY, (float) bounds.getRight(), lineY, 1.0f);
+    };
+    drawGroupHeader (irInputGroupBounds,    "IR Input");
+    drawGroupHeader (irControlsGroupBounds, "IR Controls");
+
 }
 
 void PingEditor::resized()
@@ -414,33 +427,39 @@ void PingEditor::resized()
 
     int w = getWidth();
     int h = getHeight();
-    auto b = getLocalBounds().reduced (juce::jmin (12, w / 76), juce::jmin (12, h / 38));
+    // Content occupies the right 5/6 of width and top 5/6 of height,
+    // leaving ~20% empty space on the left and at the bottom.
+    const int leftPad   = w / 6;
+    const int cw = w - leftPad;
+    const int ch = h - h / 6;
+    auto b = juce::Rectangle<int> (leftPad, 0, cw, ch)
+             .reduced (juce::jmin (12, cw / 76), juce::jmin (12, ch / 38));
 
-    const int topRowH = juce::jmax (38, (int) (0.09f * h));
-    const int knobSize = juce::jmax (40, juce::jmin (72, (int) (0.078f * w)));
+    const int topRowH = juce::jmax (38, (int) (0.09f * ch));
+    const int knobSize = juce::jmax (40, juce::jmin (72, (int) (0.078f * cw)));
     const int sixKnobSize = (int) (knobSize * 1.2f);
-    const int labelH = juce::jmax (10, (int) (0.024f * h));
-    const int readoutH = juce::jmax (10, (int) (0.022f * h));
-    const int sixRowH = sixKnobSize + labelH + readoutH + (int) (0.01f * h);
-    const int bigKnobSize = juce::jmax (80, juce::jmin (128, (int) (0.15f * w)));
+    const int labelH = juce::jmax (10, (int) (0.024f * ch));
+    const int readoutH = juce::jmax (10, (int) (0.022f * ch));
+    const int sixRowH = sixKnobSize + labelH + readoutH + (int) (0.01f * ch);
+    const int bigKnobSize = juce::jmax (80, juce::jmin (128, (int) (0.15f * cw)));
     const int eqMinH = 175;
-    const int eqHeight = juce::jmax (eqMinH, (int) (0.36f * h));
-    const int gapV = (int) (0.01f * h) + (int) (0.008f * h);
-    const int marginV = juce::jmin (12, h / 38);
-    const int availableForMainAndEq = h - 2 * marginV - topRowH - gapV;
+    const int eqHeight = juce::jmax (eqMinH, (int) (0.36f * ch));
+    const int gapV = (int) (0.01f * ch) + (int) (0.008f * ch);
+    const int marginV = juce::jmin (12, ch / 38);
+    const int availableForMainAndEq = ch - 2 * marginV - topRowH - gapV;
     const int erTailRowH = 28;
     const int mainHClamped = juce::jmax (3 * sixRowH, availableForMainAndEq - eqHeight - erTailRowH);
     const int mainHeight = juce::jmin (mainHClamped, availableForMainAndEq - eqHeight - erTailRowH - 6);
 
     // —— Top row: Spitfire (left) | Preset menu (center, greyed - key menu) | P!NG (right) ——
     auto topRow = b.removeFromTop (topRowH);
-    const int leftLogoW = juce::jmin (150, (int) (0.17f * w));
-    const int rightLogoW = juce::jmin (90, (int) (0.10f * w));
+    const int leftLogoW = juce::jmin (150, (int) (0.17f * cw));
+    const int rightLogoW = juce::jmin (90, (int) (0.10f * cw));
     spitfireBounds = topRow.removeFromLeft (leftLogoW).reduced (2);
     pingBounds = topRow.removeFromRight (rightLogoW).reduced (2);
     auto presetArea = topRow.reduced (4);
     const int saveButtonW = 48;
-    int presetComboW = juce::jmin ((int) (0.38f * w), presetArea.getWidth() - saveButtonW - 6);
+    int presetComboW = juce::jmin ((int) (0.38f * cw), presetArea.getWidth() - saveButtonW - 6);
     presetCombo.setBounds (presetArea.getX() + (presetArea.getWidth() - (presetComboW + 6 + saveButtonW)) / 2,
                           presetArea.getY() + 2, presetComboW, presetArea.getHeight() - 4);
     savePresetButton.setBounds (presetCombo.getRight() + 6, presetArea.getY() + 2, saveButtonW, presetArea.getHeight() - 4);
@@ -454,26 +473,26 @@ void PingEditor::resized()
     int meterY = spitfireBounds.getY() + (spitfireBounds.getHeight() - meterH) / 2;
     outputLevelMeter.setBounds (meterX, meterY, meterW, meterH);
 
-    b.removeFromTop ((int) (0.01f * h));
+    b.removeFromTop ((int) (0.01f * ch));
 
     // —— Main block: knobs (left), Dry/Wet + IR combo (centre under preset), Reverse + waveform (right) ——
     auto mainArea = b.removeFromTop (mainHeight);
-    int wavePanelW = juce::jmax (220, (int) (0.36f * w));
+    int wavePanelW = juce::jmax (220, (int) (0.36f * cw));
     int wavePanelH = juce::jmax (72, (int) (wavePanelW * 0.36f));
     auto rightCol = mainArea.removeFromRight (wavePanelW);
     auto reverseStrip = rightCol.removeFromTop (juce::jmin (26, rightCol.getHeight() / 4));
-    reverseButton.setBounds (reverseStrip.removeFromRight (juce::jmax (68, (int)(0.075f * w))).reduced (2));
+    reverseButton.setBounds (reverseStrip.removeFromRight (juce::jmax (68, (int)(0.075f * cw))).reduced (2));
     waveformComponent.setBounds (rightCol.getX(), rightCol.getY(), rightCol.getWidth(),
                                  juce::jmin (wavePanelH, rightCol.getHeight()));
 
     int irComboH = 24;
-    int irComboW = juce::jmin ((int) (0.24f * w), bigKnobSize + 40);
+    int irComboW = juce::jmin ((int) (0.24f * cw), bigKnobSize + 40);
     int cy = waveformComponent.getBounds().getCentreY() - (bigKnobSize + labelH + readoutH + 4 + irComboH + 6) / 2;
     const int smallKnobSize = sixKnobSize / 2;
     const int dryWetCenterY = cy + bigKnobSize / 2;
     const int irKnobGap = 6;
 
-    const int sixColGap = juce::jmax (8, (int) (0.01f * w));
+    const int sixColGap = juce::jmax (8, (int) (0.01f * cw));
     const int sixColW = sixKnobSize + sixColGap;
     int x1 = mainArea.getX();
     int x2 = mainArea.getX() + sixColW;
@@ -483,15 +502,7 @@ void PingEditor::resized()
 
     const int irLabelW = juce::jmax (90, smallKnobSize * 2);
 
-    // IR Input Gain shifted left by 3/4 of the knob size
-    const int irGainShift = (smallKnobSize * 3) / 4;
-    irInputGainSlider.setBounds (irKnobsCenterX - smallKnobSize / 2 - irGainShift, dryWetCenterY - smallKnobSize - irKnobGap, smallKnobSize, smallKnobSize);
-    irInputGainLabel.setBounds (irKnobsCenterX - irLabelW / 2 - irGainShift, irInputGainSlider.getBottom() + 2, irLabelW, labelH);
-    irInputGainReadout.setBounds (irKnobsCenterX - irLabelW / 2 - irGainShift, irInputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
-
-    irInputDriveSlider.setBounds (irKnobsCenterX - smallKnobSize / 2, irInputGainReadout.getBottom() + 4, smallKnobSize, smallKnobSize);
-    irInputDriveLabel.setBounds (irKnobsCenterX - irLabelW / 2, irInputDriveSlider.getBottom() + 2, irLabelW, labelH);
-    irInputDriveReadout.setBounds (irKnobsCenterX - irLabelW / 2, irInputDriveSlider.getBottom() + labelH + 2, irLabelW, readoutH);
+    // irInputGain and irInputDrive are now placed in the top row below the main area start — see row placement below
 
     dryWetSlider.setBounds (presetCenterX - bigKnobSize / 2, cy, bigKnobSize, bigKnobSize);
     dryWetLabel.setBounds (0, 0, 0, 0);  // unused: "dry/wet" text is drawn in knob centre
@@ -504,8 +515,8 @@ void PingEditor::resized()
     int irComboX = irSynthX - irGap - irComboW;
     int irRowY = dryWetReadout.getBottom() + 6 + labelH;  // +labelH restores space from removed dry/wet image
 
-    // Wet Output: same Y as IR Input Gain, placed to its right with a gap of smallKnobSize/2 minus smallKnobSize/4
-    const int outputGainCenterX = irInputGainSlider.getRight() + smallKnobSize / 2 + smallKnobSize / 2 - smallKnobSize / 4;
+    // Wet Output: centred to the right of irKnobsCenterX (irInputGain/Drive now live in the top row)
+    const int outputGainCenterX = irKnobsCenterX + smallKnobSize / 2;
     const int outputGainY = dryWetCenterY - smallKnobSize - irKnobGap;
     outputGainSlider.setBounds (outputGainCenterX - smallKnobSize / 2, outputGainY, smallKnobSize, smallKnobSize);
     outputGainLabel.setBounds (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + 2, irLabelW, labelH);
@@ -515,53 +526,77 @@ void PingEditor::resized()
     irSynthButton.setBounds (irSynthX, irRowY, irSynthW, irComboH);
     if (! irSynthComponent.isVisible())
         dryWetSlider.toFront (false);
-    int y = mainArea.getY();
 
-    decaySlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
-    decayLabel.setBounds (x1, y + sixKnobSize + 2, sixKnobSize, labelH);
-    decayReadout.setBounds (x1, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
-    y += sixRowH;
+    // —— Row of 5 controls: Input Gain | IR Input Drive | Predelay | Damping | Stretch ——
+    const int rowKnobSize  = (int)(sixKnobSize * 0.6f);
+    const int rowLabelW    = juce::jmax (64, rowKnobSize + 14);
+    const int rowGap       = juce::jmax (6,  (int)(0.008f * cw));
+    const int groupLabelH  = 14;   // height reserved for "IR Input" text + line above knobs 0-1
+    const int rowTotalH    = rowKnobSize + labelH + readoutH + 6;
+    auto topKnobRow = mainArea.removeFromTop (rowTotalH + 4 + groupLabelH);
+    const int rowY       = topKnobRow.getY() + groupLabelH;  // knobs sit below the group header
+    const int rowStep    = rowKnobSize + rowGap;
+    const int rowStartX  = juce::jmax (8, w / 128) + 5;     // 5 px right of the window edge margin
 
-    predelaySlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
-    predelayLabel.setBounds (x1, y + sixKnobSize + 2, sixKnobSize, labelH);
-    predelayReadout.setBounds (x1, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
-    y += sixRowH;
+    auto placeRowKnob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
+    {
+        // Add 5 px extra gap before knob index 2 (separates the IR-Input pair from the rest)
+        const int extraGap = (idx >= 2) ? 5 : 0;
+        const int cx = rowStartX + rowKnobSize / 2 + idx * rowStep + extraGap;
+        s.setBounds    (cx - rowKnobSize / 2, rowY,                       rowKnobSize, rowKnobSize);
+        lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,          rowLabelW,   labelH);
+        rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2, rowLabelW,   readoutH);
+    };
+    placeRowKnob (irInputGainSlider,  irInputGainLabel,  irInputGainReadout,  0);
+    placeRowKnob (irInputDriveSlider, irInputDriveLabel, irInputDriveReadout, 1);
+    placeRowKnob (predelaySlider,     predelayLabel,     predelayReadout,     2);
+    placeRowKnob (decaySlider,        decayLabel,        decayReadout,        3);
+    placeRowKnob (stretchSlider,      stretchLabel,      stretchReadout,      4);
+
+    // Store group bounds for painting (text + line above each pair/triple)
+    irInputGroupBounds = juce::Rectangle<int> (
+        irInputGainSlider.getX(),
+        topKnobRow.getY(),
+        irInputDriveSlider.getRight() - irInputGainSlider.getX(),
+        groupLabelH);
+    irControlsGroupBounds = juce::Rectangle<int> (
+        predelaySlider.getX(),
+        topKnobRow.getY(),
+        stretchSlider.getRight() - predelaySlider.getX(),
+        groupLabelH);
+
+    // —— Remaining 6 knobs (grid): LFO Depth | Width | LFO Rate | Tail Mod | Delay Depth | Rate ——
+    int y = mainArea.getY();   // below the row
 
     modDepthSlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
-    modDepthLabel.setBounds (x1, y + sixKnobSize + 2, sixKnobSize, labelH);
-    modDepthReadout.setBounds (x1, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
+    modDepthLabel.setBounds  (x1, y + sixKnobSize + 2,          sixKnobSize, labelH);
+    modDepthReadout.setBounds(x1, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
 
-    y = mainArea.getY();
-    stretchSlider.setBounds (x2, y, sixKnobSize, sixKnobSize);
-    stretchLabel.setBounds (x2, y + sixKnobSize + 2, sixKnobSize, labelH);
-    stretchReadout.setBounds (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
+    widthSlider.setBounds    (x2, y, sixKnobSize, sixKnobSize);
+    widthLabel.setBounds     (x2, y + sixKnobSize + 2,          sixKnobSize, labelH);
+    widthReadout.setBounds   (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
     y += sixRowH;
 
-    widthSlider.setBounds (x2, y, sixKnobSize, sixKnobSize);
-    widthLabel.setBounds (x2, y + sixKnobSize + 2, sixKnobSize, labelH);
-    widthReadout.setBounds (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
-    y += sixRowH;
-
-    modRateSlider.setBounds (x2, y, sixKnobSize, sixKnobSize);
-    modRateLabel.setBounds (x2, y + sixKnobSize + 2, sixKnobSize, labelH);
+    modRateSlider.setBounds  (x2, y, sixKnobSize, sixKnobSize);
+    modRateLabel.setBounds   (x2, y + sixKnobSize + 2,          sixKnobSize, labelH);
     modRateReadout.setBounds (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
 
     y = mainArea.getY();
-    tailModSlider.setBounds (x3, y, sixKnobSize, sixKnobSize);
-    tailModLabel.setBounds (x3, y + sixKnobSize + 2, sixKnobSize, labelH);
+    tailModSlider.setBounds  (x3, y, sixKnobSize, sixKnobSize);
+    tailModLabel.setBounds   (x3, y + sixKnobSize + 2,          sixKnobSize, labelH);
     tailModReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
     y += sixRowH;
 
-    delayDepthSlider.setBounds (x3, y, sixKnobSize, sixKnobSize);
-    delayDepthLabel.setBounds (x3, y + sixKnobSize + 2, sixKnobSize, labelH);
+    delayDepthSlider.setBounds  (x3, y, sixKnobSize, sixKnobSize);
+    delayDepthLabel.setBounds   (x3, y + sixKnobSize + 2,          sixKnobSize, labelH);
     delayDepthReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
     y += sixRowH;
 
-    tailRateSlider.setBounds (x3, y, sixKnobSize, sixKnobSize);
-    tailRateLabel.setBounds (x3, y + sixKnobSize + 2, sixKnobSize, labelH);
+    tailRateSlider.setBounds  (x3, y, sixKnobSize, sixKnobSize);
+    tailRateLabel.setBounds   (x3, y + sixKnobSize + 2,          sixKnobSize, labelH);
     tailRateReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
 
-    b.removeFromTop ((int) (0.008f * h));
+    b.removeFromTop ((int) (0.008f * ch));
 
     // —— ER/Tail sliders: between waveform and EQ, within waveform width, side by side ——
     auto erTailRow = b.removeFromTop (erTailRowH);
@@ -584,13 +619,13 @@ void PingEditor::resized()
     tailLevelReadout.setBounds (tailLevelSlider.getRight() + gap, erTailRow.getY(), readoutW, sliderH);
 
     // —— Bottom: EQ (right) ——
-    int eqWidth = juce::jmax (420, (int) (0.62f * w));
+    int eqWidth = juce::jmax (420, (int) (0.62f * cw));
     auto bottomRow = b.removeFromBottom (eqHeight);
     auto eqRect = bottomRow.removeFromRight (eqWidth);
     eqGraph.setBounds (eqRect);
 
-    licenceLabel.setBounds (12, getHeight() - 20, getWidth() - 24, 16);
-    versionLabel.setBounds (tailRateSlider.getX(), getHeight() - 20, tailRateSlider.getWidth(), 16);
+    licenceLabel.setBounds (leftPad + 12, ch - 20, cw - 24, 16);
+    versionLabel.setBounds (tailRateSlider.getX(), ch - 20, tailRateSlider.getWidth(), 16);
 }
 
 void PingEditor::comboBoxChanged (juce::ComboBox* combo)
