@@ -97,19 +97,21 @@ g++ -std=c++17 -O2 \
 | IR_10 | Measured RT60 within 2× of Eyring-predicted value (lower bound 0.4×, upper 2×) |
 | IR_11 | Golden regression lock — 30 samples from onset at index 371, locked to 17 sig-fig |
 
-**DSP tests (DSP_01 – DSP_09)** — test the reference implementations of the planned hybrid-mode DSP blocks. These tests are self-contained (they define their own structs locally) and serve as specifications for the production code in `PluginProcessor.h`.
+**DSP tests (DSP_01 – DSP_11)** — test the reference implementations of the planned hybrid-mode DSP blocks. These tests are self-contained (they define their own structs locally) and serve as specifications for the production code in `PluginProcessor.h`.
 
 | ID | Description |
 |----|-------------|
 | DSP_01 | Plate allpass cascade is truly all-pass (energy preserved to ±1% after drain) |
 | DSP_02 | Plate at density=0 is bit-identical to bypass (IEEE-754 collapse) |
 | DSP_03 | Bloom allpass is causal — no echo before first delay drains |
-| DSP_04 | Bloom feedback is stable at maximum setting (0.65) — output decays after input stops |
+| DSP_04 | Bloom feedback is stable at maximum setting (0.65) — output decays after input stops (bloomTime = 300 ms) |
 | DSP_05 | Cloud LFO rates have no rational beat frequencies (p,q ≤ 6 check) |
 | DSP_06 | Cloud does not amplify signal (RMS out ≤ RMS in × 1.05) |
 | DSP_07 | Shimmer 12-semitone shift produces ~750 Hz from 375 Hz input |
 | DSP_08 | Shimmer feedback decays after input stops (stability check) |
 | DSP_09 | Shimmer semitone-to-ratio formula is correct for key musical intervals |
+| DSP_10 | Plate `plateSize=2.0` doubles the effective allpass delay — first-return peak moves from sample ~691 to ~1382 |
+| DSP_11 | Bloom feedback stable at minimum bloomTime (50 ms) — most stressful case (~20 recirculations/s) |
 
 ### Golden regression lock (IR_11)
 
@@ -127,8 +129,11 @@ Paste the printed `onset_offset` and `golden_iLL[30]` values into `IR_11` in `Pi
 - **Small-room params** — `width=10, depth=8, height=5 m`. Generates a ~2 s IR instead of the default 25 s, keeping individual test runtime under 4 s.
 - **DSP tests are self-contained** — `SimpleAllpass`, the Cloud LFO, and the grain engine are defined locally in `PingDSPTests.cpp`. When the production implementation is written into `PluginProcessor.h`, the struct definition there must match the one in the tests exactly.
 - **DSP_07 uses 375 Hz input** (not 440 Hz) — 375 × 512/48000 = 4 exact integer cycles per grain, making grain resets phase-coherent. 440 Hz gives 4.69 cycles/grain, producing phase discontinuities that shift the DFT peak ~65 Hz below the true pitch-shifted frequency.
-- **DSP_04 feedback delay** — the Bloom feedback circular buffer must be read from `fbWp` (the oldest slot, = full `fbLen` samples of delay), not `(fbWp-1)` (1-sample IIR). The same convention applies in the production implementation.
+- **DSP_04 feedback delay** — the Bloom feedback circular buffer must be read from `fbWp` (the oldest slot, = full `fbLen` samples of delay), not `(fbWp-1)` (1-sample IIR). The same convention applies in the production implementation. DSP_04 tests bloomTime = 300 ms (mid-range); DSP_11 tests the 50 ms minimum.
 - **DSP_05 rational-beat bound** — p,q ≤ 6 covers all perceptible simple LFO beat ratios. The original p,q ≤ 32 flagged 11/15, whose beat period at these rates would be many minutes — completely inaudible.
+- **DSP_10 first-return peak test** — allpass filters are IIR and never fully "drain," so drain-energy comparisons are unsuitable for testing `effLen`. Instead, DSP_10 exploits the fact that a single allpass of delay d, fed an impulse, produces its first large positive output exactly at sample d: `out[d] = 1 - g² ≈ 0.51`. At `plateSize=2.0`, d doubles from 691 to 1382 samples, making the peak position a direct, unambiguous observable of the `effLen` mechanism.
+- **DSP_11 short bloomTime is the worst case** — At 50 ms (minimum bloomTime) there are ~20 feedback round-trips per second. More trips per second means more opportunities for energy to accumulate if the loop gain is near 1. DSP_04 (300 ms) and DSP_11 (50 ms) together bound the stability guarantee across the full 50–500 ms range.
+- **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Bloom stages leave `effLen = 0`; Plate stages set it each block via `plateSize`. `makePlateStages` allocates buffers at 2× the base primes so no reallocation is needed across the full `plateSize` range.
 
 ---
 

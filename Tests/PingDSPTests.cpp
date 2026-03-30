@@ -24,31 +24,43 @@
 
 // SimpleAllpass — single all-pass filter stage.
 // Used in both Plate (6-stage cascade) and Bloom (4-stage cascade).
+//
+// effLen: effective delay length, used by Plate to support the plateSize parameter
+// (which scales all delay times without reallocation). When effLen == 0 or exceeds
+// buf.size(), the full buffer length is used — so Bloom stages (which don't need
+// variable size) can leave effLen at its default of 0.
 struct SimpleAllpass
 {
     std::vector<float> buf;
-    int   ptr = 0;
-    float g   = 0.7f;
+    int   ptr    = 0;
+    int   effLen = 0;   // 0 = use buf.size(); set per-block by Plate for plateSize support
+    float g      = 0.7f;
 
     float process (float x) noexcept
     {
+        int len = (effLen > 0 && effLen <= (int)buf.size()) ? effLen : (int)buf.size();
         float d = buf[(size_t)ptr];
         float w = x + g * d;
         buf[(size_t)ptr] = w;
-        ptr = (ptr + 1) % (int)buf.size();
+        ptr = (ptr + 1) % len;
         return d - g * w;
     }
 };
 
 // Build a 6-stage Plate cascade (prime delays, g=0.70).
-static std::array<SimpleAllpass, 6> makePlateStages (int sr)
+// Buffers are allocated at 2× the base prime delays so that plateSize can reach 2.0
+// without reallocation. effLen is initialised to the base (1×) delay; the processBlock
+// code updates it each block based on the current plateSize value.
+static std::array<SimpleAllpass, 6> makePlateStages (int sr, float plateSize = 1.0f)
 {
     const int platePrimes[6] = { 24, 71, 157, 293, 431, 691 };
     std::array<SimpleAllpass, 6> stages;
     for (int s = 0; s < 6; ++s)
     {
-        int d = (int)std::round(platePrimes[s] * (double)sr / 48000.0);
-        stages[s].buf.assign((size_t)d, 0.f);
+        int baseD = (int)std::round(platePrimes[s] * (double)sr / 48000.0);
+        int allocD = baseD * 2;   // 2× headroom for plateSize up to 2.0
+        stages[s].buf.assign((size_t)allocD, 0.f);
+        stages[s].effLen = (int)std::round(baseD * plateSize);
         stages[s].g = 0.70f;
     }
     return stages;
@@ -175,6 +187,10 @@ TEST_CASE("DSP_03: Bloom allpass is causal — no echo before first delay drains
 // With feedback = 0.65, the system must be stable: output should decay (not grow)
 // after the input stops, and no NaN/Inf should appear throughout.
 //
+// This test uses bloomTime = 300 ms (a representative mid-range value; the full
+// parameter range is 50–500 ms). DSP_11 tests the short extreme (50 ms), which
+// produces more recirculations per second and is the most stressful case.
+//
 // N_total is set long enough to see multiple 300 ms feedback round-trips and
 // their decay after the input stops.  The Bloom cascade itself has a group delay
 // of ~562 ms (sum of the four stage delays: 27010 samples at 48 kHz), so
@@ -190,9 +206,11 @@ TEST_CASE("DSP_04: Bloom feedback is stable at max setting (0.65)", "[dsp][bloom
 
     auto stages = makeBloomStages(sr);
 
-    // Feedback buffer: 300 ms circular.
+    // Feedback buffer: 300 ms circular (bloomTime = 300 ms).
     // Read from fbWp (the slot about to be overwritten), which is exactly fbLen
     // samples older than the current write head — giving the full 300 ms delay.
+    // This models the bloomTime parameter: rdPtr = (fbWp - timeInSamples + fbLen) % fbLen
+    // where timeInSamples = fbLen (i.e. bloomTime = full buffer length).
     // Reading from (fbWp - 1) would give only a 1-sample delay, turning this into
     // a first-order IIR and making the test unable to distinguish long-tail decay
     // from near-instantaneous feedback.
@@ -523,4 +541,135 @@ TEST_CASE("DSP_09: Shimmer semitone-to-ratio formula is correct", "[dsp][shimmer
     CHECK(ratio(12.f) == Catch::Approx(2.0f).epsilon(0.0001f));   // octave
     CHECK(ratio(19.f) == Catch::Approx(2.9966f).epsilon(0.001f)); // octave + fifth
     CHECK(ratio(24.f) == Catch::Approx(4.0f).epsilon(0.001f));    // two octaves
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DSP_10 — Plate: plateSize scales effective delay lengths via effLen
+// ─────────────────────────────────────────────────────────────────────────────
+// The plateSize parameter (0.5–2.0) scales allpass delay times without
+// reallocating buffers. This is implemented via SimpleAllpass::effLen: the ptr
+// wraps at effLen rather than buf.size().
+//
+// For a single allpass stage of delay d and coefficient g, feeding a unit impulse
+// at t=0 produces:
+//   t=0:    output = -g  (direct path)
+//   t=d:    output ≈ (1 - g²)  — the first "return" from the delay line
+//   t>d:    exponentially decaying echoes
+//
+// So the time of the first large positive output peak is a direct observable of
+// the effective delay length. This test verifies:
+//   plateSize=1.0 → first peak near sample 691  (base delay)
+//   plateSize=2.0 → first peak near sample 1382 (doubled delay)
+// A bug where ptr wraps at buf.size() (= 1382) instead of effLen (= 691) would
+// cause the 1× cascade to behave identically to the 2× cascade and fail the test.
+TEST_CASE("DSP_10: Plate plateSize=2.0 doubles effective allpass delay time", "[dsp][plate][plateSize]")
+{
+    const int sr = 48000;
+    // Use only the longest stage (prime 691) for a clean single-stage test.
+    // At g=0.70, the first return at t=d has amplitude (1-g²) = 0.51 — easily detectable.
+    const int basePrime = 691;
+    const float g       = 0.70f;
+
+    auto makeSingleStage = [&](float plateSize) -> SimpleAllpass
+    {
+        SimpleAllpass ap;
+        int allocD = basePrime * 2;   // 2× headroom, as per production prepareToPlay
+        ap.buf.assign((size_t)allocD, 0.f);
+        ap.effLen = (int)std::round(basePrime * plateSize);
+        ap.g = g;
+        return ap;
+    };
+
+    // Expected first-return sample (with ±5 sample tolerance for rounding).
+    auto firstReturnSample = [&](float plateSize) -> int
+    {
+        SimpleAllpass stage = makeSingleStage(plateSize);
+        int runLen = (int)(basePrime * plateSize * 2);
+        float peak = 0.f;
+        int   peakIdx = 0;
+        for (int i = 0; i < runLen; ++i)
+        {
+            float x = (i == 0) ? 1.0f : 0.0f;
+            float y = stage.process(x);
+            if (y > peak) { peak = y; peakIdx = i; }
+        }
+        return peakIdx;
+    };
+
+    int peak1x = firstReturnSample(1.0f);
+    int peak2x = firstReturnSample(2.0f);
+
+    INFO("First-return peak: plateSize=1.0 → sample " << peak1x
+         << "  plateSize=2.0 → sample " << peak2x);
+
+    // At size=1.0 the first return must be at approximately basePrime (691).
+    CHECK(peak1x >= basePrime - 5);
+    CHECK(peak1x <= basePrime + 5);
+
+    // At size=2.0 the first return must be at approximately 2×basePrime (1382).
+    CHECK(peak2x >= basePrime * 2 - 5);
+    CHECK(peak2x <= basePrime * 2 + 5);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DSP_11 — Bloom feedback: stable at minimum bloomTime (50 ms)
+// ─────────────────────────────────────────────────────────────────────────────
+// Short bloomTime produces more feedback recirculations per second and is the
+// most stressful case for stability. At 50 ms and fbAmt=0.65 there are ~20
+// round-trips per second through the cascade. This test verifies the system
+// remains stable and decays after input stops.
+//
+// DSP_04 covers bloomTime=300 ms; this covers the opposite extreme.
+// Together they bound the stability guarantee across the full 50–500 ms range.
+TEST_CASE("DSP_11: Bloom feedback is stable at minimum bloomTime (50 ms)", "[dsp][bloom][stability]")
+{
+    const int   sr       = 48000;
+    const int   N_active = 10000;
+    // At 50 ms per round-trip and fbAmt=0.65, energy after k trips scales as 0.65^k.
+    // After 30 trips (1500 ms = 72000 samples) energy is 0.65^30 ≈ 4e-6 — measurably
+    // decayed. Use 90000 total for a safe measurement window.
+    const int   N_total  = 90000;
+    const float fbAmt    = 0.65f;
+
+    auto stages = makeBloomStages(sr);
+
+    // 50 ms feedback buffer — minimum bloomTime.
+    int fbLen = (int)std::round(0.050 * sr);   // 2400 samples at 48 kHz
+    std::vector<float> fbBuf(fbLen, 0.f);
+    int fbWp = 0;
+
+    TestRng rng(0xD0DECAFEu);
+    std::vector<float> outputs(N_total);
+
+    for (int i = 0; i < N_total; ++i)
+    {
+        float x = (i < N_active) ? rng.nextFloat() : 0.f;
+
+        // Full-buffer read: fbWp is the oldest slot (50 ms ago).
+        int   rdPtr = fbWp;
+        float fb    = fbBuf[(size_t)rdPtr] * fbAmt;
+        float in    = x + fb;
+
+        float diff = in;
+        for (auto& s : stages) diff = s.process(diff);
+
+        float out = in * 0.5f + diff * 0.5f;
+
+        fbBuf[(size_t)fbWp] = out;
+        fbWp = (fbWp + 1) % fbLen;
+        outputs[i] = out;
+    }
+
+    // 1. No NaN/Inf throughout.
+    CHECK_FALSE(hasNaNorInfF(outputs));
+
+    // 2. Energy must decrease after input stops.
+    //    The Bloom cascade drain time is ~562 ms (27010 samples). Place measurement
+    //    windows well after the cascade has drained and the feedback is free-running.
+    //    Window 1: ~40000 samples after input stops (cascade drained + many trips).
+    //    Window 2: ~30000 samples later — must not be louder.
+    double rmsEarly = windowRMSF(outputs, 50000, 1000);
+    double rmsLate  = windowRMSF(outputs, 80000, 1000);
+    INFO("bloomTime=50ms  RMS [50–51k]: " << rmsEarly << "  RMS [80–81k]: " << rmsLate);
+    CHECK(rmsLate <= rmsEarly + 1e-6);
 }
