@@ -43,6 +43,95 @@ cmake --build build --target installer
 
 ---
 
+## Tests
+
+The test suite lives in `Tests/` and is compiled by CMake into the `PingTests` binary (no JUCE dependency — pure C++17 + Catch2, fetched automatically).
+
+```bash
+# Build and run (from repo root)
+cmake -B build -S .
+cmake --build build --target PingTests
+cd build && ctest --output-on-failure
+```
+
+Catch2 is fetched by CMake into `build/_deps/catch2-src/`. If you need to compile the tests standalone (e.g. on Linux for CI without a macOS toolchain), use the amalgamated build:
+
+```bash
+CATCH2=build/_deps/catch2-src
+g++ -std=c++17 -O2 \
+    -DPING_TESTING_BUILD=1 \
+    -I${CATCH2}/src -I${CATCH2}/extras \
+    -I build/_deps/catch2-build/generated-includes \
+    -I Source -I Tests \
+    ${CATCH2}/extras/catch_amalgamated.cpp \
+    Source/IRSynthEngine.cpp \
+    Tests/PingEngineTests.cpp \
+    Tests/PingDSPTests.cpp \
+    -o PingTests -lm
+./PingTests
+```
+
+### Test files
+
+| File | What it tests |
+|------|--------------|
+| `Tests/PingEngineTests.cpp` | `IRSynthEngine` — determinism, output dimensions, NaN/Inf, RT60 plausibility, channel distinctness, ER-only silence, FDN decay, golden regression lock |
+| `Tests/PingDSPTests.cpp` | Hybrid-mode DSP building blocks — `SimpleAllpass` (Plate/Bloom), Cloud LFO rate spacing, Shimmer grain engine pitch and stability |
+| `Tests/TestHelpers.h` | Shared utilities: `TestRng`, `windowRMS`, `hasNaNorInf`, `l2diff`, `peakFrequencyHz` |
+
+### Test inventory
+
+**Engine tests (IR_01 – IR_11)** — test existing `IRSynthEngine` code, all should pass on every commit.
+
+| ID | Description |
+|----|-------------|
+| IR_01 | `synthIR` is deterministic (bit-identical across two runs) |
+| IR_02 | Output dimensions are self-consistent (irLen, sampleRate, rt60 size) |
+| IR_03 | No NaN or Inf in any output channel |
+| IR_04 | RT60 values are physically plausible (0.05–30 s, LF ≥ HF) |
+| IR_05 | All four IR channels are distinct (no copy bug) |
+| IR_06 | ER-only mode has no late energy after 200 ms (−60 dB gate) |
+| IR_07 | FDN tail energy decreases monotonically over time (250 ms windows) |
+| IR_08 | Full-reverb tail has energy after ER crossover (FDN seed check) |
+| IR_09 | No NaN/Inf with extreme parameters (tiny room, coincident speakers, high diffusion) |
+| IR_10 | Measured RT60 within 2× of Eyring-predicted value (lower bound 0.4×, upper 2×) |
+| IR_11 | Golden regression lock — 30 samples from onset at index 371, locked to 17 sig-fig |
+
+**DSP tests (DSP_01 – DSP_09)** — test the reference implementations of the planned hybrid-mode DSP blocks. These tests are self-contained (they define their own structs locally) and serve as specifications for the production code in `PluginProcessor.h`.
+
+| ID | Description |
+|----|-------------|
+| DSP_01 | Plate allpass cascade is truly all-pass (energy preserved to ±1% after drain) |
+| DSP_02 | Plate at density=0 is bit-identical to bypass (IEEE-754 collapse) |
+| DSP_03 | Bloom allpass is causal — no echo before first delay drains |
+| DSP_04 | Bloom feedback is stable at maximum setting (0.65) — output decays after input stops |
+| DSP_05 | Cloud LFO rates have no rational beat frequencies (p,q ≤ 6 check) |
+| DSP_06 | Cloud does not amplify signal (RMS out ≤ RMS in × 1.05) |
+| DSP_07 | Shimmer 12-semitone shift produces ~750 Hz from 375 Hz input |
+| DSP_08 | Shimmer feedback decays after input stops (stability check) |
+| DSP_09 | Shimmer semitone-to-ratio formula is correct for key musical intervals |
+
+### Golden regression lock (IR_11)
+
+IR_11 locks 30 samples of `iLL` starting at the first non-silent sample (onset index 371 for the 10×8×5 m small-room params). To update after a deliberate engine change:
+
+```bash
+./PingTests "[capture]" -s    # prints new onset index + 30 sample values
+```
+
+Paste the printed `onset_offset` and `golden_iLL[30]` values into `IR_11` in `PingEngineTests.cpp`, set `goldenCaptured = true`, and commit with a note explaining why the engine output changed.
+
+### Key test design decisions
+
+- **`PING_TESTING_BUILD=1`** — defined for the `PingTests` target; gates out `#include <JuceHeader.h>` in `IRSynthEngine.h`, making the engine compilable with no JUCE dependency.
+- **Small-room params** — `width=10, depth=8, height=5 m`. Generates a ~2 s IR instead of the default 25 s, keeping individual test runtime under 4 s.
+- **DSP tests are self-contained** — `SimpleAllpass`, the Cloud LFO, and the grain engine are defined locally in `PingDSPTests.cpp`. When the production implementation is written into `PluginProcessor.h`, the struct definition there must match the one in the tests exactly.
+- **DSP_07 uses 375 Hz input** (not 440 Hz) — 375 × 512/48000 = 4 exact integer cycles per grain, making grain resets phase-coherent. 440 Hz gives 4.69 cycles/grain, producing phase discontinuities that shift the DFT peak ~65 Hz below the true pitch-shifted frequency.
+- **DSP_04 feedback delay** — the Bloom feedback circular buffer must be read from `fbWp` (the oldest slot, = full `fbLen` samples of delay), not `(fbWp-1)` (1-sample IIR). The same convention applies in the production implementation.
+- **DSP_05 rational-beat bound** — p,q ≤ 6 covers all perceptible simple LFO beat ratios. The original p,q ≤ 32 flagged 11/15, whose beat period at these rates would be many minutes — completely inaudible.
+
+---
+
 ## Source files
 
 ```

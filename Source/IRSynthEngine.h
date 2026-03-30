@@ -1,10 +1,22 @@
 #pragma once
-#include <JuceHeader.h>
-#include <functional>
-#include <vector>
-#include <string>
-#include <map>
-#include <array>
+
+#ifdef PING_TESTING_BUILD
+  // When compiling under the test harness, IRSynthEngine.cpp only uses STL.
+  // JuceHeader.h is not available (and not needed) in the standalone test target.
+  #include <cstdint>
+  #include <functional>
+  #include <vector>
+  #include <string>
+  #include <map>
+  #include <array>
+#else
+  #include <JuceHeader.h>
+  #include <functional>
+  #include <vector>
+  #include <string>
+  #include <map>
+  #include <array>
+#endif
 
 /** All parameters for one IR synthesis run. */
 struct IRSynthParams

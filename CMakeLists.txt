@@ -30,6 +30,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(JUCE)
 
+# Catch2 — unit test framework (header-only, no system install required)
+FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2
+    GIT_TAG        v3.5.4
+)
+FetchContent_MakeAvailable(Catch2)
+
 # Install plugins to main /Library (not user ~/Library)
 if(APPLE)
     set_property(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY JUCE_AU_COPY_DIR   "/Library/Audio/Plug-Ins/Components")
@@ -123,3 +131,38 @@ if(APPLE)
         COMMENT "Building P!NG installer package"
     )
 endif()
+
+# ── Unit tests ────────────────────────────────────────────────────────────────
+# PingTests: pure C++ — no JUCE dependency.
+# Tests IRSynthEngine directly and all new hybrid DSP building blocks.
+# PING_TESTING_BUILD=1 activates the #ifdef guard in IRSynthEngine.h that
+# replaces #include <JuceHeader.h> with a minimal set of STL includes.
+enable_testing()
+
+add_executable(PingTests
+    Tests/PingEngineTests.cpp
+    Tests/PingDSPTests.cpp
+    Source/IRSynthEngine.cpp
+)
+
+target_include_directories(PingTests
+    PRIVATE
+        Source
+        Tests
+)
+
+target_compile_definitions(PingTests
+    PRIVATE
+        PING_TESTING_BUILD=1
+)
+
+# C++17 required for std::filesystem and structured bindings used in tests.
+target_compile_features(PingTests PRIVATE cxx_std_17)
+
+target_link_libraries(PingTests
+    PRIVATE
+        Catch2::Catch2WithMain
+)
+
+include(Catch)
+catch_discover_tests(PingTests)
