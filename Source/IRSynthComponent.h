@@ -50,6 +50,16 @@ public:
     /** Set APVTS for crossfeed controls (Placement tab). Call from editor after addChildComponent. */
     void setApvts (juce::AudioProcessorValueTreeState* apvts);
 
+    /** Current selected IR item id in the IR combo (1-based, 0 if none). */
+    int getSelectedIRId() const { return irCombo.getSelectedId(); }
+
+    /** Current selected IR item text in the IR combo (empty if no selected item). */
+    juce::String getSelectedIRName() const
+    {
+        const int id = irCombo.getSelectedId();
+        return id >= 1 ? irCombo.getItemText (id) : juce::String();
+    }
+
     /** Current params (read from UI). */
     IRSynthParams getParams() const;
     const IRSynthParams& getLastRenderParams() const { return lastRenderParams; }

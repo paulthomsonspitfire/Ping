@@ -140,26 +140,7 @@ PingEditor::PingEditor (PingProcessor& p)
     });
     irSynthComponent.setOnSaveIR ([this] (const juce::String& name)
     {
-        auto file = pingProcessor.saveCurrentIRToFile (name);
-        if (file.existsAsFile())
-        {
-            pingProcessor.getIRManager().refresh();
-            int idx = -1;
-            auto files = pingProcessor.getIRManager().getIRFiles();
-            for (int i = 0; i < files.size(); ++i)
-            {
-                if (files[i] == file) { idx = i; break; }
-            }
-            if (idx >= 0)
-            {
-                pingProcessor.setSelectedIRIndex (idx);
-                pingProcessor.loadIRFromFile (file);
-            }
-            refreshIRList();
-            refreshPresetList();
-            irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
-            updateWaveform();
-        }
+        saveSynthIR (name);
     });
     irSynthComponent.setOnLoadIR ([this] (int index)
     {
@@ -660,7 +641,24 @@ void PingEditor::refreshPresetList()
     if (current == "Default" || current.isEmpty())
         presetCombo.setSelectedId (1, juce::dontSendNotification);
     else
-        presetCombo.setText (current, juce::dontSendNotification);
+    {
+        // If a file exists with the current typed name, select it so overwrites
+        // target the exact preset currently shown as selected in the dropdown.
+        int matchedIndex = -1;
+        for (int i = 0; i < names.size(); ++i)
+        {
+            if (names[i] == current)
+            {
+                matchedIndex = i;
+                break;
+            }
+        }
+
+        if (matchedIndex >= 0)
+            presetCombo.setSelectedId (matchedIndex + 2, juce::dontSendNotification);
+        else
+            presetCombo.setText (current, juce::dontSendNotification);
+    }
 }
 
 void PingEditor::loadPreset (const juce::String& name)
@@ -694,9 +692,103 @@ void PingEditor::savePreset (const juce::String& name)
         pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
     juce::MemoryBlock data;
     pingProcessor.getStateInformation (data);
-    auto file = PresetManager::getPresetFile (name);
+    juce::String trimmedName = name.trim();
+    auto file = PresetManager::getPresetFile (trimmedName);
+
+    const bool targetExists = file.existsAsFile();
+    const int selectedId = presetCombo.getSelectedId();
+    const juce::String selectedName = (selectedId > 0 ? presetCombo.getItemText (selectedId) : juce::String());
+    const bool sameAsCurrentSelection = (trimmedName == selectedName);
+    if (targetExists && sameAsCurrentSelection && selectedId > 1)
+    {
+        // Don't block with modal loops inside a plugin. Use an async message box and
+        // only write/refresh the preset if the user confirms.
+        juce::MemoryBlock payload = data;
+        auto fileToWrite = file;
+        auto options = juce::MessageBoxOptions::makeOptionsOkCancel (
+            juce::MessageBoxIconType::WarningIcon,
+            "Overwrite preset?",
+            "Preset \"" + trimmedName + "\" already exists.\nOverwrite it?",
+            "Overwrite",
+            "Cancel",
+            this);
+
+        juce::AlertWindow::showAsync (options, [this, fileToWrite, payload] (int result) mutable
+        {
+            if (result != 1) // 1 == first button clicked ("Overwrite")
+                return;
+
+            if (fileToWrite.replaceWithData (payload.getData(), payload.getSize()))
+                refreshPresetList();
+        });
+        return;
+    }
+
     if (file.replaceWithData (data.getData(), data.getSize()))
+    {
         refreshPresetList();
+    }
+}
+
+void PingEditor::saveSynthIR (const juce::String& name)
+{
+    juce::String trimmedName = name.trim();
+    if (trimmedName.isEmpty())
+        return;
+
+    juce::String safeName = trimmedName.replaceCharacters ("/\\:*?\"<>|", "----------");
+    auto targetFile = IRManager::getIRFolder().getChildFile (safeName + ".wav");
+
+    const bool targetExists = targetFile.existsAsFile();
+    const int selectedId = irSynthComponent.getSelectedIRId();
+    const juce::String selectedName = irSynthComponent.getSelectedIRName().trim();
+    const bool sameAsCurrentSelection = (trimmedName == selectedName);
+
+    if (targetExists && sameAsCurrentSelection && selectedId >= 1)
+    {
+        auto options = juce::MessageBoxOptions::makeOptionsOkCancel (
+            juce::MessageBoxIconType::WarningIcon,
+            "Overwrite IR?",
+            "IR \"" + trimmedName + "\" already exists.\nOverwrite it?",
+            "Overwrite",
+            "Cancel",
+            this);
+
+        juce::AlertWindow::showAsync (options, [this, trimmedName] (int result)
+        {
+            if (result != 1) // 1 == first button clicked ("Overwrite")
+                return;
+
+            finishSaveSynthIR (trimmedName);
+        });
+        return;
+    }
+
+    finishSaveSynthIR (trimmedName);
+}
+
+void PingEditor::finishSaveSynthIR (const juce::String& name)
+{
+    auto file = pingProcessor.saveCurrentIRToFile (name);
+    if (file.existsAsFile())
+    {
+        pingProcessor.getIRManager().refresh();
+        int idx = -1;
+        auto files = pingProcessor.getIRManager().getIRFiles();
+        for (int i = 0; i < files.size(); ++i)
+        {
+            if (files[i] == file) { idx = i; break; }
+        }
+        if (idx >= 0)
+        {
+            pingProcessor.setSelectedIRIndex (idx);
+            pingProcessor.loadIRFromFile (file);
+        }
+        refreshIRList();
+        refreshPresetList();
+        irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
+        updateWaveform();
+    }
 }
 
 void PingEditor::timerCallback()
