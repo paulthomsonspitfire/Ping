@@ -85,6 +85,12 @@ PingEditor::PingEditor (PingProcessor& p)
     savePresetButton.setColour (juce::TextButton::buttonColourId, panelBg);
     savePresetButton.setColour (juce::TextButton::textColourOffId, textDim);
 
+    addAndMakeVisible (presetLabel);
+    presetLabel.setText ("Preset", juce::dontSendNotification);
+    presetLabel.setJustificationType (juce::Justification::centredRight);
+    presetLabel.setColour (juce::Label::textColourId, textDim);
+    presetLabel.setFont (juce::FontOptions (11.0f));
+
     addAndMakeVisible (reverseButton);
     reverseButton.setComponentID ("Reverse");
     reverseButton.setClickingTogglesState (true);
@@ -534,7 +540,7 @@ void PingEditor::paint (juce::Graphics& g)
         auto spitfireImg = juce::ImageCache::getFromMemory (BinaryData::spitfire_logo_png, BinaryData::spitfire_logo_pngSize);
         if (spitfireImg.isValid())
             g.drawImageWithin (spitfireImg, spitfireBounds.getX(), spitfireBounds.getY(), spitfireBounds.getWidth(), spitfireBounds.getHeight(),
-                              juce::RectanglePlacement (juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yMid));
+                              juce::RectanglePlacement (juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yTop));
     }
     if (pingBounds.getWidth() > 0 && pingBounds.getHeight() > 0)
     {
@@ -613,6 +619,7 @@ void PingEditor::resized()
     const int readoutH = juce::jmax (10, (int) (0.022f * ch));
     const int sixRowH = sixKnobSize + labelH + readoutH + (int) (0.01f * ch);
     const int bigKnobSize = juce::jmax (80, juce::jmin (128, (int) (0.15f * cw)));
+    const int dryWetKnobSize = (bigKnobSize * 3) / 2;
     const int eqMinH = 300;  // must fit the 3-row knob control strip (ctrlH ≈ 246 with 42 px knobs)
     const int eqHeight = juce::jmax (eqMinH, (int) (0.45f * ch));
     const int gapV = (int) (0.01f * ch) + (int) (0.008f * ch);
@@ -658,9 +665,9 @@ void PingEditor::resized()
 
     int irComboH = 24;
     int irComboW = juce::jmin ((int) (0.24f * cw), bigKnobSize + 40);
-    int cy = waveformComponent.getBounds().getCentreY() - (bigKnobSize + labelH + readoutH + 4 + irComboH + 6) / 2;
+    int cy = waveformComponent.getBounds().getCentreY() - (dryWetKnobSize + labelH + readoutH + 4 + irComboH + 6) / 2;
     const int smallKnobSize = sixKnobSize / 2;
-    const int dryWetCenterY = cy + bigKnobSize / 2;
+    const int dryWetCenterY = cy + dryWetKnobSize / 2;
     const int irKnobGap = 6;
 
     const int sixColGap = juce::jmax (8, (int) (0.01f * cw));
@@ -675,26 +682,21 @@ void PingEditor::resized()
 
     // irInputGain and irInputDrive are now placed in the top row below the main area start — see row placement below
 
-    dryWetSlider.setBounds (presetCenterX - bigKnobSize / 2, cy, bigKnobSize, bigKnobSize);
-    dryWetLabel.setBounds (0, 0, 0, 0);  // unused: "dry/wet" text is drawn in knob centre
-    dryWetReadout.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + 2, bigKnobSize, readoutH);
-
     // IR combo + IR Synth: align IR Synth right edge with waveform left edge (needed for output gain placement)
     const int irSynthW = 64;
     const int irGap = 6;
     int irSynthX = waveformComponent.getX() - irSynthW;
     int irComboX = irSynthX - irGap - irComboW;
-    int irRowY = dryWetReadout.getBottom() + 6 + labelH;  // +labelH restores space from removed dry/wet image
+    int irRowY = cy + 10 + dryWetKnobSize + 2 + readoutH + 6 + labelH;  // derived from DRY/WET knob bottom (+10 down offset)
 
-    // Wet Output: centred to the right of irKnobsCenterX (irInputGain/Drive now live in the top row)
-    const int outputGainCenterX = irKnobsCenterX + smallKnobSize / 2;
+    // Wet Output: centred to the right of irKnobsCenterX, shifted right by controlShift
+    const int controlShift = 50;
+    const int outputGainCenterX = irKnobsCenterX + smallKnobSize / 2 + controlShift;
     const int outputGainY = dryWetCenterY - smallKnobSize - irKnobGap;
     outputGainSlider.setBounds (outputGainCenterX - smallKnobSize / 2, outputGainY, smallKnobSize, smallKnobSize);
     outputGainLabel.setBounds (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + 2, irLabelW, labelH);
     outputGainReadout.setBounds (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
 
-    irCombo.setBounds (irComboX, irRowY, irComboW, irComboH);
-    irSynthButton.setBounds (irSynthX, irRowY, irSynthW, irComboH);
     if (! irSynthComponent.isVisible())
         dryWetSlider.toFront (false);
 
@@ -711,7 +713,8 @@ void PingEditor::resized()
     const int row5TotalH_  = row2TotalH_;   // identical formula
     const int row6TotalH_  = row2TotalH_;   // identical formula
     auto topKnobRow = mainArea.removeFromTop (rowTotalH + 4 + groupLabelH);
-    const int rowY       = topKnobRow.getY() + groupLabelH - 10;  // knobs sit below the group header (-10 px offset)
+    const int rowShiftUp = 30;   // px to move rows 1-6 upward (Spitfire logo moves up by the same visual amount)
+    const int rowY       = topKnobRow.getY() + groupLabelH - 10 - rowShiftUp;
 
     // Anchor rows 2 and 3 from topKnobRow.getBottom() rather than from mainArea.getY()
     // after the removeFromTop calls.  When mainHeight < sum of all row heights, JUCE's
@@ -744,20 +747,54 @@ void PingEditor::resized()
     // Store group bounds for painting (text + line above each pair/triple)
     irInputGroupBounds = juce::Rectangle<int> (
         irInputGainSlider.getX(),
-        topKnobRow.getY() - 10,
+        topKnobRow.getY() - 10 - rowShiftUp,
         irInputDriveSlider.getRight() - irInputGainSlider.getX(),
         groupLabelH);
     irControlsGroupBounds = juce::Rectangle<int> (
         predelaySlider.getX(),
-        topKnobRow.getY() - 10,
+        topKnobRow.getY() - 10 - rowShiftUp,
         stretchSlider.getRight() - predelaySlider.getX(),
         groupLabelH);
+
+    // Place DRY/WET knob halfway between IR stretch and wet output controls (150% of bigKnobSize),
+    // shifted right by controlShift (same offset applied to wet output above).
+    {
+        const int dryWetStretchCX  = stretchSlider.getBounds().getCentreX();
+        const int dryWetNaturalCX  = (dryWetStretchCX + outputGainCenterX - controlShift) / 2;
+        const int dryWetCenterX    = dryWetNaturalCX + controlShift;
+        dryWetSlider.setBounds  (dryWetCenterX - dryWetKnobSize / 2, cy + 10, dryWetKnobSize, dryWetKnobSize);
+        dryWetLabel.setBounds   (0, 0, 0, 0);
+        dryWetReadout.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + 2, dryWetKnobSize, readoutH);
+    }
+
+    // Place IR combo + IR Synth button centred under the DRY/WET knob
+    {
+        const int irTotalW  = irComboW + irGap + irSynthW;
+        const int irComboXu = dryWetSlider.getBounds().getCentreX() - irTotalW / 2;
+        const int irSynthXu = irComboXu + irComboW + irGap;
+        irCombo.setBounds      (irComboXu, irRowY, irComboW, irComboH);
+        irSynthButton.setBounds (irSynthXu, irRowY, irSynthW, irComboH);
+    }
+
+    // Reposition preset combo centred above DRY/WET knob, same size as IR combo,
+    // with a "Preset" label to its left and the Save button to its right.
+    {
+        const int pComboY  = dryWetSlider.getY() - irComboH - 6;
+        const int pCenterX = dryWetSlider.getBounds().getCentreX();
+        presetCombo.setBounds     (pCenterX - irComboW / 2, pComboY, irComboW, irComboH);
+        savePresetButton.setBounds (presetCombo.getRight() + 4, pComboY, saveButtonW, irComboH);
+        const int pLabelW = 44;
+        presetLabel.setBounds     (presetCombo.getX() - pLabelW - 4, pComboY, pLabelW, irComboH);
+    }
+
+    // Align Spitfire logo left edge with IR INPUT title
+    spitfireBounds.setX (irInputGainSlider.getX());
 
     // —— Row 2: ER Crossfade (delay, att) | Tail Crossfade (delay, att) ——
     // Toggles live in the group header line (LED-style, right-aligned); no extra height needed.
     const int row2TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     auto row2Area = mainArea.removeFromTop (row2TotalH);
-    const int row2KnobY = row2AbsY + groupLabelH;
+    const int row2KnobY = row2AbsY + groupLabelH - rowShiftUp;
 
     auto placeRow2Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
     {
@@ -775,12 +812,12 @@ void PingEditor::resized()
     // Store group header bounds for painting
     erCrossfadeGroupBounds = juce::Rectangle<int> (
         erCrossfeedDelaySlider.getX(),
-        row2AbsY,
+        row2AbsY - rowShiftUp,
         erCrossfeedAttSlider.getRight() - erCrossfeedDelaySlider.getX(),
         groupLabelH);
     tailCrossfadeGroupBounds = juce::Rectangle<int> (
         tailCrossfeedDelaySlider.getX(),
-        row2AbsY,
+        row2AbsY - rowShiftUp,
         tailCrossfeedAttSlider.getRight() - tailCrossfeedDelaySlider.getX(),
         groupLabelH);
 
@@ -788,7 +825,7 @@ void PingEditor::resized()
     {
         const int ledH = groupLabelH - 4;   // fits snugly inside the 14 px header strip
         const int ledW = ledH * 2;
-        const int ledY = row2AbsY + (groupLabelH - ledH) / 2;
+        const int ledY = row2AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
         erCrossfeedOnButton.setBounds   (erCrossfadeGroupBounds.getRight()   - ledW, ledY, ledW, ledH);
         tailCrossfeedOnButton.setBounds (tailCrossfadeGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
@@ -797,7 +834,7 @@ void PingEditor::resized()
     // Single group spanning all four knobs; no extra inter-group gap.
     const int row3TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     auto row3Area = mainArea.removeFromTop (row3TotalH);
-    const int row3KnobY = row3AbsY + groupLabelH;
+    const int row3KnobY = row3AbsY + groupLabelH - rowShiftUp;
 
     auto placeRow3Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
     {
@@ -815,13 +852,13 @@ void PingEditor::resized()
     // Group header spans all four knobs; toggle pill right-aligned within it
     plateGroupBounds = juce::Rectangle<int> (
         plateDiffusionSlider.getX(),
-        row3AbsY,
+        row3AbsY - rowShiftUp,
         plateIRFeedSlider.getRight() - plateDiffusionSlider.getX(),
         groupLabelH);
     {
         const int ledH = groupLabelH - 4;
         const int ledW = ledH * 2;
-        const int ledY = row3AbsY + (groupLabelH - ledH) / 2;
+        const int ledY = row3AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
         plateOnButton.setBounds (plateGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
@@ -830,7 +867,7 @@ void PingEditor::resized()
     const int row4TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     auto row4Area = mainArea.removeFromTop (row4TotalH);
     (void) row4Area;  // used only to advance mainArea; actual bounds computed from absolute anchor
-    const int row4KnobY = row4AbsY + groupLabelH;
+    const int row4KnobY = row4AbsY + groupLabelH - rowShiftUp;
 
     auto placeRow4Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
     {
@@ -848,13 +885,13 @@ void PingEditor::resized()
     // Group header spans all five knobs; toggle pill right-aligned within it
     bloomGroupBounds = juce::Rectangle<int> (
         bloomSizeSlider.getX(),
-        row4AbsY,
+        row4AbsY - rowShiftUp,
         bloomVolumeSlider.getRight() - bloomSizeSlider.getX(),
         groupLabelH);
     {
         const int ledH = groupLabelH - 4;
         const int ledW = ledH * 2;
-        const int ledY = row4AbsY + (groupLabelH - ledH) / 2;
+        const int ledY = row4AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
         bloomOnButton.setBounds (bloomGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
@@ -862,7 +899,7 @@ void PingEditor::resized()
     const int row5TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     auto row5Area = mainArea.removeFromTop (row5TotalH);
     (void) row5Area;
-    const int row5KnobY = row5AbsY + groupLabelH;
+    const int row5KnobY = row5AbsY + groupLabelH - rowShiftUp;
 
     auto placeRow5Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
     {
@@ -879,13 +916,13 @@ void PingEditor::resized()
 
     cloudGroupBounds = juce::Rectangle<int> (
         cloudDepthSlider.getX(),
-        row5AbsY,
+        row5AbsY - rowShiftUp,
         cloudVolumeSlider.getRight() - cloudDepthSlider.getX(),
         groupLabelH);
     {
         const int ledH = groupLabelH - 4;
         const int ledW = ledH * 2;
-        const int ledY = row5AbsY + (groupLabelH - ledH) / 2;
+        const int ledY = row5AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
         cloudOnButton.setBounds (cloudGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
@@ -893,7 +930,7 @@ void PingEditor::resized()
     const int row6TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     auto row6Area = mainArea.removeFromTop (row6TotalH);
     (void) row6Area;
-    const int row6KnobY = row6AbsY + groupLabelH;
+    const int row6KnobY = row6AbsY + groupLabelH - rowShiftUp;
 
     auto placeRow6Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
     {
@@ -910,13 +947,13 @@ void PingEditor::resized()
 
     shimGroupBounds = juce::Rectangle<int> (
         shimPitchSlider.getX(),
-        row6AbsY,
+        row6AbsY - rowShiftUp,
         shimVolumeSlider.getRight() - shimPitchSlider.getX(),
         groupLabelH);
     {
         const int ledH = groupLabelH - 4;
         const int ledW = ledH * 2;
-        const int ledY = row6AbsY + (groupLabelH - ledH) / 2;
+        const int ledY = row6AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
         shimOnButton.setBounds (shimGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 

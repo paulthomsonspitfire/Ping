@@ -43,6 +43,7 @@ private:
     juce::ComboBox irCombo;
     juce::ComboBox presetCombo;
     juce::TextButton savePresetButton { "Save" };
+    juce::Label presetLabel;
     juce::TextButton reverseButton { "REVERSE" };
     juce::TextButton irSynthButton { "IR SYNTH" };
 
