@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 1.8.8 (see `CMakeLists.txt`)
+**Current version:** 1.9.0 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -386,6 +386,12 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `cloudSize` | Cloud Size (ms) | 1–40 | 5.0 |
 | `cloudVolume` | Cloud Volume | 0–1 | 0 |
 | `cloudIRFeed` | Cloud IR Feed | 0–1 | 0 |
+| `shimOn` | Shimmer On | bool | false |
+| `shimPitch` | Shimmer Pitch | −24–+24 semitones (integer steps) | +12 |
+| `shimSize` | Shimmer Size | 0.5–4.0 | 1.0 |
+| `shimColour` | Shimmer Colour | 0–1 | 0.7 |
+| `shimIRFeed` | Shimmer IR Feed | 0–1 | 0.5 |
+| `shimVolume` | Shimmer Volume | 0–1 | 0 |
 | `reversetrim` | Reverse Trim | 0–0.95 | 0 |
 | `b3freq/b3gain/b3q` | Low Shelf EQ | 20–1200 Hz / ±12 dB / slope 0.3–2.0 | 200 Hz, 0 dB, 0.707 |
 | `b0freq/b0gain/b0q` | Peak 1 EQ | 50–16k Hz / ±12 dB / Q 0.3–10 | 400 Hz, 0 dB, 0.707 |
@@ -432,6 +438,10 @@ Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix +
   │   1-block deferred: cloudBuffer written at Insertion 2, read here next block
   │
   ▼
+[Shimmer Insertion 1: previous block's shimBuffer × shimIRFeed injected into main signal]  (if shimOn && shimIRFeed > 0)
+  │   1-block deferred: shimBuffer written at Insertion 2, read here next block
+  │
+  ▼
 Convolution  ── see "Convolution modes" below
   │  (optional crossfeed: ER and Tail each get L↔R delayed/attenuated copy when on, then ER/Tail mix)
   ▼
@@ -453,6 +463,11 @@ Tail Chorus Modulation (optional — variable delay ±depthMs, skipped for ER-on
 [Cloud Insertion 2: 8-line LFO delay bank on wet signal]  (if cloudOn)
   │   cloudBuffer ← lineSum/8; wet signal += cloudBuffer × cloudVolume (if cloudVolume > 0)
   │   LFO phases advanced per-sample; R channel uses π phase offset for decorrelation
+  │
+  ▼
+[Shimmer Insertion 2: two-grain Hann-windowed pitch shifter on wet signal]  (if shimOn)
+  │   shimBuffer ← grain output × shimColour LP; wet signal += shimBuffer × shimVolume (if shimVolume > 0)
+  │   Pitch ratio = 2^(shimPitch/12); grain length = kShimGrainLen × shimSize
   │
   ▼
 Output Gain (dB, smoothed)
@@ -679,7 +694,64 @@ Buffer size = `ceil(45.0 × sampleRate / 1000)` samples per line per channel (co
 
 ### UI layout (Row 5 — "Cloud multi-LFO")
 
-Immediately after Row 4 (Bloom), same `rowKnobSize`/`rowStep`/`rowStartX` constants. Single group "Cloud multi-LFO" with 5 knobs (DEPTH, RATE, SIZE, VOLUME, IR FEED) + pill switch (`cloudOnButton`, component ID `CloudSwitch`) right-aligned in the group header. Group header bounds stored as `cloudGroupBounds`. Editor height bumped from 672 → **744 px**. Row 5 uses `row5AbsY = row4AbsY + row4TotalH_` (absolute anchor). The 6-knob grid (LFO Depth/Width/etc.) is now anchored at `row5AbsY + row5TotalH_ + 70`.
+Immediately after Row 4 (Bloom), same `rowKnobSize`/`rowStep`/`rowStartX` constants. Single group "Clouds post convolution" with 5 knobs (DEPTH, RATE, SIZE, VOLUME, IR FEED) + pill switch (`cloudOnButton`, component ID `CloudSwitch`) right-aligned in the group header. Group header bounds stored as `cloudGroupBounds`. Editor height bumped from 672 → **744 px**. Row 5 uses `row5AbsY = row4AbsY + row4TotalH_` (absolute anchor). The 6-knob grid (LFO Depth/Width/etc.) is now anchored at `row5AbsY + row5TotalH_ + 70`.
+
+---
+
+## Shimmer (Feature 4 — implemented)
+
+### What it does
+
+A two-grain Hann-windowed pitch shifter applied to the post-convolution wet signal. Pitch-shifted output is fed back into the convolver input (via the same 1-block deferred bridge pattern as Cloud), producing the characteristic harmonically-rising shimmer wash associated with the Eventide H3000. A 1-pole lowpass (`shimColour`) controls warmth. Unlike Bloom and Cloud, `shimIRFeed` defaults to **0.5** — the effect is immediately audible when enabled.
+
+### Architecture
+
+Identical bridge pattern to Cloud: `shimBuffer` persists between `processBlock` calls.
+
+- **Shimmer Insertion 1** (pre-convolution, after Cloud Insertion 1): reads previous block's `shimBuffer` × `shimIRFeed`, injects into main signal before convolver.
+- **Shimmer Insertion 2** (post-Cloud Insertion 2, before Output Gain): runs two-grain pitch shifter on wet signal, applies `shimColour` 1-pole LP, stores in `shimBuffer`. Adds `× shimVolume` to wet signal if `shimVolume > 0`.
+
+### Grain engine
+
+Two grains offset by half a grain length (phase 0 and 0.5), Hann windowed, summed and normalised by 0.5. Read pointer advances `pitchRatio` samples per input sample. On phase rollover the read head is snapped to `writePtr − effGrainLen` (one full grain behind the write head), ensuring it always reads real signal rather than zeroes. This is the exact spec verified by DSP_07–DSP_09.
+
+`effGrainLen = round(kShimGrainLen × shimSize)`. Buffer allocation is fixed at `kShimBufLen = 8192` — no reallocation needed at runtime.
+
+### DSP state (`PluginProcessor.h`)
+
+```cpp
+static constexpr int kShimGrainLen = 512;
+static constexpr int kShimBufLen   = 8192;
+
+struct ShimmerVoice {
+    std::vector<float> grainBuf;   // kShimBufLen samples, circular
+    int   writePtr    = 0;
+    float readPtrA    = 0.f;
+    float readPtrB    = 0.f;       // initialised to kShimGrainLen/2 in prepareToPlay
+    float grainPhaseA = 0.f;
+    float grainPhaseB = 0.5f;
+};
+
+std::array<ShimmerVoice, 2> shimVoices;
+std::array<float, 2>        shimColourState { 0.f, 0.f };
+juce::AudioBuffer<float>    shimBuffer;
+int                         shimLastBlockSize = 0;
+```
+
+### Controls
+
+| Parameter ID | Range | Default | Effect |
+|---|---|---|---|
+| `shimOn` | bool | false | Enables Shimmer; zero overhead when off |
+| `shimPitch` | −24–+24 st (integer steps) | +12 | Semitone interval for pitch shift. +12 = octave up. Readout: "+12 st". Integer NormalisableRange enforces musical intervals. |
+| `shimSize` | 0.5–4.0 | 1.0 | Scales grain length (effGrainLen = kShimGrainLen × shimSize). Longer = smoother pitch at cost of more smear. Readout: multiplier "1.00×". |
+| `shimColour` | 0–1 | 0.7 | 1-pole LP on shifter output: 0 → 2 kHz (warm/dark), 1 → 20 kHz (full brightness). Readout: cutoff in Hz. |
+| `shimIRFeed` | 0–1 | **0.5** | Injects shimBuffer into convolver input (the pitch-shifted re-reverberation path). Default 0.5 — audible immediately on enable. |
+| `shimVolume` | 0–1 | 0 | Adds shimBuffer directly to wet signal before output gain, independent of dry/wet. |
+
+### UI layout (Row 6 — "Shimmer")
+
+Immediately after Row 5 (Cloud), same `rowKnobSize`/`rowStep`/`rowStartX` constants. Single group "Shimmer" with 5 knobs (PITCH, SIZE, COLOUR, IR FEED, VOLUME) + pill switch (`shimOnButton`, component ID `ShimmerSwitch`) right-aligned in the group header. Group header bounds stored as `shimGroupBounds`. Editor height bumped from 744 → **816 px**. Row 6 uses `row6AbsY = row5AbsY + row5TotalH_` (absolute anchor). The 6-knob grid (LFO Depth/Width/etc.) is now anchored at `row6AbsY + row6TotalH_ + 70`.
 
 ---
 
@@ -874,6 +946,11 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Cloud R-channel decorrelation uses a π phase offset** — all 8 LFO phases for the R channel are offset by π relative to L. This gives free stereo width without any extra DSP: at any given moment L lines are near their maximum delay excursion when R lines are near minimum, and vice versa. No separate delay line set needed (unlike Bloom which uses separate L/R prime arrays).
 - **Cloud has no self-feedback loop** — unlike Bloom, Cloud's delay lines do not feed back into themselves. The only recirculation path is via `cloudIRFeed` → convolver → wet signal → Cloud Insertion 2. The convolver is inherently attenuating for real room IRs, so loop gain < 1 for any physical IR. Very high-gain IR presets with boosted `outputGain` are the only edge case to be aware of.
 - **Cloud `cloudDepth` scales `kCloudBaseDepthMs = 3.0f`** — the maximum ±3 ms swing was chosen to keep modulation below the ~5 ms threshold where pitch variation becomes audible as vibrato on sustained tones. At `cloudDepth = 0` the delay lines are static (no modulation), which gives a comb-filter character rather than shimmer.
-- **Default editor height is now 744 px** — bumped from 672 (Row 4 Bloom) → 744 (Row 5 Cloud). The resize minimum remains 528. Both constants are at the top of the `PingEditor` constructor.
-- **The six large knobs (LFO Depth/Rate, Width, Tail Mod, Delay Depth, Tail Rate) are now anchored at `row5AbsY + row5TotalH_ + 70`** — updated from `row4AbsY + row4TotalH_ + 70` when Row 5 was added. Do not revert to the Row 4 anchor.
+- **Default editor height is now 816 px** — bumped from 672 (Row 4 Bloom) → 744 (Row 5 Cloud) → 816 (Row 6 Shimmer). The resize minimum remains 528. Both constants are at the top of the `PingEditor` constructor.
+- **The six large knobs (LFO Depth/Rate, Width, Tail Mod, Delay Depth, Tail Rate) are now anchored at `row6AbsY + row6TotalH_ + 70`** — updated from `row5AbsY + row5TotalH_ + 70` when Row 6 was added. Do not revert to the Row 5 anchor.
+- **Shimmer uses the same 1-block deferred bridge pattern as Cloud** — `shimBuffer` persists between `processBlock` calls. Insertion 2 writes; Insertion 1 of the next block reads. Do not clear `shimBuffer` at block start. `shimLastBlockSize` tracks the previous block's sample count.
+- **Shimmer grain engine matches DSP_07–DSP_09 exactly** — two grains at phase 0 and 0.5, Hann windowed, read pointer advances `pitchRatio` per sample, grain reset snaps to `writePtr − effGrainLen`. Fixed buffers: `kShimGrainLen = 512`, `kShimBufLen = 8192`. The production code must stay in sync with these test specs.
+- **`shimPitch` uses integer NormalisableRange (step=1)** — fractional semitones produce detuned output not aligned to musical intervals. The parameter layout uses `juce::NormalisableRange<float>(-24.f, 24.f, 1.f)`.
+- **`shimIRFeed` defaults to 0.5** — unlike every other IR-feed parameter (Plate, Bloom, Cloud all default to 0), Shimmer defaults to 0.5 so the effect is immediately audible when enabled. This matches expected shimmer plugin UX: you enable it and it shimmers.
+- **`shimColour` is a 1-pole LP on the grain shifter output** — cutoff = `2000 + shimColour × 18000` Hz. Applied per-sample inside Insertion 2 before storing to `shimBuffer`. `shimColourState[ch]` holds the per-channel filter state; reset to zero in `prepareToPlay`.
 - **EQ response curve is display-only** — `getResponseAt()` is an approximation. The actual audio uses JUCE biquad coefficients. The two will not match exactly at steep slopes or very high/low frequencies, but are visually representative for a mixing EQ.

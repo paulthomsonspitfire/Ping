@@ -5,7 +5,7 @@
 namespace
 {
     constexpr int editorW = 1104;
-    constexpr int editorH = 744;
+    constexpr int editorH = 816;
     constexpr int minW = 864;
     constexpr int minH = 528;
     constexpr int maxW = 1920;
@@ -281,6 +281,17 @@ PingEditor::PingEditor (PingProcessor& p)
         cloudOnButton.onClick = [this] { repaint(); };
     }
 
+    // Shimmer row knobs (row 6 — same accent style)
+    for (auto* s : { &shimPitchSlider, &shimSizeSlider, &shimColourSlider,
+                     &shimIRFeedSlider, &shimVolumeSlider })
+        makeSlider (*s, "");
+    {
+        addAndMakeVisible (shimOnButton);
+        shimOnButton.setButtonText ("");
+        shimOnButton.setComponentID ("ShimmerSwitch");
+        shimOnButton.onClick = [this] { repaint(); };
+    }
+
     dryWetSlider.setRange (0.0, 1.0, 0.01);
     predelaySlider.setRange (0.0, 500.0, 1.0);
     decaySlider.setRange (0.0, 1.0, 0.01);
@@ -314,6 +325,11 @@ PingEditor::PingEditor (PingProcessor& p)
     cloudSizeSlider.setRange   (1.0, 40.0,  0.1);
     cloudIRFeedSlider.setRange (0.0,  1.0,  0.01);
     cloudVolumeSlider.setRange (0.0,  1.0,  0.01);
+    shimPitchSlider.setRange   (-24.0, 24.0, 1.0);
+    shimSizeSlider.setRange    (0.5,   4.0,  0.01);
+    shimColourSlider.setRange  (0.0,   1.0,  0.01);
+    shimIRFeedSlider.setRange  (0.0,   1.0,  0.01);
+    shimVolumeSlider.setRange  (0.0,   1.0,  0.01);
 
     dryWetAttach    = std::make_unique<SliderAttachment> (apvts, "drywet",   dryWetSlider);
     predelayAttach  = std::make_unique<SliderAttachment> (apvts, "predelay", predelaySlider);
@@ -353,6 +369,12 @@ PingEditor::PingEditor (PingProcessor& p)
     cloudIRFeedAttach = std::make_unique<SliderAttachment> (apvts, "cloudIRFeed", cloudIRFeedSlider);
     cloudVolumeAttach = std::make_unique<SliderAttachment> (apvts, "cloudVolume", cloudVolumeSlider);
     cloudOnAttach     = std::make_unique<ButtonAttachment> (apvts, "cloudOn",     cloudOnButton);
+    shimPitchAttach   = std::make_unique<SliderAttachment> (apvts, "shimPitch",   shimPitchSlider);
+    shimSizeAttach    = std::make_unique<SliderAttachment> (apvts, "shimSize",    shimSizeSlider);
+    shimColourAttach  = std::make_unique<SliderAttachment> (apvts, "shimColour",  shimColourSlider);
+    shimIRFeedAttach  = std::make_unique<SliderAttachment> (apvts, "shimIRFeed",  shimIRFeedSlider);
+    shimVolumeAttach  = std::make_unique<SliderAttachment> (apvts, "shimVolume",  shimVolumeSlider);
+    shimOnAttach      = std::make_unique<ButtonAttachment> (apvts, "shimOn",      shimOnButton);
 
     setLookAndFeel (&pingLook);
 
@@ -368,7 +390,9 @@ PingEditor::PingEditor (PingProcessor& p)
                         &bloomSizeLabel, &bloomFeedbackLabel, &bloomTimeLabel,
                         &bloomIRFeedLabel, &bloomVolumeLabel,
                         &cloudDepthLabel, &cloudRateLabel, &cloudSizeLabel,
-                        &cloudIRFeedLabel, &cloudVolumeLabel })
+                        &cloudIRFeedLabel, &cloudVolumeLabel,
+                        &shimPitchLabel, &shimSizeLabel, &shimColourLabel,
+                        &shimIRFeedLabel, &shimVolumeLabel })
     {
         addAndMakeVisible (label);
         label->setJustificationType (juce::Justification::centred);
@@ -410,6 +434,11 @@ PingEditor::PingEditor (PingProcessor& p)
     cloudSizeLabel.setText   ("SIZE",    juce::dontSendNotification);
     cloudIRFeedLabel.setText ("IR FEED", juce::dontSendNotification);
     cloudVolumeLabel.setText ("VOLUME",  juce::dontSendNotification);
+    shimPitchLabel.setText   ("PITCH",   juce::dontSendNotification);
+    shimSizeLabel.setText    ("SIZE",    juce::dontSendNotification);
+    shimColourLabel.setText  ("COLOUR",  juce::dontSendNotification);
+    shimIRFeedLabel.setText  ("IR FEED", juce::dontSendNotification);
+    shimVolumeLabel.setText  ("VOLUME",  juce::dontSendNotification);
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
@@ -422,7 +451,9 @@ PingEditor::PingEditor (PingProcessor& p)
                      &bloomSizeReadout, &bloomFeedbackReadout, &bloomTimeReadout,
                      &bloomIRFeedReadout, &bloomVolumeReadout,
                      &cloudDepthReadout, &cloudRateReadout, &cloudSizeReadout,
-                     &cloudIRFeedReadout, &cloudVolumeReadout })
+                     &cloudIRFeedReadout, &cloudVolumeReadout,
+                     &shimPitchReadout, &shimSizeReadout, &shimColourReadout,
+                     &shimIRFeedReadout, &shimVolumeReadout })
     {
         addAndMakeVisible (r);
         r->setJustificationType (juce::Justification::centred);
@@ -550,7 +581,8 @@ void PingEditor::paint (juce::Graphics& g)
     drawGroupHeader (tailCrossfadeGroupBounds, "Tail Crossfade", tailCrossfeedOnButton.getToggleState());
     drawGroupHeader (plateGroupBounds,         "Plate pre-diffuser", plateOnButton.getToggleState());
     drawGroupHeader (bloomGroupBounds,         "Bloom hybrid",       bloomOnButton.getToggleState());
-    drawGroupHeader (cloudGroupBounds,         "Cloud multi-LFO",    cloudOnButton.getToggleState());
+    drawGroupHeader (cloudGroupBounds,         "Clouds post convolution",    cloudOnButton.getToggleState());
+    drawGroupHeader (shimGroupBounds,          "Shimmer",                    shimOnButton.getToggleState());
 
 }
 
@@ -677,6 +709,7 @@ void PingEditor::resized()
     const int row3TotalH_  = row2TotalH_;   // identical formula
     const int row4TotalH_  = row2TotalH_;   // identical formula
     const int row5TotalH_  = row2TotalH_;   // identical formula
+    const int row6TotalH_  = row2TotalH_;   // identical formula
     auto topKnobRow = mainArea.removeFromTop (rowTotalH + 4 + groupLabelH);
     const int rowY       = topKnobRow.getY() + groupLabelH - 10;  // knobs sit below the group header (-10 px offset)
 
@@ -689,6 +722,7 @@ void PingEditor::resized()
     const int row3AbsY = row2AbsY + row2TotalH_;
     const int row4AbsY = row3AbsY + row3TotalH_;
     const int row5AbsY = row4AbsY + row4TotalH_;
+    const int row6AbsY = row5AbsY + row5TotalH_;
     const int rowStep    = rowKnobSize + rowGap;
     const int rowStartX  = juce::jmax (8, w / 128) + 5;     // 5 px right of the window edge margin
 
@@ -855,9 +889,40 @@ void PingEditor::resized()
         cloudOnButton.setBounds (cloudGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
+    // —— Row 6: Shimmer (pitch, size, colour, IR feed, volume) + on/off toggle ——
+    const int row6TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
+    auto row6Area = mainArea.removeFromTop (row6TotalH);
+    (void) row6Area;
+    const int row6KnobY = row6AbsY + groupLabelH;
+
+    auto placeRow6Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
+    {
+        const int cx = rowStartX + rowKnobSize / 2 + idx * rowStep;
+        s.setBounds    (cx - rowKnobSize / 2, row6KnobY,                   rowKnobSize, rowKnobSize);
+        lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,           rowLabelW,   labelH);
+        rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,  rowLabelW,   readoutH);
+    };
+    placeRow6Knob (shimPitchSlider,  shimPitchLabel,  shimPitchReadout,  0);
+    placeRow6Knob (shimSizeSlider,   shimSizeLabel,   shimSizeReadout,   1);
+    placeRow6Knob (shimColourSlider, shimColourLabel, shimColourReadout, 2);
+    placeRow6Knob (shimIRFeedSlider, shimIRFeedLabel, shimIRFeedReadout, 3);
+    placeRow6Knob (shimVolumeSlider, shimVolumeLabel, shimVolumeReadout, 4);
+
+    shimGroupBounds = juce::Rectangle<int> (
+        shimPitchSlider.getX(),
+        row6AbsY,
+        shimVolumeSlider.getRight() - shimPitchSlider.getX(),
+        groupLabelH);
+    {
+        const int ledH = groupLabelH - 4;
+        const int ledW = ledH * 2;
+        const int ledY = row6AbsY + (groupLabelH - ledH) / 2;
+        shimOnButton.setBounds (shimGroupBounds.getRight() - ledW, ledY, ledW, ledH);
+    }
+
     // —— Remaining 6 knobs (grid): LFO Depth | Width | LFO Rate | Tail Mod | Delay Depth | Rate ——
-    // Positioned 70 px below the bottom of row 5, using the same absolute-Y strategy as the rows.
-    int y = row5AbsY + row5TotalH_ + 70;
+    // Positioned 70 px below the bottom of row 6, using the same absolute-Y strategy as the rows.
+    int y = row6AbsY + row6TotalH_ + 70;
 
     modDepthSlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
     modDepthLabel.setBounds  (x1, y + sixKnobSize + 2,          sixKnobSize, labelH);
@@ -872,7 +937,7 @@ void PingEditor::resized()
     modRateLabel.setBounds   (x2, y + sixKnobSize + 2,          sixKnobSize, labelH);
     modRateReadout.setBounds (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
 
-    y = row5AbsY + row5TotalH_ + 70;
+    y = row6AbsY + row6TotalH_ + 70;
     tailModSlider.setBounds  (x3, y, sixKnobSize, sixKnobSize);
     tailModLabel.setBounds   (x3, y + sixKnobSize + 2,          sixKnobSize, labelH);
     tailModReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
@@ -1072,6 +1137,22 @@ void PingEditor::setMainPanelControlsVisible (bool visible)
     cloudVolumeLabel.setVisible (visible);
     cloudVolumeReadout.setVisible (visible);
     cloudOnButton.setVisible (visible);
+    shimPitchSlider.setVisible (visible);
+    shimPitchLabel.setVisible (visible);
+    shimPitchReadout.setVisible (visible);
+    shimSizeSlider.setVisible (visible);
+    shimSizeLabel.setVisible (visible);
+    shimSizeReadout.setVisible (visible);
+    shimColourSlider.setVisible (visible);
+    shimColourLabel.setVisible (visible);
+    shimColourReadout.setVisible (visible);
+    shimIRFeedSlider.setVisible (visible);
+    shimIRFeedLabel.setVisible (visible);
+    shimIRFeedReadout.setVisible (visible);
+    shimVolumeSlider.setVisible (visible);
+    shimVolumeLabel.setVisible (visible);
+    shimVolumeReadout.setVisible (visible);
+    shimOnButton.setVisible (visible);
 }
 
 void PingEditor::savePreset (const juce::String& name)
@@ -1257,6 +1338,15 @@ void PingEditor::updateAllReadouts()
     cloudSizeReadout.setText      (juce::String (v ("cloudSize"),   1) + " ms", juce::dontSendNotification);
     cloudIRFeedReadout.setText    (juce::String (v ("cloudIRFeed"), 2),         juce::dontSendNotification);
     cloudVolumeReadout.setText    (juce::String (v ("cloudVolume"), 2),         juce::dontSendNotification);
+    {
+        int st = juce::roundToInt (v ("shimPitch"));
+        shimPitchReadout.setText  ((st >= 0 ? "+" : "") + juce::String (st) + " st", juce::dontSendNotification);
+    }
+    shimSizeReadout.setText   (juce::String (v ("shimSize"),   2) + "\xc3\x97",    juce::dontSendNotification);
+    shimColourReadout.setText (juce::String (juce::roundToInt (2000.f + v ("shimColour") * 18000.f)) + " Hz",
+                               juce::dontSendNotification);
+    shimIRFeedReadout.setText (juce::String (v ("shimIRFeed"), 2),                 juce::dontSendNotification);
+    shimVolumeReadout.setText (juce::String (v ("shimVolume"), 2),                 juce::dontSendNotification);
 }
 
 void PingEditor::refreshIRList()

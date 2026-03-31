@@ -70,6 +70,10 @@ private:
     juce::Slider cloudDepthSlider, cloudRateSlider, cloudSizeSlider, cloudIRFeedSlider, cloudVolumeSlider;
     juce::ToggleButton cloudOnButton;
 
+    // Shimmer controls (row 6)
+    juce::Slider shimPitchSlider, shimSizeSlider, shimColourSlider, shimIRFeedSlider, shimVolumeSlider;
+    juce::ToggleButton shimOnButton;
+
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
     std::unique_ptr<SliderAttachment> dryWetAttach, predelayAttach, decayAttach;
@@ -86,6 +90,8 @@ private:
     std::unique_ptr<ButtonAttachment> bloomOnAttach;
     std::unique_ptr<SliderAttachment> cloudDepthAttach, cloudRateAttach, cloudSizeAttach, cloudIRFeedAttach, cloudVolumeAttach;
     std::unique_ptr<ButtonAttachment> cloudOnAttach;
+    std::unique_ptr<SliderAttachment> shimPitchAttach, shimSizeAttach, shimColourAttach, shimIRFeedAttach, shimVolumeAttach;
+    std::unique_ptr<ButtonAttachment> shimOnAttach;
 
     juce::Label dryWetLabel, predelayLabel, decayLabel, modDepthLabel;
     juce::Label stretchLabel, widthLabel, modRateLabel;
@@ -97,6 +103,7 @@ private:
     juce::Label plateDiffusionLabel, plateColourLabel, plateSizeLabel, plateIRFeedLabel;
     juce::Label bloomSizeLabel, bloomFeedbackLabel, bloomTimeLabel, bloomIRFeedLabel, bloomVolumeLabel;
     juce::Label cloudDepthLabel, cloudRateLabel, cloudSizeLabel, cloudIRFeedLabel, cloudVolumeLabel;
+    juce::Label shimPitchLabel, shimSizeLabel, shimColourLabel, shimIRFeedLabel, shimVolumeLabel;
 
     juce::Label dryWetReadout, predelayReadout, decayReadout, modDepthReadout;
     juce::Label stretchReadout, widthReadout, modRateReadout;
@@ -108,6 +115,7 @@ private:
     juce::Label plateDiffusionReadout, plateColourReadout, plateSizeReadout, plateIRFeedReadout;
     juce::Label bloomSizeReadout, bloomFeedbackReadout, bloomTimeReadout, bloomIRFeedReadout, bloomVolumeReadout;
     juce::Label cloudDepthReadout, cloudRateReadout, cloudSizeReadout, cloudIRFeedReadout, cloudVolumeReadout;
+    juce::Label shimPitchReadout, shimSizeReadout, shimColourReadout, shimIRFeedReadout, shimVolumeReadout;
 
     PingLookAndFeel pingLook;
     EQGraphComponent eqGraph;
@@ -129,6 +137,7 @@ private:
     juce::Rectangle<int> plateGroupBounds;          // area above the Plate group
     juce::Rectangle<int> bloomGroupBounds;           // area above the Bloom group
     juce::Rectangle<int> cloudGroupBounds;           // area above the Cloud group
+    juce::Rectangle<int> shimGroupBounds;            // area above the Shimmer group
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PingEditor)
 };

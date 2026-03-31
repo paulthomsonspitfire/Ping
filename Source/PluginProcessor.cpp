@@ -53,6 +53,12 @@ namespace IDs
     static const juce::String cloudSize       { "cloudSize" };
     static const juce::String cloudVolume     { "cloudVolume" };
     static const juce::String cloudIRFeed     { "cloudIRFeed" };
+    static const juce::String shimOn          { "shimOn" };
+    static const juce::String shimPitch       { "shimPitch" };
+    static const juce::String shimSize        { "shimSize" };
+    static const juce::String shimColour      { "shimColour" };
+    static const juce::String shimIRFeed      { "shimIRFeed" };
+    static const juce::String shimVolume      { "shimVolume" };
 }
 
 static juce::File getLicenceDirectory()
@@ -272,6 +278,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudSize,   "Cloud Size",    1.0f,  40.0f, 5.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudVolume, "Cloud Volume",  0.0f,  1.0f,  0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudIRFeed, "Cloud IR Feed", 0.0f,  1.0f,  0.0f));
+    // Shimmer
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::shimOn,     "Shimmer On",      false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimPitch,  "Shimmer Pitch",
+                    juce::NormalisableRange<float> (-24.f, 24.f, 1.f), 12.f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimSize,   "Shimmer Size",    0.5f,  4.0f, 1.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimColour, "Shimmer Colour",  0.0f,  1.0f, 0.7f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimIRFeed, "Shimmer IR Feed", 0.0f,  1.0f, 0.5f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimVolume, "Shimmer Volume",  0.0f,  1.0f, 0.0f));
     return layout;
 }
 
@@ -407,6 +421,22 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         cloudBuffer.clear();
         cloudLastBlockSize = 0;
     }
+
+    // Shimmer: two-grain pitch shifter on the post-convolution wet signal.
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        auto& v = shimVoices[ch];
+        v.grainBuf.assign (kShimBufLen, 0.f);
+        v.writePtr    = 0;
+        v.readPtrA    = 0.f;
+        v.readPtrB    = (float)(kShimGrainLen / 2);
+        v.grainPhaseA = 0.f;
+        v.grainPhaseB = 0.5f;
+    }
+    shimColourState.fill (0.f);
+    shimBuffer.setSize (2, samplesPerBlock);
+    shimBuffer.clear();
+    shimLastBlockSize = 0;
 
     updateGains();
     updatePredelay();
@@ -635,6 +665,26 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             {
                 float*       data = buffer.getWritePointer (ch);
                 const float* prev = cloudBuffer.getReadPointer (ch);
+                for (int i = 0; i < injectN; ++i)
+                    data[i] += prev[i] * irFeed;
+            }
+        }
+    }
+
+    // ——————————————————————————————————————————————————————————————————
+    // Shimmer Insertion 1: IR feed — inject previous block's pitch-shifted output
+    // into the convolver input. shimBuffer holds block N-1's grain shifter output.
+    // ——————————————————————————————————————————————————————————————————
+    if (apvts.getRawParameterValue (IDs::shimOn)->load() > 0.5f)
+    {
+        const float irFeed = apvts.getRawParameterValue (IDs::shimIRFeed)->load();
+        if (irFeed > 0.001f && shimLastBlockSize > 0)
+        {
+            const int injectN = std::min (numSamples, shimLastBlockSize);
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                float*       data = buffer.getWritePointer (ch);
+                const float* prev = shimBuffer.getReadPointer (ch);
                 for (int i = 0; i < injectN; ++i)
                     data[i] += prev[i] * irFeed;
             }
@@ -953,6 +1003,99 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         // Cloud off: clear bridge buffer so next block's Insertion 1 injects silence
         cloudBuffer.clear();
         cloudLastBlockSize = 0;
+    }
+
+    // ——————————————————————————————————————————————————————————————————
+    // Shimmer Insertion 2: two-grain Hann-windowed pitch shifter on the wet signal.
+    // Stores pitch-shifted output in shimBuffer (bridge to next block's Insertion 1).
+    // Optionally adds shimBuffer × shimVolume directly to the wet signal.
+    // ——————————————————————————————————————————————————————————————————
+    if (apvts.getRawParameterValue (IDs::shimOn)->load() > 0.5f)
+    {
+        const float shimPitchSt = apvts.getRawParameterValue (IDs::shimPitch)->load();
+        const float pitchRatio  = std::pow (2.f, shimPitchSt / 12.f);
+        const int   effGrainLen = juce::roundToInt (kShimGrainLen *
+                                    apvts.getRawParameterValue (IDs::shimSize)->load());
+        const float shimVol     = apvts.getRawParameterValue (IDs::shimVolume)->load();
+
+        // 1-pole LP colour: 0 → 2 kHz, 1 → 20 kHz
+        const float cutoffHz = 2000.f + apvts.getRawParameterValue (IDs::shimColour)->load() * 18000.f;
+        const float lpAlpha  = 1.f - std::exp (-juce::MathConstants<float>::twoPi * cutoffHz
+                                               / (float)currentSampleRate);
+
+        if (numSamples > shimBuffer.getNumSamples())
+            shimBuffer.setSize (2, numSamples, false, true, true);
+
+        auto hannW = [](float p) -> float {
+            return 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * p);
+        };
+
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            auto& v          = shimVoices[ch];
+            const float* wet = buffer.getReadPointer (ch);
+            float*       shim = shimBuffer.getWritePointer (ch);
+
+            for (int i = 0; i < numSamples; ++i)
+            {
+                // Write current wet sample into the circular grain buffer
+                v.grainBuf[(size_t)v.writePtr] = wet[i];
+
+                // Linear-interpolated read from two grains, Hann windowed
+                auto readAt = [&](float rp) -> float {
+                    int   ri   = ((int)std::floor (rp) % kShimBufLen + kShimBufLen) % kShimBufLen;
+                    float frac = rp - std::floor (rp);
+                    return v.grainBuf[(size_t)ri]                       * (1.f - frac)
+                         + v.grainBuf[(size_t)((ri + 1) % kShimBufLen)] * frac;
+                };
+
+                float out = (readAt (v.readPtrA) * hannW (v.grainPhaseA)
+                           + readAt (v.readPtrB) * hannW (v.grainPhaseB)) * 0.5f;
+
+                // 1-pole LP for shimmer colour
+                shimColourState[ch] += lpAlpha * (out - shimColourState[ch]);
+                out = shimColourState[ch];
+
+                shim[i] = out;
+
+                // Advance read pointers and grain phases
+                v.readPtrA    += pitchRatio;
+                v.readPtrB    += pitchRatio;
+                v.grainPhaseA += pitchRatio / (float)effGrainLen;
+                v.grainPhaseB += pitchRatio / (float)effGrainLen;
+
+                if (v.readPtrA >= (float)kShimBufLen) v.readPtrA -= (float)kShimBufLen;
+                if (v.readPtrB >= (float)kShimBufLen) v.readPtrB -= (float)kShimBufLen;
+
+                // On grain reset: snap read head one effGrainLen behind write head
+                if (v.grainPhaseA >= 1.f)
+                {
+                    v.grainPhaseA -= 1.f;
+                    v.readPtrA = (float)((v.writePtr - effGrainLen + kShimBufLen) % kShimBufLen);
+                }
+                if (v.grainPhaseB >= 1.f)
+                {
+                    v.grainPhaseB -= 1.f;
+                    v.readPtrB = (float)((v.writePtr - effGrainLen + kShimBufLen) % kShimBufLen);
+                }
+
+                v.writePtr = (v.writePtr + 1) % kShimBufLen;
+            }
+
+            // Direct output path: add shimmer to wet signal
+            if (shimVol > 0.001f)
+            {
+                float* wetOut = buffer.getWritePointer (ch);
+                for (int i = 0; i < numSamples; ++i)
+                    wetOut[i] += shim[i] * shimVol;
+            }
+        }
+        shimLastBlockSize = numSamples;
+    }
+    else
+    {
+        shimBuffer.clear();
+        shimLastBlockSize = 0;
     }
 
     // Wet output gain (boost/cut the whole wet signal, like input gain for output)

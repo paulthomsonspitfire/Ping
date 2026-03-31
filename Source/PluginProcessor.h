@@ -179,6 +179,27 @@ private:
     juce::AudioBuffer<float> cloudBuffer;
     int                      cloudLastBlockSize = 0;
 
+    // ── Shimmer ───────────────────────────────────────────────────────────────
+    // Two-grain Hann-windowed pitch shifter applied to the post-convolution wet
+    // signal. shimBuffer bridges Insertion 2 (post-Cloud) → Insertion 1 (next
+    // block, pre-convolver), identical pattern to cloudBuffer.
+    static constexpr int kShimGrainLen = 512;
+    static constexpr int kShimBufLen   = 8192;
+
+    struct ShimmerVoice {
+        std::vector<float> grainBuf;   // kShimBufLen samples, circular
+        int   writePtr    = 0;
+        float readPtrA    = 0.f;
+        float readPtrB    = 0.f;       // initialised to kShimGrainLen/2 in prepareToPlay
+        float grainPhaseA = 0.f;
+        float grainPhaseB = 0.5f;
+    };
+
+    std::array<ShimmerVoice, 2> shimVoices;       // [ch]
+    std::array<float, 2>        shimColourState { 0.f, 0.f };  // 1-pole LP state per channel
+    juce::AudioBuffer<float>    shimBuffer;        // bridge: Insertion 2 → Insertion 1 (next block)
+    int                         shimLastBlockSize = 0;
+
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand, lowShelfBand, highShelfBand;
     juce::SmoothedValue<float> inputGainSmoothed;

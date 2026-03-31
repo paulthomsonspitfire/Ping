@@ -89,7 +89,8 @@ void PingLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b
                                         bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown)
 {
     juce::String id = button.getComponentID();
-    if (id == "ERCrossfeedSwitch" || id == "TailCrossfeedSwitch" || id == "PlateSwitch")
+    if (id == "ERCrossfeedSwitch" || id == "TailCrossfeedSwitch" || id == "PlateSwitch"
+        || id == "BloomSwitch" || id == "CloudSwitch" || id == "ShimmerSwitch")
     {
         auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
         bool on = button.getToggleState();
