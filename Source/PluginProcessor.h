@@ -139,6 +139,20 @@ private:
     std::array<float, 2> plateShelfState { 0.f, 0.f };
     // Pre-allocated buffer for the processed plate signal (used across pre/post-convolution injection points)
     juce::AudioBuffer<float> plateBuffer;
+
+    // ── Bloom hybrid ──────────────────────────────────────────────────────────
+    // 4-stage allpass cascade (reuses SimpleAllpass defined above).
+    // Base prime delays at 48 kHz: ~39 ms, ~74 ms, ~150 ms, ~300 ms.
+    // effLen stays 0 (= use full buf.size()) — Bloom has no size-scaling parameter.
+    static constexpr int kNumBloomStages     = 4;
+    static constexpr int kBloomFeedbackMaxMs = 500;
+    std::array<std::array<SimpleAllpass, kNumBloomStages>, 2> bloomAPs; // [ch][stage]
+    // Circular buffer holds post-EQ wet signal for feedback re-injection
+    std::array<std::vector<float>, 2> bloomFbBufs;
+    std::array<int, 2>                bloomFbWritePtrs { 0, 0 };
+    // Per-block intermediate buffer: cascade output stored here so both the IR-feed
+    // injection (pre-conv) and the volume injection (post-conv) read the same values.
+    juce::AudioBuffer<float> bloomBuffer;
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand, lowShelfBand, highShelfBand;
     juce::SmoothedValue<float> inputGainSmoothed;

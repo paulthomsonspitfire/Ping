@@ -5,7 +5,7 @@
 namespace
 {
     constexpr int editorW = 1104;
-    constexpr int editorH = 600;
+    constexpr int editorH = 672;
     constexpr int minW = 864;
     constexpr int minH = 528;
     constexpr int maxW = 1920;
@@ -259,6 +259,17 @@ PingEditor::PingEditor (PingProcessor& p)
         plateOnButton.onClick = [this] { repaint(); };
     }
 
+    // Bloom row knobs (row 4 — same accent style)
+    for (auto* s : { &bloomDiffusionSlider, &bloomFeedbackSlider, &bloomTimeSlider,
+                     &bloomIRFeedSlider, &bloomVolumeSlider })
+        makeSlider (*s, "");
+    {
+        addAndMakeVisible (bloomOnButton);
+        bloomOnButton.setButtonText ("");
+        bloomOnButton.setComponentID ("BloomSwitch");
+        bloomOnButton.onClick = [this] { repaint(); };
+    }
+
     dryWetSlider.setRange (0.0, 1.0, 0.01);
     predelaySlider.setRange (0.0, 500.0, 1.0);
     decaySlider.setRange (0.0, 1.0, 0.01);
@@ -282,6 +293,11 @@ PingEditor::PingEditor (PingProcessor& p)
     plateDiffusionSlider.setRange (0.30, 0.88, 0.01);
     plateColourSlider.setRange   (0.0,  1.0,  0.01);
     plateSizeSlider.setRange     (0.5,  4.0,  0.01);
+    bloomDiffusionSlider.setRange (0.30, 0.88, 0.01);
+    bloomFeedbackSlider.setRange  (0.0,  0.65, 0.01);
+    bloomTimeSlider.setRange      (50.0, 500.0, 1.0);
+    bloomIRFeedSlider.setRange    (0.0,  1.0,  0.01);
+    bloomVolumeSlider.setRange    (0.0,  1.0,  0.01);
 
     dryWetAttach    = std::make_unique<SliderAttachment> (apvts, "drywet",   dryWetSlider);
     predelayAttach  = std::make_unique<SliderAttachment> (apvts, "predelay", predelaySlider);
@@ -309,6 +325,12 @@ PingEditor::PingEditor (PingProcessor& p)
     plateColourAttach    = std::make_unique<SliderAttachment> (apvts, "plateColour",    plateColourSlider);
     plateSizeAttach      = std::make_unique<SliderAttachment> (apvts, "plateSize",      plateSizeSlider);
     plateOnAttach        = std::make_unique<ButtonAttachment> (apvts, "plateOn",        plateOnButton);
+    bloomDiffusionAttach = std::make_unique<SliderAttachment> (apvts, "bloomDiffusion", bloomDiffusionSlider);
+    bloomFeedbackAttach  = std::make_unique<SliderAttachment> (apvts, "bloomFeedback",  bloomFeedbackSlider);
+    bloomTimeAttach      = std::make_unique<SliderAttachment> (apvts, "bloomTime",      bloomTimeSlider);
+    bloomIRFeedAttach    = std::make_unique<SliderAttachment> (apvts, "bloomIRFeed",    bloomIRFeedSlider);
+    bloomVolumeAttach    = std::make_unique<SliderAttachment> (apvts, "bloomVolume",    bloomVolumeSlider);
+    bloomOnAttach        = std::make_unique<ButtonAttachment> (apvts, "bloomOn",        bloomOnButton);
 
     setLookAndFeel (&pingLook);
 
@@ -320,7 +342,9 @@ PingEditor::PingEditor (PingProcessor& p)
                         &erLevelLabel, &tailLevelLabel,
                         &erCrossfeedDelayLabel, &erCrossfeedAttLabel,
                         &tailCrossfeedDelayLabel, &tailCrossfeedAttLabel,
-                        &plateDiffusionLabel, &plateColourLabel, &plateSizeLabel, &plateIRFeedLabel })
+                        &plateDiffusionLabel, &plateColourLabel, &plateSizeLabel, &plateIRFeedLabel,
+                        &bloomDiffusionLabel, &bloomFeedbackLabel, &bloomTimeLabel,
+                        &bloomIRFeedLabel, &bloomVolumeLabel })
     {
         addAndMakeVisible (label);
         label->setJustificationType (juce::Justification::centred);
@@ -352,6 +376,11 @@ PingEditor::PingEditor (PingProcessor& p)
     plateDiffusionLabel.setText ("DIFFUSION", juce::dontSendNotification);
     plateColourLabel.setText    ("COLOUR",    juce::dontSendNotification);
     plateSizeLabel.setText      ("SIZE",      juce::dontSendNotification);
+    bloomDiffusionLabel.setText ("DIFFUSION", juce::dontSendNotification);
+    bloomFeedbackLabel.setText  ("FEEDBACK",  juce::dontSendNotification);
+    bloomTimeLabel.setText      ("TIME",      juce::dontSendNotification);
+    bloomIRFeedLabel.setText    ("IR FEED",   juce::dontSendNotification);
+    bloomVolumeLabel.setText    ("VOLUME",    juce::dontSendNotification);
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
@@ -360,7 +389,9 @@ PingEditor::PingEditor (PingProcessor& p)
                      &erLevelReadout, &tailLevelReadout,
                      &erCrossfeedDelayReadout, &erCrossfeedAttReadout,
                      &tailCrossfeedDelayReadout, &tailCrossfeedAttReadout,
-                     &plateDiffusionReadout, &plateColourReadout, &plateSizeReadout, &plateIRFeedReadout })
+                     &plateDiffusionReadout, &plateColourReadout, &plateSizeReadout, &plateIRFeedReadout,
+                     &bloomDiffusionReadout, &bloomFeedbackReadout, &bloomTimeReadout,
+                     &bloomIRFeedReadout, &bloomVolumeReadout })
     {
         addAndMakeVisible (r);
         r->setJustificationType (juce::Justification::centred);
@@ -487,6 +518,7 @@ void PingEditor::paint (juce::Graphics& g)
     drawGroupHeader (erCrossfadeGroupBounds,   "ER Crossfade",   erCrossfeedOnButton.getToggleState());
     drawGroupHeader (tailCrossfadeGroupBounds, "Tail Crossfade", tailCrossfeedOnButton.getToggleState());
     drawGroupHeader (plateGroupBounds,         "Plate pre-diffuser", plateOnButton.getToggleState());
+    drawGroupHeader (bloomGroupBounds,         "Bloom hybrid",       bloomOnButton.getToggleState());
 
 }
 
@@ -608,9 +640,10 @@ void PingEditor::resized()
     const int rowGap       = juce::jmax (6,  (int)(0.008f * cw));
     const int groupLabelH  = 14;   // height reserved for "IR Input" text + line above knobs 0-1
     const int rowTotalH    = rowKnobSize + labelH + readoutH + 6;
-    // Hoist row 2/3 heights here so they can be used to compute absolute Y anchors below
+    // Hoist row 2/3/4 heights here so they can be used to compute absolute Y anchors below
     const int row2TotalH_  = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     const int row3TotalH_  = row2TotalH_;   // identical formula
+    const int row4TotalH_  = row2TotalH_;   // identical formula
     auto topKnobRow = mainArea.removeFromTop (rowTotalH + 4 + groupLabelH);
     const int rowY       = topKnobRow.getY() + groupLabelH - 10;  // knobs sit below the group header (-10 px offset)
 
@@ -621,6 +654,7 @@ void PingEditor::resized()
     // from topKnobRow.getBottom() guarantees correct spacing regardless of mainHeight.
     const int row2AbsY = topKnobRow.getBottom();
     const int row3AbsY = row2AbsY + row2TotalH_;
+    const int row4AbsY = row3AbsY + row3TotalH_;
     const int rowStep    = rowKnobSize + rowGap;
     const int rowStartX  = juce::jmax (8, w / 128) + 5;     // 5 px right of the window edge margin
 
@@ -723,9 +757,42 @@ void PingEditor::resized()
         plateOnButton.setBounds (plateGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
+    // —— Row 4: Bloom hybrid (diffusion, feedback, time, IR feed, volume) + on/off toggle ——
+    // Single group spanning all five knobs; no extra inter-group gap.
+    const int row4TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
+    auto row4Area = mainArea.removeFromTop (row4TotalH);
+    (void) row4Area;  // used only to advance mainArea; actual bounds computed from absolute anchor
+    const int row4KnobY = row4AbsY + groupLabelH;
+
+    auto placeRow4Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
+    {
+        const int cx = rowStartX + rowKnobSize / 2 + idx * rowStep;
+        s.setBounds    (cx - rowKnobSize / 2, row4KnobY,                   rowKnobSize, rowKnobSize);
+        lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,           rowLabelW,   labelH);
+        rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,  rowLabelW,   readoutH);
+    };
+    placeRow4Knob (bloomDiffusionSlider, bloomDiffusionLabel, bloomDiffusionReadout, 0);
+    placeRow4Knob (bloomFeedbackSlider,  bloomFeedbackLabel,  bloomFeedbackReadout,  1);
+    placeRow4Knob (bloomTimeSlider,      bloomTimeLabel,      bloomTimeReadout,      2);
+    placeRow4Knob (bloomIRFeedSlider,    bloomIRFeedLabel,    bloomIRFeedReadout,    3);
+    placeRow4Knob (bloomVolumeSlider,    bloomVolumeLabel,    bloomVolumeReadout,    4);
+
+    // Group header spans all five knobs; toggle pill right-aligned within it
+    bloomGroupBounds = juce::Rectangle<int> (
+        bloomDiffusionSlider.getX(),
+        row4AbsY,
+        bloomVolumeSlider.getRight() - bloomDiffusionSlider.getX(),
+        groupLabelH);
+    {
+        const int ledH = groupLabelH - 4;
+        const int ledW = ledH * 2;
+        const int ledY = row4AbsY + (groupLabelH - ledH) / 2;
+        bloomOnButton.setBounds (bloomGroupBounds.getRight() - ledW, ledY, ledW, ledH);
+    }
+
     // —— Remaining 6 knobs (grid): LFO Depth | Width | LFO Rate | Tail Mod | Delay Depth | Rate ——
-    // Positioned 70 px below the bottom of row 3, using the same absolute-Y strategy as the rows.
-    int y = row3AbsY + row3TotalH_ + 70;
+    // Positioned 70 px below the bottom of row 4, using the same absolute-Y strategy as the rows.
+    int y = row4AbsY + row4TotalH_ + 70;
 
     modDepthSlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
     modDepthLabel.setBounds  (x1, y + sixKnobSize + 2,          sixKnobSize, labelH);
@@ -740,7 +807,7 @@ void PingEditor::resized()
     modRateLabel.setBounds   (x2, y + sixKnobSize + 2,          sixKnobSize, labelH);
     modRateReadout.setBounds (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
 
-    y = row3AbsY + row3TotalH_ + 70;
+    y = row4AbsY + row4TotalH_ + 70;
     tailModSlider.setBounds  (x3, y, sixKnobSize, sixKnobSize);
     tailModLabel.setBounds   (x3, y + sixKnobSize + 2,          sixKnobSize, labelH);
     tailModReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
@@ -908,6 +975,22 @@ void PingEditor::setMainPanelControlsVisible (bool visible)
     plateSizeLabel.setVisible (visible);
     plateSizeReadout.setVisible (visible);
     plateOnButton.setVisible (visible);
+    bloomDiffusionSlider.setVisible (visible);
+    bloomDiffusionLabel.setVisible (visible);
+    bloomDiffusionReadout.setVisible (visible);
+    bloomFeedbackSlider.setVisible (visible);
+    bloomFeedbackLabel.setVisible (visible);
+    bloomFeedbackReadout.setVisible (visible);
+    bloomTimeSlider.setVisible (visible);
+    bloomTimeLabel.setVisible (visible);
+    bloomTimeReadout.setVisible (visible);
+    bloomIRFeedSlider.setVisible (visible);
+    bloomIRFeedLabel.setVisible (visible);
+    bloomIRFeedReadout.setVisible (visible);
+    bloomVolumeSlider.setVisible (visible);
+    bloomVolumeLabel.setVisible (visible);
+    bloomVolumeReadout.setVisible (visible);
+    bloomOnButton.setVisible (visible);
 }
 
 void PingEditor::savePreset (const juce::String& name)
@@ -1083,6 +1166,11 @@ void PingEditor::updateAllReadouts()
         float sizeMs = v ("plateSize") * 691.0f / 48000.0f * 1000.0f;
         plateSizeReadout.setText (juce::String (sizeMs, 1) + " ms", juce::dontSendNotification);
     }
+    bloomDiffusionReadout.setText (juce::String (v ("bloomDiffusion"), 2),  juce::dontSendNotification);
+    bloomFeedbackReadout.setText  (juce::String (v ("bloomFeedback"),  2),  juce::dontSendNotification);
+    bloomTimeReadout.setText      (juce::String (juce::roundToInt (v ("bloomTime"))) + " ms", juce::dontSendNotification);
+    bloomIRFeedReadout.setText    (juce::String (v ("bloomIRFeed"),    2),  juce::dontSendNotification);
+    bloomVolumeReadout.setText    (juce::String (v ("bloomVolume"),    2),  juce::dontSendNotification);
 }
 
 void PingEditor::refreshIRList()

@@ -39,6 +39,13 @@ namespace IDs
     static const juce::String plateColour     { "plateColour" };
     static const juce::String plateSize       { "plateSize" };
     static const juce::String plateIRFeed     { "plateIRFeed" };
+    // Bloom hybrid
+    static const juce::String bloomOn         { "bloomOn" };
+    static const juce::String bloomDiffusion  { "bloomDiffusion" };
+    static const juce::String bloomFeedback   { "bloomFeedback" };
+    static const juce::String bloomTime       { "bloomTime" };
+    static const juce::String bloomIRFeed     { "bloomIRFeed" };
+    static const juce::String bloomVolume     { "bloomVolume" };
 }
 
 static juce::File getLicenceDirectory()
@@ -244,6 +251,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateColour,    "Plate Colour",     0.0f, 1.0f,  0.5f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateSize,      "Plate Size",       0.5f, 4.0f,  1.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateIRFeed,    "Plate IR Feed",    0.0f, 1.0f,  0.0f));
+    // Bloom hybrid
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::bloomOn,        "Bloom On",         false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomDiffusion, "Bloom Diffusion",  0.30f, 0.88f, 0.60f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomFeedback,  "Bloom Feedback",   0.0f, 0.65f, 0.25f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomTime,      "Bloom Time",       50.0f, 500.0f, 200.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomIRFeed,    "Bloom IR Feed",    0.0f, 1.0f,   0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomVolume,    "Bloom Volume",     0.0f, 1.0f,   0.0f));
     return layout;
 }
 
@@ -325,6 +339,30 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     }
     plateBuffer.setSize (2, samplesPerBlock);
     plateBuffer.clear();
+
+    // Bloom hybrid: 4 allpass stages with long prime delays.
+    // At 48 kHz: 1871 → ~39 ms, 3541 → ~74 ms, 7211 → ~150 ms, 14387 → ~300 ms.
+    // No size-scaling — effLen stays 0 (full buf.size() used as the wrap length).
+    {
+        static constexpr int bloomPrimes[kNumBloomStages] = { 1871, 3541, 7211, 14387 };
+        for (int ch = 0; ch < 2; ++ch)
+            for (int s = 0; s < kNumBloomStages; ++s)
+            {
+                int d = (int)std::round (bloomPrimes[s] * sampleRate / 48000.0);
+                bloomAPs[ch][s].buf.assign ((size_t)d, 0.f);
+                bloomAPs[ch][s].ptr    = 0;
+                bloomAPs[ch][s].effLen = 0;   // 0 = use full buf.size()
+                bloomAPs[ch][s].g      = 0.60f;
+            }
+        int fbSamps = (int)std::ceil (kBloomFeedbackMaxMs * sampleRate / 1000.0);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            bloomFbBufs[ch].assign ((size_t)fbSamps, 0.f);
+            bloomFbWritePtrs[ch] = 0;
+        }
+    }
+    bloomBuffer.setSize (2, samplesPerBlock);
+    bloomBuffer.clear();
 
     updateGains();
     updatePredelay();
@@ -463,6 +501,64 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     {
         // plateBuffer not needed this block — zero it so post-convolution injection is silent
         plateBuffer.clear();
+    }
+
+    // ——————————————————————————————————————————————————————————————————
+    // Bloom hybrid: pre-convolution allpass cascade + feedback
+    //   bloomBuffer stores the cascade output for two uses:
+    //     1) IR FEED  — added to the convolver input here (before convolution)
+    //     2) VOLUME   — added directly to the wet bus (after convolution, before EQ)
+    //   Feedback tap (Insertion 3) reads from bloomFbBufs, which is written after EQ+decorr.
+    // ——————————————————————————————————————————————————————————————————
+    if (apvts.getRawParameterValue (IDs::bloomOn)->load() > 0.5f)
+    {
+        const float bloomDiff  = apvts.getRawParameterValue (IDs::bloomDiffusion)->load();
+        const float fbAmt      = std::min (0.65f, apvts.getRawParameterValue (IDs::bloomFeedback)->load());
+        const float bloomTimeMs = juce::jlimit (50.f, 500.f, apvts.getRawParameterValue (IDs::bloomTime)->load());
+        const float irFeed     = apvts.getRawParameterValue (IDs::bloomIRFeed)->load();
+
+        // Reallocate bloomBuffer if host delivers a larger-than-expected block
+        if (numSamples > bloomBuffer.getNumSamples())
+            bloomBuffer.setSize (2, numSamples, false, true, true);
+        bloomBuffer.clear();
+
+        // Set g on all stages once per block (consistent with Plate implementation pattern)
+        for (int ch = 0; ch < numChannels; ++ch)
+            for (int s = 0; s < kNumBloomStages; ++s)
+                bloomAPs[ch][s].g = bloomDiff;
+
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            float* data  = buffer.getWritePointer (ch);
+            float* bloom = bloomBuffer.getWritePointer (ch);
+            const int fbLen = (int)bloomFbBufs[ch].size();
+            const int timeInSamples = juce::jlimit (1, fbLen - 1,
+                                          (int)std::round (bloomTimeMs * currentSampleRate / 1000.0));
+
+            for (int i = 0; i < numSamples; ++i)
+            {
+                // Read feedback: bloomTime ms back in the post-EQ wet buffer
+                const int rdPtr = (bloomFbWritePtrs[ch] - timeInSamples + fbLen) % fbLen;
+                const float fb  = bloomFbBufs[ch][(size_t)rdPtr] * fbAmt;
+
+                // Run (input + feedback) through the 4-stage allpass cascade
+                float diff = data[i] + fb;
+                for (int s = 0; s < kNumBloomStages; ++s)
+                    diff = bloomAPs[ch][s].process (diff);
+
+                // Store cascade output — used for IR feed (here) and volume output (Insertion 2)
+                bloom[i] = diff;
+
+                // IR feed: add bloom output into the convolver input (additive, on top of main signal)
+                data[i] += diff * irFeed;
+            }
+        }
+    }
+    else
+    {
+        // bloomBuffer not needed this block — zero it so post-convolution injection is silent
+        if (numSamples <= bloomBuffer.getNumSamples())
+            bloomBuffer.clear();
     }
 
     float erDb = apvts.getRawParameterValue (IDs::erLevel)->load();
@@ -628,6 +724,24 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         buffer.applyGain (0.5f);
     }
 
+    // ——————————————————————————————————————————————————————————————————
+    // Bloom hybrid Insertion 2: direct volume output (before EQ so EQ shapes the bloom texture)
+    // ——————————————————————————————————————————————————————————————————
+    if (apvts.getRawParameterValue (IDs::bloomOn)->load() > 0.5f && numSamples <= bloomBuffer.getNumSamples())
+    {
+        const float bloomVol = apvts.getRawParameterValue (IDs::bloomVolume)->load();
+        if (bloomVol > 0.f)
+        {
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                float*       data  = buffer.getWritePointer (ch);
+                const float* bloom = bloomBuffer.getReadPointer (ch);
+                for (int i = 0; i < numSamples; ++i)
+                    data[i] += bloom[i] * bloomVol;
+            }
+        }
+    }
+
     // EQ: low shelf → peak 1 → peak 2 → peak 3 → high shelf
     lowShelfBand.process (context);
     lowBand.process (context);
@@ -653,6 +767,25 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                 s = -decorrG * w + delayed;
             }
             R[i] = s;
+        }
+    }
+
+    // ——————————————————————————————————————————————————————————————————
+    // Bloom hybrid Insertion 3: feedback tap — capture EQ-shaped wet for re-injection next block
+    // Position: after EQ + stereo decorrelation, before LFO mod.
+    // The EQ-shaped signal is what blooms back, so EQ changes gradually shift the bloom character.
+    // ——————————————————————————————————————————————————————————————————
+    if (apvts.getRawParameterValue (IDs::bloomOn)->load() > 0.5f)
+    {
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            const float* data = buffer.getReadPointer (ch);
+            const int    fbLen = (int)bloomFbBufs[ch].size();
+            for (int i = 0; i < numSamples; ++i)
+            {
+                bloomFbBufs[ch][(size_t)bloomFbWritePtrs[ch]] = data[i];
+                bloomFbWritePtrs[ch] = (bloomFbWritePtrs[ch] + 1) % fbLen;
+            }
         }
     }
 

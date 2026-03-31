@@ -62,6 +62,10 @@ private:
     juce::Slider plateDiffusionSlider, plateColourSlider, plateSizeSlider, plateIRFeedSlider;
     juce::ToggleButton plateOnButton;
 
+    // Bloom controls (row 4)
+    juce::Slider bloomDiffusionSlider, bloomFeedbackSlider, bloomTimeSlider, bloomIRFeedSlider, bloomVolumeSlider;
+    juce::ToggleButton bloomOnButton;
+
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
     std::unique_ptr<SliderAttachment> dryWetAttach, predelayAttach, decayAttach;
@@ -74,6 +78,8 @@ private:
     std::unique_ptr<ButtonAttachment> erCrossfeedOnAttach, tailCrossfeedOnAttach;
     std::unique_ptr<SliderAttachment> plateDiffusionAttach, plateColourAttach, plateSizeAttach, plateIRFeedAttach;
     std::unique_ptr<ButtonAttachment> plateOnAttach;
+    std::unique_ptr<SliderAttachment> bloomDiffusionAttach, bloomFeedbackAttach, bloomTimeAttach, bloomIRFeedAttach, bloomVolumeAttach;
+    std::unique_ptr<ButtonAttachment> bloomOnAttach;
 
     juce::Label dryWetLabel, predelayLabel, decayLabel, modDepthLabel;
     juce::Label stretchLabel, widthLabel, modRateLabel;
@@ -83,6 +89,7 @@ private:
     juce::Label erCrossfeedDelayLabel, erCrossfeedAttLabel;
     juce::Label tailCrossfeedDelayLabel, tailCrossfeedAttLabel;
     juce::Label plateDiffusionLabel, plateColourLabel, plateSizeLabel, plateIRFeedLabel;
+    juce::Label bloomDiffusionLabel, bloomFeedbackLabel, bloomTimeLabel, bloomIRFeedLabel, bloomVolumeLabel;
 
     juce::Label dryWetReadout, predelayReadout, decayReadout, modDepthReadout;
     juce::Label stretchReadout, widthReadout, modRateReadout;
@@ -92,6 +99,7 @@ private:
     juce::Label erCrossfeedDelayReadout, erCrossfeedAttReadout;
     juce::Label tailCrossfeedDelayReadout, tailCrossfeedAttReadout;
     juce::Label plateDiffusionReadout, plateColourReadout, plateSizeReadout, plateIRFeedReadout;
+    juce::Label bloomDiffusionReadout, bloomFeedbackReadout, bloomTimeReadout, bloomIRFeedReadout, bloomVolumeReadout;
 
     PingLookAndFeel pingLook;
     EQGraphComponent eqGraph;
@@ -110,7 +118,8 @@ private:
     juce::Rectangle<int> irControlsGroupBounds; // area above the "IR Controls" knob triple (text + line)
     juce::Rectangle<int> erCrossfadeGroupBounds;   // area above the ER Crossfade pair
     juce::Rectangle<int> tailCrossfadeGroupBounds; // area above the Tail Crossfade pair
-    juce::Rectangle<int> plateGroupBounds;         // area above the Plate triple
+    juce::Rectangle<int> plateGroupBounds;          // area above the Plate group
+    juce::Rectangle<int> bloomGroupBounds;          // area above the Bloom group
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PingEditor)
 };
