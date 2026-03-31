@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 1.9.1 (see `CMakeLists.txt`)
+**Current version:** 1.9.3 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -181,100 +181,133 @@ The **Reverse Trim** handle overlay is drawn on top when Reverse is engaged.
 
 ## UI layout notes
 
-The editor (`PluginEditor.cpp` `resized()`) uses a content-area offset to place the controls in the right 5/6 of the window width and the top 5/6 of the window height, leaving ~20% empty space on the left and bottom (`leftPad = w/6`, `cw = w - leftPad`, `ch = h - h/6`). All proportional constants use `cw`/`ch` rather than `w`/`h`.
+The editor (`PluginEditor.cpp` `resized()`) uses a content-area offset: `leftPad = w/6`, `cw = w - leftPad`, `ch = h - h/6`. All proportional constants use `cw`/`ch`. The window is divided into **left-side rows** (small knobs, left-justified from `rowStartX`) and **right-side rows** (small knobs, right-justified to `b.getRight()`), with a **centre column** for the DRY/WET knob stack.
 
-### Row 1 — IR Input + IR Controls (5 small knobs)
+### Left-side rows (Rows 1–4)
 
-Below the main-area header, `mainArea.removeFromTop(rowTotalH + 4 + groupLabelH)` reserves a strip for five rotary knobs sized at `rowKnobSize = (int)(sixKnobSize * 0.6f)`. They are placed from `rowStartX = max(8, w/128) + 5` with step `rowStep = rowKnobSize + rowGap`. A 5 px extra gap is inserted before knob index 2, splitting the strip into two labelled groups:
+All left-side rows use `rowKnobSize = (int)(sixKnobSize * 0.6f)`, `rowStep = rowKnobSize + rowGap`, and `rowStartX = max(8, w/128) + 5`. Row Y positions use absolute anchors (see Key Design Decisions) to avoid JUCE `removeFromTop` clamping.
 
-- **IR Input** (group header + line): knob 0 = GAIN (`irInputGainSlider`), knob 1 = DRIVE (`irInputDriveSlider`)
-- **IR Controls** (group header + line): knob 2 = PREDELAY, knob 3 = DAMPING, knob 4 = STRETCH
+**Row 1 — IR Input + IR Controls (5 knobs)**
+`mainArea.removeFromTop(rowTotalH + 4 + groupLabelH)` reserves the strip. A 5 px extra gap before index 2 splits into two groups:
+- **IR Input**: knob 0 = GAIN (`irInputGainSlider`), knob 1 = DRIVE (`irInputDriveSlider`)
+- **IR Controls**: knob 2 = PREDELAY, knob 3 = DAMPING, knob 4 = STRETCH
 
-The knobs and both group headers are shifted **−10 px** vertically: `rowY = topKnobRow.getY() + groupLabelH - 10` and both `irInputGroupBounds`/`irControlsGroupBounds` use `topKnobRow.getY() - 10` as their Y origin. This moves the entire Row 1 strip (knobs, readouts, labels, and header text + line) 10 px upward without affecting any other row.
+`rowY = topKnobRow.getY() + groupLabelH - 10 - rowShiftUp` shifts the row 10 px up. Group header bounds: `irInputGroupBounds`, `irControlsGroupBounds`.
 
-Group header bounds are stored as `irInputGroupBounds` and `irControlsGroupBounds` (set in `resized()`, drawn in `paint()` via `drawGroupHeader`).
+**Row 2 — ER Crossfade + Tail Crossfade (4 knobs + 2 pill switches)**
+Same 5 px gap before index 2 splits into two groups:
+- **ER Crossfade**: knob 0 = DELAY, knob 1 = ATT, pill switch `erCrossfeedOnButton`
+- **Tail Crossfade**: knob 2 = DELAY, knob 3 = ATT, pill switch `tailCrossfeedOnButton`
 
-### Row 2 — ER Crossfade + Tail Crossfade (4 small knobs + 2 switches)
+Group header bounds: `erCrossfadeGroupBounds`, `tailCrossfadeGroupBounds`. All controls are live/real-time — no IR recalculation.
 
-Immediately after Row 1, `mainArea.removeFromTop(row2TotalH)` reserves a second strip using the same `rowKnobSize`/`rowStep`/`rowStartX` constants. Same 5 px extra gap before index 2 splits into two groups:
+**Row 3 — Plate pre-diffuser (4 knobs + 1 switch)**
+No extra inter-group gap — single **"Plate pre-diffuser"** group: DIFFUSION, COLOUR, SIZE, IR FEED, pill switch `plateOnButton` right-aligned. Group header bounds: `plateGroupBounds`.
 
-- **ER Crossfade** (group header + line): knob 0 = DELAY (`erCrossfeedDelaySlider`), knob 1 = ATT (`erCrossfeedAttSlider`), pill switch (`erCrossfeedOnButton`) centred below the pair
-- **Tail Crossfade** (group header + line): knob 2 = DELAY (`tailCrossfeedDelaySlider`), knob 3 = ATT (`tailCrossfeedAttSlider`), pill switch (`tailCrossfeedOnButton`) centred below the pair
+**Row 4 — Bloom hybrid (5 knobs + 1 switch)**
+Single **"Bloom hybrid"** group: SIZE, FEEDBACK, TIME, IR FEED, VOLUME, pill switch `bloomOnButton` right-aligned. Group header bounds: `bloomGroupBounds`.
 
-Group header bounds stored as `erCrossfadeGroupBounds` and `tailCrossfadeGroupBounds`. All 6 controls are live/real-time — they do not affect IR synthesis or loading; see [Post-convolution crossfeed](#post-convolution-crossfeed-er-and-tail).
+### Right-side rows (Rows R1–R3)
 
-### Row 3 — Plate pre-diffuser (4 small knobs + 1 switch)
+All right-side rows share `placeRightRowKnob` / `placeR3Knob` lambdas. Knobs are placed right-to-left from `b.getRight()`: `cx = b.getRight() - (4 - idx) * rowStep - rowKnobSize / 2`. The rightmost knob's right edge aligns with `b.getRight()`.
 
-Immediately after Row 2, `mainArea.removeFromTop(row3TotalH)` reserves a third strip using the same constants. **No** extra inter-group gap — all four knobs belong to a single **"Plate pre-diffuser"** group:
+**Row R1 — Cloud multi-LFO (5 knobs + 1 switch)** — vertically aligned with Row 1 (`rowY`).
+Single **"Clouds post convolution"** group: DEPTH, RATE, SIZE, IR FEED, VOLUME, pill switch `cloudOnButton`. Group header Y = `topKnobRow.getY() - 10 - rowShiftUp`. Group header bounds: `cloudGroupBounds`.
 
-- knob 0 = DIFFUSION (`plateDiffusionSlider`), knob 1 = COLOUR (`plateColourSlider`), knob 2 = SIZE (`plateSizeSlider`), knob 3 = IR FEED (`plateIRFeedSlider`), pill switch (`plateOnButton`) right-aligned in the group header
+**Row R2 — Shimmer (5 knobs + 1 switch)** — vertically aligned with Row 2 (`row2KnobY`).
+Single **"Shimmer"** group: PITCH, SIZE, COLOUR, IR FEED, VOLUME, pill switch `shimOnButton`. Group header Y = `row2AbsY - rowShiftUp`. Group header bounds: `shimGroupBounds`.
 
-Group header bounds stored as `plateGroupBounds`. The switch uses component ID `PlateSwitch` and triggers `repaint()` so the header text glows orange when active. All controls are live/real-time — no IR recalculation on any change. Default editor height was increased from 528 → **600 px** to accommodate the new row (`editorH` in `PluginEditor.cpp`; minimum resize limit remains 528).
+**Row R3 — Tail AM mod + Tail Frq mod (5 knobs, no switch)** — vertically aligned with Row 3 (`row3KnobY`).
+A 5 px extra gap before index 2 splits into two groups (mirroring the IR Input / IR Controls split):
+- **Tail AM mod**: knob 0 = LFO DEPTH (`modDepthSlider`), knob 1 = LFO RATE (`modRateSlider`)
+- **Tail Frq mod**: knob 2 = TAIL MOD (`tailModSlider`), knob 3 = DELAY DEPTH (`delayDepthSlider`), knob 4 = RATE (`tailRateSlider`)
 
-### EQ section (bottom of window)
+Formula: `cx = b.getRight() - (4 - idx) * rowStep - rowKnobSize / 2 - (idx < 2 ? 5 : 0)`. Group header Y = `row3AbsY - rowShiftUp`. Group header bounds: `tailAMModGroupBounds`, `tailFrqModGroupBounds`. No toggle pills — these controls are always active.
 
-The `EQGraphComponent` occupies the **bottom-right** of the editor, pinned to the full window bottom edge. Its bounds are set in `PluginEditor::resized()` as:
+These five knobs were previously part of the large-knob grid at the bottom of the UI. They were moved to Row R3 to co-locate modulation controls with the left-side rows they interact with.
+
+### Centre column — DRY/WET stack
+
+The DRY/WET knob and all controls below it are horizontally centred at `w / 2` (the full window centre, not `b`'s centre). Their vertical anchor `cy` is computed from phantom waveform dimensions (see below) plus a +40 px downward offset:
 
 ```cpp
-const int eqTotalH = eqHeight + (h - ch);   // extends into the h/6 bottom margin
-eqGraph.setBounds (eqRect.getX(), eqRect.getY(), eqRect.getWidth(), eqTotalH);
+int cy = phantomWaveCentreY - (dryWetKnobSize + labelH + readoutH + 4 + irComboH + 6) / 2 + 40;
 ```
 
-`eqHeight` is `max(300, 0.45 × ch)`. Adding `(h − ch)` = `h/6` means the component's bottom aligns with the window bottom edge, filling the empty margin strip that the rest of the UI leaves unused.
+From top to bottom, all items derive their X from `dryWetSlider.getBounds().getCentreX()` (= `w/2`) and their Y from `cy` or from the control above:
 
-#### EQGraphComponent layout
+1. **Preset combo** (`presetCombo`): centred at `w/2`, Y = `dryWetSlider.getY() - irComboH - 6`. "Preset" label to the left, Save button to the right.
+2. **DRY/WET knob** (`dryWetSlider`): `dryWetKnobSize = bigKnobSize * 1.05f` (70% of the old size), Y = `cy + 10`.
+3. **IR combo + IR Synth button** (`irCombo`, `irSynthButton`): centred at `w/2`, Y = `irRowY`. "IR preset" label (`irComboLabel`) to the left of the combo.
+4. **Reverse button** (`reverseButton`): right-aligned to the waveform's right edge, immediately below the IR combo.
+5. **Waveform display** (`waveformComponent`): centred at `w/2`, immediately below the reverse button. Size: `wavePanelW = max(165, 0.27f × cw)`, `wavePanelH = max(54, wavePanelW × 0.36f)` — 25% smaller than the old right-column dimensions.
 
-The component is split into two parts by `resized()`:
-
-**Graph area** — the upper portion, sized to whatever remains after the control strip is reserved. Displays: spectrum analyser (lock-free FIFO), grid lines, frequency-response curve (sigmoid approximation for shelves, Gaussian for peaks), and draggable band handles (diamond ◆ for shelf bands, circle ● for peaks). Bands are draggable via `mouseDown`/`mouseDrag` — dragging sets freq+gain in APVTS directly.
-
-**Control strip** — the lower portion, reserved via `b.removeFromBottom(ctrlH - 75)`. Subtracting 75 from `ctrlH` shifts the entire control strip (band-name header + all knobs) 75 px lower than the default `ctrlH` position, and simultaneously extends the chart's bottom edge downward by 75 px. Three horizontal rows, one per parameter type, span all five bands:
-
-| Row | Parameter | Position | Notes |
-|-----|-----------|----------|-------|
-| Row 1 | FREQ | `colCentre` | All 5 freq knobs at the same Y; `freqDX = −10`, `freqDY = −5` (net −10 px X, +70 px Y relative to base, after ctrlArea shift) |
-| Row 2 | GAIN | `colCentre + colW/5 + gainDX` (shifted right), lower Y | `gainDX = +20`, `gainDY = −45` (net +20 px X on top of `gainXOff`, +30 px Y relative to base, after ctrlArea shift) |
-| Row 3 | Q / SLOPE | `colCentre` | `qDX = −10`, `qDY = −65` (net −10 px X, +10 px Y relative to base, after ctrlArea shift) |
-
-The `DY` values are negative because they counteract the +75 px downward shift of `ctrlArea`; the net knob positions are the intended offsets from the row base Y. Do not change `removeFromBottom(ctrlH - 75)` back to `ctrlH` without also adjusting all three `DY` constants by +75.
-
-Under each knob: an **accent-orange value readout** (live, 9 pt) showing the current value (e.g. "400 Hz", "+3.0 dB", "0.71"), then a grey parameter-name label ("FREQ", "GAIN", "Q"/"SLOPE"). Knob size is 42 px. The graph area has its top edge trimmed by 60 px (`b.withTrimmedTop(60)`) to push the visible display down.
-
-Band order (left→right): LOW (low shelf, purple) · MID 1 (peak, blue) · MID 2 (peak, amber) · MID 3 (peak, green) · HIGH (high shelf, red). Band colours are set via `rotarySliderFillColourId` so they pick up the `PingLookAndFeel` dotted-ring style automatically.
-
-#### EQ DSP (PluginProcessor)
-
-Five `ProcessorDuplicator` instances in series: `lowShelfBand → lowBand → midBand → highBand → highShelfBand`. Updated together in `updateEQ()` called from `parameterChanged`. Filter types:
-
-- `lowShelfBand` — `juce::dsp::IIR::Coefficients<float>::makeLowShelf` (b3)
-- `lowBand / midBand / highBand` — `makePeakFilter` (b0 / b1 / b2)
-- `highShelfBand` — `makeHighShelf` (b4)
-
-The slope parameter (`b3q`, `b4q`) maps directly to the S (slope) argument of `makeLowShelf` / `makeHighShelf`. For peak bands the same field is Q.
-
-**Backward compatibility:** the 3-band peak parameters (`b0`, `b1`, `b2`) keep their original IDs and defaults. The new shelf parameters use `b3` (low shelf) and `b4` (high shelf) so existing presets missing these keys default to 0 dB gain (silent shelf = no change).
+**Phantom waveform anchor:** `cy` is derived from `phantomWaveCentreY`, which uses the *old* right-column waveform dimensions (`0.36f × cw` wide) rather than the current smaller waveform. This preserves the DRY/WET knob's visual height even though the waveform has moved and shrunk. Do not replace `phantomWavePanelW/H` with the current `wavePanelW/H` — doing so would shift `cy` and misalign the DRY/WET knob.
 
 ### Wet Output Gain position
 
-Wet Output Gain is positioned to the right of `irKnobsCenterX`, at:
+Wet Output Gain sits to the right of `irKnobsCenterX` at:
 
 ```cpp
-const int outputGainCenterX = irKnobsCenterX + smallKnobSize / 2;
+const int outputGainCenterX = irKnobsCenterX + smallKnobSize / 2 + controlShift;  // controlShift = 50
 const int outputGainY = dryWetCenterY - smallKnobSize - irKnobGap;
 ```
 
-(IR Input Gain and IR Input Drive now live in Row 1 rather than near `irKnobsCenterX`, so `outputGainCenterX` no longer depends on `irInputGainSlider.getRight()`.)
+`dryWetCenterY = cy + dryWetKnobSize / 2` moves with `cy`, so the output gain knob shifts down by 40 px in tandem with the DRY/WET knob.
+
+### P!NG logo
+
+Reduced to 75% of original size: `rightLogoW = min(68, 0.075f × cw)`. Placed horizontally centred in the window top bar:
+
+```cpp
+pingBounds = juce::Rectangle<int> (w / 2 - rightLogoW / 2, topRow.getY() + 2, rightLogoW, topRow.getHeight() - 4);
+```
+
+`topRow.removeFromRight(rightLogoW)` is still called (result discarded) to keep `presetArea`'s width — and therefore `presetCenterX` — unchanged. In `paint()`, the logo is drawn at 2× `pingBounds` size centred on `pingBounds.getCentre()`.
+
+### EQ section (bottom of window)
+
+The `EQGraphComponent` occupies the **bottom-right** of the editor, pinned to the full window bottom edge. Its bounds extend into the `h/6` bottom margin so the knob strip sits flush with the window bottom:
+
+```cpp
+const int eqTotalH = eqHeight + (h - ch);
+eqGraph.setBounds (eqRect.getX(), eqRect.getY(), eqRect.getWidth(), eqTotalH);
+```
+
+`eqHeight = max(225, 0.3375 × ch)` and `eqWidth = max(315, 0.465 × cw)` — both 75% of the former values. The minimum `eqMinH = 225` is sized to fit the 32 px knob strip (estimated `ctrlH ≈ 188`).
+
+#### EQGraphComponent layout
+
+**Graph area** — upper portion; displays spectrum analyser, grid lines, frequency-response curve, and draggable band handles. Top edge trimmed 60 px downward (`b.withTrimmedTop(60)`).
+
+**Control strip** — reserved via `b.removeFromBottom(ctrlH - 75)`. Three rows × five bands:
+
+| Row | Parameter | DX / DY fine-tune | Notes |
+|-----|-----------|-------------------|-------|
+| Row 1 | FREQ | `freqDX = −8`, `freqDY = −5` | DX scaled to 75%; DY unchanged (cancels the −75 ctrlArea shift) |
+| Row 2 | GAIN | `gainDX = +15`, `gainDY = −45` | DX scaled to 75%; DY unchanged |
+| Row 3 | Q / SLOPE | `qDX = −8`, `qDY = −65` | DX scaled to 75%; DY unchanged |
+
+Knob size is **32 px** (was 42 px). All DY constants are intentionally NOT scaled — they cancel the structural `ctrlH - 75` offset, which is independent of knob size. Do not scale DY when changing knob size.
+
+Band order (left→right): LOW (low shelf, purple) · MID 1 (peak, blue) · MID 2 (peak, amber) · MID 3 (peak, green) · HIGH (high shelf, red).
+
+#### EQ DSP (PluginProcessor)
+
+Five `ProcessorDuplicator` instances in series: `lowShelfBand → lowBand → midBand → highBand → highShelfBand`. Updated in `updateEQ()` called from `parameterChanged`. Filter types:
+
+- `lowShelfBand` — `makeLowShelf` (b3); `highShelfBand` — `makeHighShelf` (b4)
+- `lowBand / midBand / highBand` — `makePeakFilter` (b0 / b1 / b2)
+
+**Backward compatibility:** b0–b2 keep their original IDs. b3/b4 default to 0 dB gain so existing presets missing these keys are unaffected.
+
+### Large-knob grid (bottom of left column)
+
+Only **Width** (`widthSlider`) remains in the large-knob grid at `row6AbsY + row6TotalH_ + 70`. LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to Row R3 on the right side.
 
 ### Version label
 
-A `versionLabel` is displayed in the bottom strip, aligned horizontally under the Tail Rate knob. It uses the same font (11 pt) and colour (`textDim`) as the licence label. The text is set from `ProjectInfo::versionString` (auto-generated by JUCE from `CMakeLists.txt`):
-
-```cpp
-versionLabel.setText (juce::String("v") + ProjectInfo::versionString, juce::dontSendNotification);
-versionLabel.setBounds (tailRateSlider.getX(), getHeight() - 20, tailRateSlider.getWidth(), 16);
-```
-
-Because this references `tailRateSlider.getX()`, it must come **after** `tailRateSlider.setBounds()` in `resized()`.
+Displayed in the bottom strip under the Tail Rate knob (`tailRateSlider.getX()`). Must be placed **after** `tailRateSlider.setBounds()` in `resized()`.
 
 ---
 
@@ -914,7 +947,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Waveform display uses dB scale, not linear** — Synthesised IRs are 8× the longest RT60 in length (up to 30 s). On a linear scale the entire tail collapses to a flat line 60+ dB below the onset spike. `dBFloor = −60.0f` maps the full decay range to [0, 1] so all room sizes produce a visible "ski-slope" shape. Do not revert to linear scale. The per-pixel peak-envelope scan (scanning every sample in each pixel's time range) is also essential — stride-based single-sample lookup misses the true peak because each pixel covers hundreds of samples.
 - **Version label is derived from `ProjectInfo::versionString`** — Do not hard-code the version string in `PluginEditor.cpp`. JUCE generates `ProjectInfo::versionString` automatically from `project(Ping VERSION x.y.z)` in `CMakeLists.txt`, so the label is always in sync with the build. Update `CMakeLists.txt` version when cutting a release; do not update `PluginEditor.cpp` separately.
 - **Installer version lives in `Installer/build_installer.sh`** — The package filename/version passed to `pkgbuild` is controlled by the script `VERSION` variable. When cutting a release, bump both `project(Ping VERSION x.y.z)` in `CMakeLists.txt` and `VERSION` in `Installer/build_installer.sh` to keep the generated `.pkg` name/version in sync.
-- **IR Input Gain and IR Input Drive live in Row 1; Wet Output Gain sits near `irKnobsCenterX`** — IR Input Gain (GAIN) and IR Input Drive (DRIVE) were moved to the small-knob Row 1 strip at the top of the main area. Wet Output Gain is now positioned independently at `outputGainCenterX = irKnobsCenterX + smallKnobSize / 2` (it no longer anchors off `irInputGainSlider.getRight()`). `outputGainY = dryWetCenterY − smallKnobSize − irKnobGap` is unchanged. Do not re-introduce the old `irGainShift` formula — it was removed when the gain knobs moved to Row 1.
+- **IR Input Gain and IR Input Drive live in Row 1; Wet Output Gain sits near `irKnobsCenterX`** — IR Input Gain (GAIN) and IR Input Drive (DRIVE) were moved to the small-knob Row 1 strip at the top of the main area. Wet Output Gain is positioned at `outputGainCenterX = irKnobsCenterX + smallKnobSize / 2 + controlShift` (controlShift = 50). `outputGainY = dryWetCenterY − smallKnobSize − irKnobGap` moves with `cy`. Do not re-introduce the old `irGainShift` formula — it was removed when the gain knobs moved to Row 1.
 - **Trailing silence is auto-trimmed from synth IRs at load time** — `synthIR()` allocates `8 × max_RT60` (up to 30 s) but the signal decays to below −80 dB well before the end. `loadIRFromBuffer` trims to the last sample above `peak × 1e-4` plus a 200 ms safety tail (min 300 ms), before saving `rawSynthBuffer`. This keeps the convolvers lean and makes the Reverse Trim handle span actual signal. File-based IRs are not affected. Do not move this trim to after the `rawSynthBuffer` save — `reloadSynthIR()` would then re-introduce silence on every Reverse or Trim interaction.
 - **`loadSelectedIR()` is the single entry point for all IR reloads — never call `loadIRFromFile()` or `reloadSynthIR()` directly from parameter listeners** — `parameterChanged` (Stretch, Decay) and all UI callbacks must go through `loadSelectedIR()`, which routes to `reloadSynthIR()` for synth IRs and `loadIRFromFile()` for file IRs. Bypassing this (e.g. calling `loadIRFromFile(getLastLoadedIRFile())` directly) will clobber any active synth IR because `lastLoadedIRFile` is never cleared when a synth IR is loaded.
 - **Preset and IR save overwrite prompts are selection-based** — Save actions only prompt when the typed name matches the currently selected existing item in the corresponding editable combo (`presetCombo` or IR synth `irCombo`) and the target file already exists. Typing a different name saves directly as a new file. Use async JUCE dialogs (`AlertWindow::showAsync`) in plugin UI; avoid blocking modal loops.
@@ -925,12 +958,12 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Plate `plateColour` is a 1-pole lowpass, not a high-shelf** — A simple 1-pole lowpass applied to the diffused signal before feeding to the convolver. At `colour = 0` the cutoff is 2 kHz (warm, dark — EMT 140 character); at `colour = 1` it is 8 kHz (bright — AMS RMX16 character). Do not replace it with a true biquad shelf — the 1-pole is intentional.
 - **Plate signal path: pre-diffuser into convolver only** — The sample loop processes the input through the allpass cascade + colour LP, stores the result in `plateBuffer`, and adds `plate[i] * irFeed` to the main buffer. The convolver receives the main signal plus the diffused plate signal. There is no direct output path. `plateOn = false` skips the block entirely — zero overhead.
 - **`plateDiffusion` sets g on all 6 stages simultaneously** — The g coefficient is written to all `plateAPs[ch][s].g` once per block before the sample loop. Range 0.30–0.88 keeps the filter stable and well below the unit-circle limit. Lower g = gentle, transparent scatter; higher g = very dense, metallic diffusion. Default 0.40 gives a gentle, transparent scatter suitable for a pre-diffuser.
-- **Default editor height is now 672 px** — bumped from 528 → 600 (Row 3 Plate) → 672 (Row 4 Bloom). The resize minimum (`minH`) remains 528 so users can still shrink the window. Both constants are at the top of the `PingEditor` constructor in `PluginEditor.cpp`.
+- **Default editor height is now 816 px** — bumped from 528 → 600 (Row 3 Plate) → 672 (Row 4 Bloom) → 744 (Row 5 Cloud) → 816 (Row 6 Shimmer). The resize minimum (`minH`) remains 528 so users can still shrink the window. Both constants are at the top of the `PingEditor` constructor in `PluginEditor.cpp`.
 - **EQ is pinned to the window bottom** — `eqGraph.setBounds(x, y, w, eqHeight + (h−ch))` extends the component into the `h/6` bottom margin, so the knob strip sits flush with the window bottom edge. Do not revert to `eqGraph.setBounds(eqRect)` — that clips the control strip at `ch` and leaves a dead strip below.
 - **EQ has 5 bands: low shelf, 3 peaks, high shelf** — DSP order: `lowShelfBand → lowBand → midBand → highBand → highShelfBand` (all `ProcessorDuplicator`). IDs are `b3`/`b0`/`b1`/`b2`/`b4` (b3 and b4 are the shelves; b0–b2 are the original peaks preserved for preset backward-compat). Frequency response in `EQGraphComponent::getResponseAt()` uses a tanh-sigmoid approximation for shelves and a Gaussian for peaks — close enough for display, avoids needing DSP coefficient access at paint time.
-- **EQ control strip uses a row-per-parameter layout** — FREQ knobs all share the same Y (Row 1); GAIN knobs are shifted right by `colW/5 + gainDX` (Row 2, zig-zag); Q/SLOPE knobs return to the FREQ X column below GAIN (Row 3). Each row has independent `DX`/`DY` fine-tuning constants (`freqDX/DY`, `gainDX/DY`, `qDX/DY`) in `EQGraphComponent::resized()`. The control strip is reserved with `removeFromBottom(ctrlH - 75)` — the -75 shifts the entire strip (including the band-name header line) 75 px lower and extends the chart bottom by 75 px; the `DY` constants are set to counteract this shift for the knobs, so net knob positions equal the intended row offsets. Knob size is 42 px. The graph area top is trimmed 60 px downward (`b.withTrimmedTop(60)`). Each knob has an accent-orange live readout above its grey parameter label, updated every timer tick via `updateReadouts()` called from `syncKnobsFromParams()`.
-- **Row Y positions in `PluginEditor` use absolute anchors to avoid JUCE `removeFromTop` clamping** — `removeFromTop(n)` silently clamps `n` to the rectangle's remaining height, so when `mainArea` has shrunk (due to large `eqMinH`) to less than the combined row heights, subsequent rows land in wrong positions. Row 2/3/4 Y positions are computed as `row2AbsY = topKnobRow.getBottom()`, `row3AbsY = row2AbsY + row2TotalH_`, `row4AbsY = row3AbsY + row3TotalH_` — independent of whatever height remains in `mainArea`. All group-header bounds, toggle LED Y positions, and knob Y positions for all rows use these absolute anchors.
-- **The six large knobs (LFO Depth/Rate, Width, Tail Mod, Delay Depth, Tail Rate) are positioned at `row4AbsY + row4TotalH_ + 70`** — the +70 px offset pushes them clear of the Bloom row controls. Do not change this back to `row3AbsY + row3TotalH_ + 70` (pre-Bloom value) — the 6-knob grid must anchor off the last small-knob row.
+- **EQ control strip uses a row-per-parameter layout** — FREQ knobs all share the same Y (Row 1); GAIN knobs are shifted right by `colW/5 + gainDX` (Row 2, zig-zag); Q/SLOPE knobs return to the FREQ X column below GAIN (Row 3). Each row has independent `DX`/`DY` fine-tuning constants (`freqDX/DY`, `gainDX/DY`, `qDX/DY`) in `EQGraphComponent::resized()`. The control strip is reserved with `removeFromBottom(ctrlH - 75)` — the -75 shifts the entire strip 75 px lower and extends the chart bottom by 75 px; the `DY` constants counteract this shift, so net knob positions equal the intended row offsets. Knob size is **32 px** (reduced 25% from 42 px). The `DX` constants were scaled proportionally (`freqDX/qDX: −10→−8`, `gainDX: +20→+15`). The `DY` constants are intentionally NOT scaled — they cancel the structural `ctrlH - 75` offset which is independent of knob size. Do not scale DY when resizing knobs. The graph area top is trimmed 60 px downward. Each knob has an accent-orange live readout above its grey parameter label.
+- **Row Y positions in `PluginEditor` use absolute anchors to avoid JUCE `removeFromTop` clamping** — `removeFromTop(n)` silently clamps `n` to the rectangle's remaining height, so when `mainArea` has shrunk (due to large `eqMinH`) to less than the combined row heights, subsequent rows land in wrong positions. Row 2–6 Y positions are computed as `row2AbsY = topKnobRow.getBottom()`, `row3AbsY = row2AbsY + row2TotalH_`, etc. — independent of whatever height remains in `mainArea`. All group-header bounds, toggle LED Y positions, and knob Y positions for all rows use these absolute anchors. Right-side rows (R1/R2/R3) share the same Y anchors as their corresponding left-side rows (Rows 1/2/3).
+- **Only Width remains in the large-knob grid at `row6AbsY + row6TotalH_ + 70`** — LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3. The +70 px offset below the last small-knob row is unchanged. Do not revert the anchor back to any earlier row.
 - **Bloom has two independent output paths (`bloomIRFeed` and `bloomVolume`), both defaulting to 0** — consistent with `plateIRFeed = 0`. The main signal is not modified by the bloom cascade; only additive injection via `bloomIRFeed` into the convolver and `bloomVolume` into the final output. At both defaults = 0, Bloom has zero effect when switched on.
 - **`bloomBuffer` bridges Insertion 1 (pre-conv) and the post-dry/wet Volume injection within the same processBlock call** — it is not a feedback buffer. Populated at Insertion 1, read after the dry/wet blend. `bloomBuffer.clear()` at the top of Insertion 1 ensures no stale data. A reallocation guard (`if (numSamples > bloomBuffer.getNumSamples())`) handles hosts that exceed `maximumExpectedSamplesPerBlock`.
 - **Bloom feedback tap is written inside Insertion 1's per-sample loop** — immediately after computing `diff` (the cascade output), `bloomFbBufs[ch][wp] = diff` is written and the pointer advanced. The convolved wet signal is **never** written to `bloomFbBufs`. This makes the feedback loop entirely self-contained: Bloom → `bloomFbBufs` → Bloom. The old architecture wrote the post-EQ wet signal to `bloomFbBufs` (old Insertion 3), which put the convolver inside the loop and caused feedback explosions with stereo IRs where the LL convolver path had significantly higher gain than the RL/LR paths.
@@ -946,11 +979,14 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Cloud R-channel decorrelation uses a π phase offset** — all 8 LFO phases for the R channel are offset by π relative to L. This gives free stereo width without any extra DSP: at any given moment L lines are near their maximum delay excursion when R lines are near minimum, and vice versa. No separate delay line set needed (unlike Bloom which uses separate L/R prime arrays).
 - **Cloud has no self-feedback loop** — unlike Bloom, Cloud's delay lines do not feed back into themselves. The only recirculation path is via `cloudIRFeed` → convolver → wet signal → Cloud Insertion 2. The convolver is inherently attenuating for real room IRs, so loop gain < 1 for any physical IR. Very high-gain IR presets with boosted `outputGain` are the only edge case to be aware of.
 - **Cloud `cloudDepth` scales `kCloudBaseDepthMs = 3.0f`** — the maximum ±3 ms swing was chosen to keep modulation below the ~5 ms threshold where pitch variation becomes audible as vibrato on sustained tones. At `cloudDepth = 0` the delay lines are static (no modulation), which gives a comb-filter character rather than shimmer.
-- **Default editor height is now 816 px** — bumped from 672 (Row 4 Bloom) → 744 (Row 5 Cloud) → 816 (Row 6 Shimmer). The resize minimum remains 528. Both constants are at the top of the `PingEditor` constructor.
-- **The six large knobs (LFO Depth/Rate, Width, Tail Mod, Delay Depth, Tail Rate) are now anchored at `row6AbsY + row6TotalH_ + 70`** — updated from `row5AbsY + row5TotalH_ + 70` when Row 6 was added. Do not revert to the Row 5 anchor.
+- **Width is the only remaining large knob in the bottom grid** — LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3 (aligned with Plate / Row 3). The grid anchor `row6AbsY + row6TotalH_ + 70` is unchanged.
 - **Shimmer uses the same 1-block deferred bridge pattern as Cloud** — `shimBuffer` persists between `processBlock` calls. Insertion 2 writes; Insertion 1 of the next block reads. Do not clear `shimBuffer` at block start. `shimLastBlockSize` tracks the previous block's sample count.
 - **Shimmer grain engine matches DSP_07–DSP_09 exactly** — two grains at phase 0 and 0.5, Hann windowed, read pointer advances `pitchRatio` per sample, grain reset snaps to `writePtr − effGrainLen`. Fixed buffers: `kShimGrainLen = 512`, `kShimBufLen = 8192`. The production code must stay in sync with these test specs.
 - **`shimPitch` uses integer NormalisableRange (step=1)** — fractional semitones produce detuned output not aligned to musical intervals. The parameter layout uses `juce::NormalisableRange<float>(-24.f, 24.f, 1.f)`.
 - **`shimIRFeed` defaults to 0.5** — unlike every other IR-feed parameter (Plate, Bloom, Cloud all default to 0), Shimmer defaults to 0.5 so the effect is immediately audible when enabled. This matches expected shimmer plugin UX: you enable it and it shimmers.
 - **`shimColour` is a 1-pole LP on the grain shifter output** — cutoff = `2000 + shimColour × 18000` Hz. Applied per-sample inside Insertion 2 before storing to `shimBuffer`. `shimColourState[ch]` holds the per-channel filter state; reset to zero in `prepareToPlay`.
 - **EQ response curve is display-only** — `getResponseAt()` is an approximation. The actual audio uses JUCE biquad coefficients. The two will not match exactly at steep slopes or very high/low frequencies, but are visually representative for a mixing EQ.
+- **DRY/WET knob is centred at `w / 2` (full window centre, not `b` centre)** — `b` starts at `leftPad = w/6`, so `b.getCentreX() = 7w/12 ≠ w/2`. Using `w/2` ensures the knob, preset combo, IR combo, and waveform are visually centred in the window. The DRY/WET knob size is `bigKnobSize * 1.05f` (70% of the original `1.5f` multiplier). Do not revert to the old relative formula that positioned the knob between `stretchSlider` and `outputGainSlider`.
+- **`cy` uses a phantom waveform anchor — do not replace it with the current waveform dimensions** — `cy` is computed from `phantomWaveCentreY`, which uses the *old* waveform dimensions (`0.36f × cw` wide, not the current `0.27f × cw`). This keeps the DRY/WET knob at the correct visual height. The +40 px offset (`cy + 40`) shifts the entire centre-column stack (preset combo → DRY/WET → IR combo → waveform) downward by 40 px. If you change the +40 offset, all five items move together.
+- **Right-side rows R1/R2/R3 share Y anchors with left-side Rows 1/2/3** — Cloud knobs (R1) use `rowY`; Shimmer knobs (R2) use `row2KnobY`; Tail AM/Frq mod knobs (R3) use `row3KnobY`. Their group header Y positions match their left-side counterparts exactly. The `mainArea.removeFromTop()` calls for Rows 5 and 6 (Cloud/Shimmer) are kept to preserve `mainArea` state even though the actual knob Y values come from the absolute anchors.
+- **Row R3 (Tail AM/Frq mod) uses an extra-gap split identical to Row 1** — `extraGap = (idx < 2) ? 5 : 0` places the gap between the AM pair (idx 0,1) and the Frq triple (idx 2,3,4). The formula `cx = b.getRight() - (4-idx)*rowStep - rowKnobSize/2 - extraGap` keeps the rightmost knob flush with `b.getRight()`. `tailAMModGroupBounds` and `tailFrqModGroupBounds` are stored as member variables and drawn in `paint()` with `drawGroupHeader`. No toggle pills — these are always-active controls.

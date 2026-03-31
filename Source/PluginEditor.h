@@ -41,6 +41,7 @@ private:
     juce::AudioProcessorValueTreeState& apvts;
 
     juce::ComboBox irCombo;
+    juce::Label    irComboLabel;
     juce::ComboBox presetCombo;
     juce::TextButton savePresetButton { "Save" };
     juce::Label presetLabel;
@@ -139,6 +140,8 @@ private:
     juce::Rectangle<int> bloomGroupBounds;           // area above the Bloom group
     juce::Rectangle<int> cloudGroupBounds;           // area above the Cloud group
     juce::Rectangle<int> shimGroupBounds;            // area above the Shimmer group
+    juce::Rectangle<int> tailAMModGroupBounds;       // area above the Tail AM mod pair (right side, Row R3)
+    juce::Rectangle<int> tailFrqModGroupBounds;      // area above the Tail Frq mod triple (right side, Row R3)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PingEditor)
 };

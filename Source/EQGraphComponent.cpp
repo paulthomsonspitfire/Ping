@@ -122,19 +122,19 @@ void EQGraphComponent::setupKnob (juce::Slider& s, int band, int param)
 void EQGraphComponent::resized()
 {
     // ── Layout constants ──────────────────────────────────────────────────────
-    // Knob size chosen to match the main-UI "small knob" (wet output, etc.)
-    static constexpr int knobSz    = 42;   // rotary knob diameter
-    static constexpr int readoutH  = 13;   // live value-readout label height
-    static constexpr int lblH      = 10;   // parameter-name label ("FREQ") height
-    static constexpr int kGap      = 2;    // gap between knob bottom and readout
-    static constexpr int lblGap    = 1;    // gap between readout and param label
-    static constexpr int bandLblH  = 13;   // band-name header height
+    // All size constants scaled to 75% of their original values (25% reduction).
+    static constexpr int knobSz    = 32;   // rotary knob diameter  (was 42)
+    static constexpr int readoutH  = 10;   // live value-readout label height  (was 13)
+    static constexpr int lblH      =  8;   // parameter-name label ("FREQ") height  (was 10)
+    static constexpr int kGap      =  2;   // gap between knob bottom and readout
+    static constexpr int lblGap    =  1;   // gap between readout and param label
+    static constexpr int bandLblH  = 10;   // band-name header height  (was 13)
     // Height of one complete row (knob + readout + label)
     static constexpr int oneRow    = knobSz + kGap + readoutH + lblGap + lblH;
     // Gain row drops an extra amount to create the zig-zag offset
-    static constexpr int gainYShift = 9;
+    static constexpr int gainYShift = 7;   // was 9
     // Vertical gap between successive rows
-    static constexpr int rowGap    = 5;
+    static constexpr int rowGap    = 4;    // was 5
     // Total control-strip height:
     //   header | top-pad | FREQ row | gap | [gain drop] | GAIN row | gap | Q row
     static constexpr int ctrlH = bandLblH + 4
@@ -164,12 +164,13 @@ void EQGraphComponent::resized()
     const int gainRowY = freqRowY - 5 + oneRow + rowGap + gainYShift;   // +5 px absolute
     const int qRowY    = gainRowY + oneRow + rowGap - gainYShift;        // +5 px absolute (follows gain)
 
-    // Per-row fine-tuning offsets (applied on top of the row base positions above)
-    static constexpr int freqDX = -10;  // Freq knobs: 10 px left
+    // Per-row fine-tuning offsets (applied on top of the row base positions above).
+    // DX values scaled to 75%; DY values unchanged — they cancel the fixed -75 ctrlArea shift.
+    static constexpr int freqDX = -8;   // Freq knobs: left offset  (was -10)
     static constexpr int freqDY = -5;   // Freq knobs: +70 intended, -75 to cancel ctrlArea shift
-    static constexpr int gainDX = +20;  // Gain knobs: 20 px right (added to gainXOff)
+    static constexpr int gainDX = +15;  // Gain knobs: right offset  (was +20)
     static constexpr int gainDY = -45;  // Gain knobs: +30 intended, -75 to cancel ctrlArea shift
-    static constexpr int qDX    = -10;  // Q knobs: 10 px left
+    static constexpr int qDX    = -8;   // Q knobs: left offset  (was -10)
     static constexpr int qDY    = -65;  // Q knobs: +10 intended, -75 to cancel ctrlArea shift
 
     for (int i = 0; i < numBands; ++i)

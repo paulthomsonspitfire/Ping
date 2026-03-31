@@ -62,6 +62,12 @@ PingEditor::PingEditor (PingProcessor& p)
     irCombo.setColour (juce::ComboBox::textColourId, textDim);
     irCombo.setColour (juce::ComboBox::arrowColourId, accent);
 
+    addAndMakeVisible (irComboLabel);
+    irComboLabel.setText ("IR preset", juce::dontSendNotification);
+    irComboLabel.setJustificationType (juce::Justification::centredRight);
+    irComboLabel.setColour (juce::Label::textColourId, textDim);
+    irComboLabel.setFont (juce::FontOptions (11.0f));
+
     addAndMakeVisible (presetCombo);
     presetCombo.addListener (this);
     presetCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff2a2a2a));
@@ -547,11 +553,13 @@ void PingEditor::paint (juce::Graphics& g)
         auto pingImg = juce::ImageCache::getFromMemory (BinaryData::ping_logo_png, BinaryData::ping_logo_pngSize);
         if (pingImg.isValid())
         {
+            // Draw at 2× pingBounds size, centred on pingBounds
             const int pw = pingBounds.getWidth() * 2;
             const int ph = pingBounds.getHeight() * 2;
-            auto drawRect = juce::Rectangle<int> (pingBounds.getRight() - pw, pingBounds.getCentreY() - ph / 2, pw, ph);
+            auto drawRect = juce::Rectangle<int> (pingBounds.getCentreX() - pw / 2,
+                                                   pingBounds.getCentreY() - ph / 2, pw, ph);
             g.drawImageWithin (pingImg, drawRect.getX(), drawRect.getY(), drawRect.getWidth(), drawRect.getHeight(),
-                              juce::RectanglePlacement (juce::RectanglePlacement::xRight | juce::RectanglePlacement::yMid));
+                              juce::RectanglePlacement::centred);
         }
     }
 
@@ -589,6 +597,8 @@ void PingEditor::paint (juce::Graphics& g)
     drawGroupHeader (bloomGroupBounds,         "Bloom hybrid",       bloomOnButton.getToggleState());
     drawGroupHeader (cloudGroupBounds,         "Clouds post convolution",    cloudOnButton.getToggleState());
     drawGroupHeader (shimGroupBounds,          "Shimmer",                    shimOnButton.getToggleState());
+    drawGroupHeader (tailAMModGroupBounds,     "Tail AM mod",                false);
+    drawGroupHeader (tailFrqModGroupBounds,    "Tail Frq mod",               false);
 
 }
 
@@ -619,9 +629,9 @@ void PingEditor::resized()
     const int readoutH = juce::jmax (10, (int) (0.022f * ch));
     const int sixRowH = sixKnobSize + labelH + readoutH + (int) (0.01f * ch);
     const int bigKnobSize = juce::jmax (80, juce::jmin (128, (int) (0.15f * cw)));
-    const int dryWetKnobSize = (bigKnobSize * 3) / 2;
-    const int eqMinH = 300;  // must fit the 3-row knob control strip (ctrlH ≈ 246 with 42 px knobs)
-    const int eqHeight = juce::jmax (eqMinH, (int) (0.45f * ch));
+    const int dryWetKnobSize = juce::roundToInt (bigKnobSize * 1.05f);  // 70% of original (3/2 × bigKnobSize)
+    const int eqMinH = 225;  // 75% of 300 — fits the 3-row strip with 32 px knobs (ctrlH ≈ 188)
+    const int eqHeight = juce::jmax (eqMinH, (int) (0.3375f * ch));  // 75% of 0.45
     const int gapV = (int) (0.01f * ch) + (int) (0.008f * ch);
     const int marginV = juce::jmin (12, ch / 38);
     const int availableForMainAndEq = ch - 2 * marginV - topRowH - gapV;
@@ -631,10 +641,15 @@ void PingEditor::resized()
 
     // —— Top row: Spitfire (left) | Preset menu (center, greyed - key menu) | P!NG (right) ——
     auto topRow = b.removeFromTop (topRowH);
-    const int leftLogoW = juce::jmin (150, (int) (0.17f * cw));
-    const int rightLogoW = juce::jmin (90, (int) (0.10f * cw));
+    const int leftLogoW  = juce::jmin (150, (int) (0.17f * cw));
+    const int rightLogoW = juce::jmin (68,  (int) (0.075f * cw));  // 75% of original (25% smaller)
     spitfireBounds = topRow.removeFromLeft (leftLogoW).reduced (2);
-    pingBounds = topRow.removeFromRight (rightLogoW).reduced (2);
+    topRow.removeFromRight (rightLogoW);   // consume right slot so presetArea width is unchanged
+    // Place pingBounds horizontally centred in the window top bar
+    pingBounds = juce::Rectangle<int> (w / 2 - rightLogoW / 2,
+                                       topRow.getY() + 2,
+                                       rightLogoW,
+                                       topRow.getHeight() - 4);
     auto presetArea = topRow.reduced (4);
     const int saveButtonW = 48;
     int presetComboW = juce::jmin ((int) (0.38f * cw), presetArea.getWidth() - saveButtonW - 6);
@@ -653,19 +668,25 @@ void PingEditor::resized()
 
     b.removeFromTop ((int) (0.01f * ch));
 
-    // —— Main block: knobs (left), Dry/Wet + IR combo (centre under preset), Reverse + waveform (right) ——
+    // —— Main block: knobs (left), Dry/Wet + IR combo (centre), waveform below IR combo ——
     auto mainArea = b.removeFromTop (mainHeight);
-    int wavePanelW = juce::jmax (220, (int) (0.36f * cw));
-    int wavePanelH = juce::jmax (72, (int) (wavePanelW * 0.36f));
-    auto rightCol = mainArea.removeFromRight (wavePanelW);
-    auto reverseStrip = rightCol.removeFromTop (juce::jmin (26, rightCol.getHeight() / 4));
-    reverseButton.setBounds (reverseStrip.removeFromRight (juce::jmax (68, (int)(0.075f * cw))).reduced (2));
-    waveformComponent.setBounds (rightCol.getX(), rightCol.getY(), rightCol.getWidth(),
-                                 juce::jmin (wavePanelH, rightCol.getHeight()));
+
+    // Phantom dimensions used only to anchor cy so the DRY/WET knob stays at the same
+    // visual position as it had when the waveform lived in the right column.
+    const int phantomWavePanelW = juce::jmax (220, (int) (0.36f * cw));
+    const int phantomWavePanelH = juce::jmax (72,  (int) (phantomWavePanelW * 0.36f));
+    const int phantomReverseH   = juce::jmin (26,  mainHeight / 4);
+
+    // Actual waveform: 25 % smaller than the phantom dimensions.
+    int wavePanelW = juce::jmax (165, (int) (0.27f * cw));
+    int wavePanelH = juce::jmax (54,  (int) (wavePanelW * 0.36f));
 
     int irComboH = 24;
     int irComboW = juce::jmin ((int) (0.24f * cw), bigKnobSize + 40);
-    int cy = waveformComponent.getBounds().getCentreY() - (dryWetKnobSize + labelH + readoutH + 4 + irComboH + 6) / 2;
+    // cy anchors the DRY/WET knob at the same visual height as before (where the waveform
+    // centre used to be when the waveform lived in the right column).
+    const int phantomWaveCentreY = mainArea.getY() + phantomReverseH + phantomWavePanelH / 2;
+    int cy = phantomWaveCentreY - (dryWetKnobSize + labelH + readoutH + 4 + irComboH + 6) / 2 + 40;
     const int smallKnobSize = sixKnobSize / 2;
     const int dryWetCenterY = cy + dryWetKnobSize / 2;
     const int irKnobGap = 6;
@@ -682,12 +703,9 @@ void PingEditor::resized()
 
     // irInputGain and irInputDrive are now placed in the top row below the main area start — see row placement below
 
-    // IR combo + IR Synth: align IR Synth right edge with waveform left edge (needed for output gain placement)
     const int irSynthW = 64;
     const int irGap = 6;
-    int irSynthX = waveformComponent.getX() - irSynthW;
-    int irComboX = irSynthX - irGap - irComboW;
-    int irRowY = cy + 10 + dryWetKnobSize + 2 + readoutH + 6 + labelH;  // derived from DRY/WET knob bottom (+10 down offset)
+    int irRowY = cy + 10 + dryWetKnobSize + 2 + readoutH + 6 + labelH;  // just below the DRY/WET readout
 
     // Wet Output: centred to the right of irKnobsCenterX, shifted right by controlShift
     const int controlShift = 50;
@@ -756,24 +774,36 @@ void PingEditor::resized()
         stretchSlider.getRight() - predelaySlider.getX(),
         groupLabelH);
 
-    // Place DRY/WET knob halfway between IR stretch and wet output controls (150% of bigKnobSize),
-    // shifted right by controlShift (same offset applied to wet output above).
+    // Place DRY/WET knob horizontally centred in the window, vertically at cy + 10.
     {
-        const int dryWetStretchCX  = stretchSlider.getBounds().getCentreX();
-        const int dryWetNaturalCX  = (dryWetStretchCX + outputGainCenterX - controlShift) / 2;
-        const int dryWetCenterX    = dryWetNaturalCX + controlShift;
+        const int dryWetCenterX = w / 2;
         dryWetSlider.setBounds  (dryWetCenterX - dryWetKnobSize / 2, cy + 10, dryWetKnobSize, dryWetKnobSize);
         dryWetLabel.setBounds   (0, 0, 0, 0);
         dryWetReadout.setBounds (dryWetSlider.getX(), dryWetSlider.getBottom() + 2, dryWetKnobSize, readoutH);
     }
 
-    // Place IR combo + IR Synth button centred under the DRY/WET knob
+    // Place IR combo + IR Synth button centred under the DRY/WET knob,
+    // then waveform + reverse button centred below the combo.
     {
         const int irTotalW  = irComboW + irGap + irSynthW;
         const int irComboXu = dryWetSlider.getBounds().getCentreX() - irTotalW / 2;
         const int irSynthXu = irComboXu + irComboW + irGap;
-        irCombo.setBounds      (irComboXu, irRowY, irComboW, irComboH);
+        irCombo.setBounds       (irComboXu, irRowY, irComboW, irComboH);
         irSynthButton.setBounds (irSynthXu, irRowY, irSynthW, irComboH);
+        // "IR preset" label to the left of the combo, matching the Preset label style
+        const int irCLabelW = 52;
+        irComboLabel.setBounds (irComboXu - irCLabelW - 4, irRowY, irCLabelW, irComboH);
+
+        // Waveform + reverse button: centred horizontally under the IR combo
+        const int waveCentreX  = irCombo.getBounds().getCentreX();
+        const int waveGroupTopY = irRowY + irComboH + 8;
+        const int revBtnW = juce::jmax (68, (int)(0.075f * cw));
+        const int revBtnH = 22;
+        reverseButton.setBounds (waveCentreX + wavePanelW / 2 - revBtnW,
+                                 waveGroupTopY, revBtnW, revBtnH);
+        waveformComponent.setBounds (waveCentreX - wavePanelW / 2,
+                                     waveGroupTopY + revBtnH + 2,
+                                     wavePanelW, wavePanelH);
     }
 
     // Reposition preset combo centred above DRY/WET knob, same size as IR combo,
@@ -895,105 +925,106 @@ void PingEditor::resized()
         bloomOnButton.setBounds (bloomGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
-    // —— Row 5: Cloud multi-LFO (depth, rate, size, IR feed, volume) + on/off toggle ——
+    // —— Rows 5 & 6: Cloud and Shimmer — right side, right-justified ——
+    // Cloud aligns vertically with Row 1 (IR Input / Controls); rowY is the knob Y for Row 1.
+    // Shimmer aligns vertically with Row 2 (ER / Tail Crossfade); row2KnobY is that knob Y.
+    // Rightmost knob's right edge aligns with b.getRight().
     const int row5TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     auto row5Area = mainArea.removeFromTop (row5TotalH);
     (void) row5Area;
-    const int row5KnobY = row5AbsY + groupLabelH - rowShiftUp;
+    const int row6TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
+    auto row6Area = mainArea.removeFromTop (row6TotalH);
+    (void) row6Area;
 
-    auto placeRow5Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
+    // Shared lambda: idx 0 = leftmost, idx 4 = rightmost; right edge of idx 4 = b.getRight()
+    auto placeRightRowKnob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout,
+                                  int idx, int knobY)
     {
-        const int cx = rowStartX + rowKnobSize / 2 + idx * rowStep;
-        s.setBounds    (cx - rowKnobSize / 2, row5KnobY,                   rowKnobSize, rowKnobSize);
-        lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,           rowLabelW,   labelH);
-        rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,  rowLabelW,   readoutH);
+        const int cx = b.getRight() - (4 - idx) * rowStep - rowKnobSize / 2;
+        s.setBounds    (cx - rowKnobSize / 2, knobY,                        rowKnobSize, rowKnobSize);
+        lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,            rowLabelW,   labelH);
+        rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,   rowLabelW,   readoutH);
     };
-    placeRow5Knob (cloudDepthSlider,  cloudDepthLabel,  cloudDepthReadout,  0);
-    placeRow5Knob (cloudRateSlider,   cloudRateLabel,   cloudRateReadout,   1);
-    placeRow5Knob (cloudSizeSlider,   cloudSizeLabel,   cloudSizeReadout,   2);
-    placeRow5Knob (cloudIRFeedSlider, cloudIRFeedLabel, cloudIRFeedReadout, 3);
-    placeRow5Knob (cloudVolumeSlider, cloudVolumeLabel, cloudVolumeReadout, 4);
+
+    // Cloud — vertically level with Row 1
+    placeRightRowKnob (cloudDepthSlider,  cloudDepthLabel,  cloudDepthReadout,  0, rowY);
+    placeRightRowKnob (cloudRateSlider,   cloudRateLabel,   cloudRateReadout,   1, rowY);
+    placeRightRowKnob (cloudSizeSlider,   cloudSizeLabel,   cloudSizeReadout,   2, rowY);
+    placeRightRowKnob (cloudIRFeedSlider, cloudIRFeedLabel, cloudIRFeedReadout, 3, rowY);
+    placeRightRowKnob (cloudVolumeSlider, cloudVolumeLabel, cloudVolumeReadout, 4, rowY);
 
     cloudGroupBounds = juce::Rectangle<int> (
         cloudDepthSlider.getX(),
-        row5AbsY - rowShiftUp,
+        topKnobRow.getY() - 10 - rowShiftUp,
         cloudVolumeSlider.getRight() - cloudDepthSlider.getX(),
         groupLabelH);
     {
         const int ledH = groupLabelH - 4;
         const int ledW = ledH * 2;
-        const int ledY = row5AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
+        const int ledY = cloudGroupBounds.getY() + (groupLabelH - ledH) / 2;
         cloudOnButton.setBounds (cloudGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
-    // —— Row 6: Shimmer (pitch, size, colour, IR feed, volume) + on/off toggle ——
-    const int row6TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
-    auto row6Area = mainArea.removeFromTop (row6TotalH);
-    (void) row6Area;
-    const int row6KnobY = row6AbsY + groupLabelH - rowShiftUp;
-
-    auto placeRow6Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
-    {
-        const int cx = rowStartX + rowKnobSize / 2 + idx * rowStep;
-        s.setBounds    (cx - rowKnobSize / 2, row6KnobY,                   rowKnobSize, rowKnobSize);
-        lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,           rowLabelW,   labelH);
-        rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,  rowLabelW,   readoutH);
-    };
-    placeRow6Knob (shimPitchSlider,  shimPitchLabel,  shimPitchReadout,  0);
-    placeRow6Knob (shimSizeSlider,   shimSizeLabel,   shimSizeReadout,   1);
-    placeRow6Knob (shimColourSlider, shimColourLabel, shimColourReadout, 2);
-    placeRow6Knob (shimIRFeedSlider, shimIRFeedLabel, shimIRFeedReadout, 3);
-    placeRow6Knob (shimVolumeSlider, shimVolumeLabel, shimVolumeReadout, 4);
+    // Shimmer — vertically level with Row 2
+    placeRightRowKnob (shimPitchSlider,  shimPitchLabel,  shimPitchReadout,  0, row2KnobY);
+    placeRightRowKnob (shimSizeSlider,   shimSizeLabel,   shimSizeReadout,   1, row2KnobY);
+    placeRightRowKnob (shimColourSlider, shimColourLabel, shimColourReadout, 2, row2KnobY);
+    placeRightRowKnob (shimIRFeedSlider, shimIRFeedLabel, shimIRFeedReadout, 3, row2KnobY);
+    placeRightRowKnob (shimVolumeSlider, shimVolumeLabel, shimVolumeReadout, 4, row2KnobY);
 
     shimGroupBounds = juce::Rectangle<int> (
         shimPitchSlider.getX(),
-        row6AbsY - rowShiftUp,
+        row2AbsY - rowShiftUp,
         shimVolumeSlider.getRight() - shimPitchSlider.getX(),
         groupLabelH);
     {
         const int ledH = groupLabelH - 4;
         const int ledW = ledH * 2;
-        const int ledY = row6AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
+        const int ledY = shimGroupBounds.getY() + (groupLabelH - ledH) / 2;
         shimOnButton.setBounds (shimGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
-    // —— Remaining 6 knobs (grid): LFO Depth | Width | LFO Rate | Tail Mod | Delay Depth | Rate ——
-    // Positioned 70 px below the bottom of row 6, using the same absolute-Y strategy as the rows.
-    int y = row6AbsY + row6TotalH_ + 70;
+    // —— Row R3 (right side): Tail AM mod (LFO Depth, LFO Rate) | Tail Frq mod (Tail Mod, Delay Depth, Rate) ——
+    // Vertically aligned with Row 3 (Plate pre-diffuser).  5 px extra gap splits the two groups,
+    // mirroring the IR Input / IR Controls split on the left side.
+    // idx 0,1 = Tail AM mod;  idx 2,3,4 = Tail Frq mod.  Right edge of idx 4 = b.getRight().
+    {
+        auto placeR3Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
+        {
+            const int extraGap = (idx < 2) ? 5 : 0;   // extra gap to the left of the AM pair
+            const int cx = b.getRight() - (4 - idx) * rowStep - rowKnobSize / 2 - extraGap;
+            s.setBounds    (cx - rowKnobSize / 2, row3KnobY,                     rowKnobSize, rowKnobSize);
+            lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,             rowLabelW,   labelH);
+            rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,    rowLabelW,   readoutH);
+        };
+        placeR3Knob (modDepthSlider,    modDepthLabel,    modDepthReadout,    0);
+        placeR3Knob (modRateSlider,     modRateLabel,     modRateReadout,     1);
+        placeR3Knob (tailModSlider,     tailModLabel,     tailModReadout,     2);
+        placeR3Knob (delayDepthSlider,  delayDepthLabel,  delayDepthReadout,  3);
+        placeR3Knob (tailRateSlider,    tailRateLabel,    tailRateReadout,    4);
 
-    modDepthSlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
-    modDepthLabel.setBounds  (x1, y + sixKnobSize + 2,          sixKnobSize, labelH);
-    modDepthReadout.setBounds(x1, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
+        const int headerY = row3AbsY - rowShiftUp;
+        tailAMModGroupBounds = juce::Rectangle<int> (
+            modDepthSlider.getX(), headerY,
+            modRateSlider.getRight() - modDepthSlider.getX(), groupLabelH);
+        tailFrqModGroupBounds = juce::Rectangle<int> (
+            tailModSlider.getX(), headerY,
+            tailRateSlider.getRight() - tailModSlider.getX(), groupLabelH);
+    }
+
+    // —— Remaining large knob: Width ——
+    // LFO Depth/Rate and Tail Mod/Delay Depth/Rate have moved to the right-side Row R3 above.
+    int y = row6AbsY + row6TotalH_ + 70;
 
     widthSlider.setBounds    (x2, y, sixKnobSize, sixKnobSize);
     widthLabel.setBounds     (x2, y + sixKnobSize + 2,          sixKnobSize, labelH);
     widthReadout.setBounds   (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
-    y += sixRowH;
-
-    modRateSlider.setBounds  (x2, y, sixKnobSize, sixKnobSize);
-    modRateLabel.setBounds   (x2, y + sixKnobSize + 2,          sixKnobSize, labelH);
-    modRateReadout.setBounds (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
-
-    y = row6AbsY + row6TotalH_ + 70;
-    tailModSlider.setBounds  (x3, y, sixKnobSize, sixKnobSize);
-    tailModLabel.setBounds   (x3, y + sixKnobSize + 2,          sixKnobSize, labelH);
-    tailModReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
-    y += sixRowH;
-
-    delayDepthSlider.setBounds  (x3, y, sixKnobSize, sixKnobSize);
-    delayDepthLabel.setBounds   (x3, y + sixKnobSize + 2,          sixKnobSize, labelH);
-    delayDepthReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
-    y += sixRowH;
-
-    tailRateSlider.setBounds  (x3, y, sixKnobSize, sixKnobSize);
-    tailRateLabel.setBounds   (x3, y + sixKnobSize + 2,          sixKnobSize, labelH);
-    tailRateReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
 
     b.removeFromTop ((int) (0.008f * ch));
 
     // —— ER/Tail sliders: between waveform and EQ, within waveform width, side by side ——
     auto erTailRow = b.removeFromTop (erTailRowH);
-    int sliderAreaX = erTailRow.getX() + erTailRow.getWidth() - wavePanelW;  // align with waveform
+    int sliderAreaX = waveformComponent.getX();  // align left edge with waveform
     int sliderAreaW = wavePanelW;
     int sliderH = 18;
     int labelW = 28;
@@ -1012,7 +1043,7 @@ void PingEditor::resized()
     tailLevelReadout.setBounds (tailLevelSlider.getRight() + gap, erTailRow.getY(), readoutW, sliderH);
 
     // —— Bottom: EQ (right) — extends into the h/6 bottom margin strip ——
-    int eqWidth = juce::jmax (420, (int) (0.62f * cw));
+    int eqWidth = juce::jmax (315, (int) (0.465f * cw));  // 75% of original (420→315, 0.62→0.465)
     auto bottomRow = b.removeFromBottom (eqHeight);
     auto eqRect = bottomRow.removeFromRight (eqWidth);
     // Expand the EQ component downward to fill the unused h/6 window margin,
