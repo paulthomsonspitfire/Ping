@@ -46,6 +46,13 @@ namespace IDs
     static const juce::String bloomTime       { "bloomTime" };
     static const juce::String bloomIRFeed     { "bloomIRFeed" };
     static const juce::String bloomVolume     { "bloomVolume" };
+    // Cloud Multi-LFO
+    static const juce::String cloudOn         { "cloudOn" };
+    static const juce::String cloudDepth      { "cloudDepth" };
+    static const juce::String cloudRate       { "cloudRate" };
+    static const juce::String cloudSize       { "cloudSize" };
+    static const juce::String cloudVolume     { "cloudVolume" };
+    static const juce::String cloudIRFeed     { "cloudIRFeed" };
 }
 
 static juce::File getLicenceDirectory()
@@ -258,6 +265,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomTime,      "Bloom Time",       50.0f, 500.0f, 200.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomIRFeed,    "Bloom IR Feed",    0.0f, 1.0f,   0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomVolume,    "Bloom Volume",     0.0f, 1.0f,   0.0f));
+    // Cloud Multi-LFO
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::cloudOn,     "Cloud On",      false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudDepth,  "Cloud Depth",   0.0f,  1.0f,  0.3f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudRate,   "Cloud Rate",    0.1f,  4.0f,  1.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudSize,   "Cloud Size",    1.0f,  40.0f, 5.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudVolume, "Cloud Volume",  0.0f,  1.0f,  0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudIRFeed, "Cloud IR Feed", 0.0f,  1.0f,  0.0f));
     return layout;
 }
 
@@ -369,6 +383,30 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     }
     bloomBuffer.setSize (2, samplesPerBlock);
     bloomBuffer.clear();
+
+    // Cloud Multi-LFO: 8 LFO-modulated delay lines on the wet reverb tail.
+    // Geometric rate spacing: 0.04–0.35 Hz over 8 lines → no rational beat frequencies.
+    {
+        const double rBase        = 0.04;   // Hz
+        const double rTop         = 0.35;   // Hz
+        const double k            = std::pow (rTop / rBase, 1.0 / (kNumCloudLines - 1));
+        const int    cloudBufSamps = (int)std::ceil (kCloudBufMs * sampleRate / 1000.0);
+
+        for (int line = 0; line < kNumCloudLines; ++line)
+        {
+            const double rHz        = rBase * std::pow (k, line);
+            cloudLfoBaseRates[line] = (float)(2.0 * juce::MathConstants<double>::pi * rHz / sampleRate);
+            cloudLfoPhases[line]    = (float)(line * 0.7854);   // π/4 stagger
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                cloudBufs[ch][line].assign ((size_t)cloudBufSamps, 0.f);
+                cloudWritePtrs[ch][line] = 0;
+            }
+        }
+        cloudBuffer.setSize (2, samplesPerBlock);
+        cloudBuffer.clear();
+        cloudLastBlockSize = 0;
+    }
 
     updateGains();
     updatePredelay();
@@ -580,6 +618,27 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         // bloomBuffer not needed this block — zero it so post-convolution injection is silent
         if (numSamples <= bloomBuffer.getNumSamples())
             bloomBuffer.clear();
+    }
+
+    // ——————————————————————————————————————————————————————————————————
+    // Cloud Insertion 1: IR feed — inject previous block's Cloud output into convolver input.
+    // cloudBuffer still holds block N-1's output at this point in block N; it will be
+    // overwritten by Insertion 2 later in this same block.
+    // ——————————————————————————————————————————————————————————————————
+    if (apvts.getRawParameterValue (IDs::cloudOn)->load() > 0.5f)
+    {
+        const float irFeed = apvts.getRawParameterValue (IDs::cloudIRFeed)->load();
+        if (irFeed > 0.f && cloudLastBlockSize > 0)
+        {
+            const int injectN = std::min (numSamples, cloudLastBlockSize);
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                float*       data = buffer.getWritePointer (ch);
+                const float* prev = cloudBuffer.getReadPointer (ch);
+                for (int i = 0; i < injectN; ++i)
+                    data[i] += prev[i] * irFeed;
+            }
+        }
     }
 
     float erDb = apvts.getRawParameterValue (IDs::erLevel)->load();
@@ -819,6 +878,81 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                 buffer.setSample (ch, i, wetVal * (1.0f - tailAmt) + delayed * tailAmt);
             }
         }
+    }
+
+    // ——————————————————————————————————————————————————————————————————
+    // Cloud Insertion 2: run wet signal through 8-line LFO delay bank.
+    // Stores result in cloudBuffer (bridge to next block's Insertion 1 for IR feed).
+    // Adds cloudBuffer × cloudVolume additively to the wet signal.
+    // ——————————————————————————————————————————————————————————————————
+    if (apvts.getRawParameterValue (IDs::cloudOn)->load() > 0.5f)
+    {
+        const float depth   = apvts.getRawParameterValue (IDs::cloudDepth)->load();
+        const float rate    = juce::jlimit (0.1f, 4.0f,
+                                  apvts.getRawParameterValue (IDs::cloudRate)->load());
+        const float sizeMs  = juce::jlimit (1.f, kCloudSizeMaxMs,
+                                  apvts.getRawParameterValue (IDs::cloudSize)->load());
+        const float volume  = apvts.getRawParameterValue (IDs::cloudVolume)->load();
+
+        if (numSamples > cloudBuffer.getNumSamples())
+            cloudBuffer.setSize (2, numSamples, false, true, true);
+        cloudBuffer.clear();
+
+        const float maxDepthSamps = kCloudBaseDepthMs * depth * (float)currentSampleRate / 1000.f;
+        const float sizeSamps     = sizeMs * (float)currentSampleRate / 1000.f;
+        const int   bufSamps      = (int)cloudBufs[0][0].size();
+
+        for (int i = 0; i < numSamples; ++i)
+        {
+            // Advance all 8 LFO phases once per sample
+            for (int line = 0; line < kNumCloudLines; ++line)
+            {
+                cloudLfoPhases[line] += cloudLfoBaseRates[line] * rate;
+                if (cloudLfoPhases[line] > 2.f * juce::MathConstants<float>::pi)
+                    cloudLfoPhases[line] -= 2.f * juce::MathConstants<float>::pi;
+            }
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                // R channel: π phase offset on all LFOs for stereo decorrelation
+                const float phaseOff = (ch == 1) ? juce::MathConstants<float>::pi : 0.f;
+                const float input    = buffer.getSample (ch, i);
+
+                float lineSum = 0.f;
+                for (int line = 0; line < kNumCloudLines; ++line)
+                {
+                    auto&     buf = cloudBufs[ch][line];
+                    const int wp  = cloudWritePtrs[ch][line];
+
+                    buf[(size_t)wp] = input;
+
+                    const float mod       = maxDepthSamps * std::sin (cloudLfoPhases[line] + phaseOff);
+                    const float baseDelay = sizeSamps + maxDepthSamps + 1.f;   // centre + headroom
+                    float       readPos   = (float)wp - baseDelay - mod;
+                    int         rInt      = (int)std::floor (readPos);
+                    const float rFrac     = readPos - (float)rInt;
+                    rInt    = ((rInt % bufSamps) + bufSamps) % bufSamps;
+                    const int rInt1 = (rInt + 1) % bufSamps;
+
+                    lineSum += buf[(size_t)rInt] * (1.f - rFrac) + buf[(size_t)rInt1] * rFrac;
+
+                    cloudWritePtrs[ch][line] = (wp + 1) % bufSamps;
+                }
+
+                const float cloudOut = lineSum / (float)kNumCloudLines;
+                cloudBuffer.setSample (ch, i, cloudOut);   // bridge to next-block IR feed
+
+                if (volume > 0.f)
+                    buffer.setSample (ch, i, input + cloudOut * volume);
+            }
+        }
+        cloudLastBlockSize = numSamples;
+    }
+    else
+    {
+        // Cloud off: clear bridge buffer so next block's Insertion 1 injects silence
+        cloudBuffer.clear();
+        cloudLastBlockSize = 0;
     }
 
     // Wet output gain (boost/cut the whole wet signal, like input gain for output)

@@ -5,7 +5,7 @@
 namespace
 {
     constexpr int editorW = 1104;
-    constexpr int editorH = 672;
+    constexpr int editorH = 744;
     constexpr int minW = 864;
     constexpr int minH = 528;
     constexpr int maxW = 1920;
@@ -270,6 +270,17 @@ PingEditor::PingEditor (PingProcessor& p)
         bloomOnButton.onClick = [this] { repaint(); };
     }
 
+    // Cloud row knobs (row 5 — same accent style)
+    for (auto* s : { &cloudDepthSlider, &cloudRateSlider, &cloudSizeSlider,
+                     &cloudIRFeedSlider, &cloudVolumeSlider })
+        makeSlider (*s, "");
+    {
+        addAndMakeVisible (cloudOnButton);
+        cloudOnButton.setButtonText ("");
+        cloudOnButton.setComponentID ("CloudSwitch");
+        cloudOnButton.onClick = [this] { repaint(); };
+    }
+
     dryWetSlider.setRange (0.0, 1.0, 0.01);
     predelaySlider.setRange (0.0, 500.0, 1.0);
     decaySlider.setRange (0.0, 1.0, 0.01);
@@ -298,6 +309,11 @@ PingEditor::PingEditor (PingProcessor& p)
     bloomTimeSlider.setRange      (50.0, 500.0, 1.0);
     bloomIRFeedSlider.setRange    (0.0,  1.0,  0.01);
     bloomVolumeSlider.setRange    (0.0,  1.0,  0.01);
+    cloudDepthSlider.setRange  (0.0,  1.0,  0.01);
+    cloudRateSlider.setRange   (0.1,  4.0,  0.01);
+    cloudSizeSlider.setRange   (1.0, 40.0,  0.1);
+    cloudIRFeedSlider.setRange (0.0,  1.0,  0.01);
+    cloudVolumeSlider.setRange (0.0,  1.0,  0.01);
 
     dryWetAttach    = std::make_unique<SliderAttachment> (apvts, "drywet",   dryWetSlider);
     predelayAttach  = std::make_unique<SliderAttachment> (apvts, "predelay", predelaySlider);
@@ -331,6 +347,12 @@ PingEditor::PingEditor (PingProcessor& p)
     bloomIRFeedAttach    = std::make_unique<SliderAttachment> (apvts, "bloomIRFeed",    bloomIRFeedSlider);
     bloomVolumeAttach    = std::make_unique<SliderAttachment> (apvts, "bloomVolume",    bloomVolumeSlider);
     bloomOnAttach        = std::make_unique<ButtonAttachment> (apvts, "bloomOn",        bloomOnButton);
+    cloudDepthAttach  = std::make_unique<SliderAttachment> (apvts, "cloudDepth",  cloudDepthSlider);
+    cloudRateAttach   = std::make_unique<SliderAttachment> (apvts, "cloudRate",   cloudRateSlider);
+    cloudSizeAttach   = std::make_unique<SliderAttachment> (apvts, "cloudSize",   cloudSizeSlider);
+    cloudIRFeedAttach = std::make_unique<SliderAttachment> (apvts, "cloudIRFeed", cloudIRFeedSlider);
+    cloudVolumeAttach = std::make_unique<SliderAttachment> (apvts, "cloudVolume", cloudVolumeSlider);
+    cloudOnAttach     = std::make_unique<ButtonAttachment> (apvts, "cloudOn",     cloudOnButton);
 
     setLookAndFeel (&pingLook);
 
@@ -344,7 +366,9 @@ PingEditor::PingEditor (PingProcessor& p)
                         &tailCrossfeedDelayLabel, &tailCrossfeedAttLabel,
                         &plateDiffusionLabel, &plateColourLabel, &plateSizeLabel, &plateIRFeedLabel,
                         &bloomSizeLabel, &bloomFeedbackLabel, &bloomTimeLabel,
-                        &bloomIRFeedLabel, &bloomVolumeLabel })
+                        &bloomIRFeedLabel, &bloomVolumeLabel,
+                        &cloudDepthLabel, &cloudRateLabel, &cloudSizeLabel,
+                        &cloudIRFeedLabel, &cloudVolumeLabel })
     {
         addAndMakeVisible (label);
         label->setJustificationType (juce::Justification::centred);
@@ -381,6 +405,11 @@ PingEditor::PingEditor (PingProcessor& p)
     bloomTimeLabel.setText      ("TIME",      juce::dontSendNotification);
     bloomIRFeedLabel.setText    ("IR FEED",   juce::dontSendNotification);
     bloomVolumeLabel.setText    ("VOLUME",    juce::dontSendNotification);
+    cloudDepthLabel.setText  ("DEPTH",   juce::dontSendNotification);
+    cloudRateLabel.setText   ("RATE",    juce::dontSendNotification);
+    cloudSizeLabel.setText   ("SIZE",    juce::dontSendNotification);
+    cloudIRFeedLabel.setText ("IR FEED", juce::dontSendNotification);
+    cloudVolumeLabel.setText ("VOLUME",  juce::dontSendNotification);
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
@@ -391,7 +420,9 @@ PingEditor::PingEditor (PingProcessor& p)
                      &tailCrossfeedDelayReadout, &tailCrossfeedAttReadout,
                      &plateDiffusionReadout, &plateColourReadout, &plateSizeReadout, &plateIRFeedReadout,
                      &bloomSizeReadout, &bloomFeedbackReadout, &bloomTimeReadout,
-                     &bloomIRFeedReadout, &bloomVolumeReadout })
+                     &bloomIRFeedReadout, &bloomVolumeReadout,
+                     &cloudDepthReadout, &cloudRateReadout, &cloudSizeReadout,
+                     &cloudIRFeedReadout, &cloudVolumeReadout })
     {
         addAndMakeVisible (r);
         r->setJustificationType (juce::Justification::centred);
@@ -519,6 +550,7 @@ void PingEditor::paint (juce::Graphics& g)
     drawGroupHeader (tailCrossfadeGroupBounds, "Tail Crossfade", tailCrossfeedOnButton.getToggleState());
     drawGroupHeader (plateGroupBounds,         "Plate pre-diffuser", plateOnButton.getToggleState());
     drawGroupHeader (bloomGroupBounds,         "Bloom hybrid",       bloomOnButton.getToggleState());
+    drawGroupHeader (cloudGroupBounds,         "Cloud multi-LFO",    cloudOnButton.getToggleState());
 
 }
 
@@ -640,10 +672,11 @@ void PingEditor::resized()
     const int rowGap       = juce::jmax (6,  (int)(0.008f * cw));
     const int groupLabelH  = 14;   // height reserved for "IR Input" text + line above knobs 0-1
     const int rowTotalH    = rowKnobSize + labelH + readoutH + 6;
-    // Hoist row 2/3/4 heights here so they can be used to compute absolute Y anchors below
+    // Hoist row 2/3/4/5 heights here so they can be used to compute absolute Y anchors below
     const int row2TotalH_  = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     const int row3TotalH_  = row2TotalH_;   // identical formula
     const int row4TotalH_  = row2TotalH_;   // identical formula
+    const int row5TotalH_  = row2TotalH_;   // identical formula
     auto topKnobRow = mainArea.removeFromTop (rowTotalH + 4 + groupLabelH);
     const int rowY       = topKnobRow.getY() + groupLabelH - 10;  // knobs sit below the group header (-10 px offset)
 
@@ -655,6 +688,7 @@ void PingEditor::resized()
     const int row2AbsY = topKnobRow.getBottom();
     const int row3AbsY = row2AbsY + row2TotalH_;
     const int row4AbsY = row3AbsY + row3TotalH_;
+    const int row5AbsY = row4AbsY + row4TotalH_;
     const int rowStep    = rowKnobSize + rowGap;
     const int rowStartX  = juce::jmax (8, w / 128) + 5;     // 5 px right of the window edge margin
 
@@ -790,9 +824,40 @@ void PingEditor::resized()
         bloomOnButton.setBounds (bloomGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
+    // —— Row 5: Cloud multi-LFO (depth, rate, size, IR feed, volume) + on/off toggle ——
+    const int row5TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
+    auto row5Area = mainArea.removeFromTop (row5TotalH);
+    (void) row5Area;
+    const int row5KnobY = row5AbsY + groupLabelH;
+
+    auto placeRow5Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
+    {
+        const int cx = rowStartX + rowKnobSize / 2 + idx * rowStep;
+        s.setBounds    (cx - rowKnobSize / 2, row5KnobY,                   rowKnobSize, rowKnobSize);
+        lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,           rowLabelW,   labelH);
+        rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,  rowLabelW,   readoutH);
+    };
+    placeRow5Knob (cloudDepthSlider,  cloudDepthLabel,  cloudDepthReadout,  0);
+    placeRow5Knob (cloudRateSlider,   cloudRateLabel,   cloudRateReadout,   1);
+    placeRow5Knob (cloudSizeSlider,   cloudSizeLabel,   cloudSizeReadout,   2);
+    placeRow5Knob (cloudIRFeedSlider, cloudIRFeedLabel, cloudIRFeedReadout, 3);
+    placeRow5Knob (cloudVolumeSlider, cloudVolumeLabel, cloudVolumeReadout, 4);
+
+    cloudGroupBounds = juce::Rectangle<int> (
+        cloudDepthSlider.getX(),
+        row5AbsY,
+        cloudVolumeSlider.getRight() - cloudDepthSlider.getX(),
+        groupLabelH);
+    {
+        const int ledH = groupLabelH - 4;
+        const int ledW = ledH * 2;
+        const int ledY = row5AbsY + (groupLabelH - ledH) / 2;
+        cloudOnButton.setBounds (cloudGroupBounds.getRight() - ledW, ledY, ledW, ledH);
+    }
+
     // —— Remaining 6 knobs (grid): LFO Depth | Width | LFO Rate | Tail Mod | Delay Depth | Rate ——
-    // Positioned 70 px below the bottom of row 4, using the same absolute-Y strategy as the rows.
-    int y = row4AbsY + row4TotalH_ + 70;
+    // Positioned 70 px below the bottom of row 5, using the same absolute-Y strategy as the rows.
+    int y = row5AbsY + row5TotalH_ + 70;
 
     modDepthSlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
     modDepthLabel.setBounds  (x1, y + sixKnobSize + 2,          sixKnobSize, labelH);
@@ -807,7 +872,7 @@ void PingEditor::resized()
     modRateLabel.setBounds   (x2, y + sixKnobSize + 2,          sixKnobSize, labelH);
     modRateReadout.setBounds (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
 
-    y = row4AbsY + row4TotalH_ + 70;
+    y = row5AbsY + row5TotalH_ + 70;
     tailModSlider.setBounds  (x3, y, sixKnobSize, sixKnobSize);
     tailModLabel.setBounds   (x3, y + sixKnobSize + 2,          sixKnobSize, labelH);
     tailModReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
@@ -991,6 +1056,22 @@ void PingEditor::setMainPanelControlsVisible (bool visible)
     bloomVolumeLabel.setVisible (visible);
     bloomVolumeReadout.setVisible (visible);
     bloomOnButton.setVisible (visible);
+    cloudDepthSlider.setVisible (visible);
+    cloudDepthLabel.setVisible (visible);
+    cloudDepthReadout.setVisible (visible);
+    cloudRateSlider.setVisible (visible);
+    cloudRateLabel.setVisible (visible);
+    cloudRateReadout.setVisible (visible);
+    cloudSizeSlider.setVisible (visible);
+    cloudSizeLabel.setVisible (visible);
+    cloudSizeReadout.setVisible (visible);
+    cloudIRFeedSlider.setVisible (visible);
+    cloudIRFeedLabel.setVisible (visible);
+    cloudIRFeedReadout.setVisible (visible);
+    cloudVolumeSlider.setVisible (visible);
+    cloudVolumeLabel.setVisible (visible);
+    cloudVolumeReadout.setVisible (visible);
+    cloudOnButton.setVisible (visible);
 }
 
 void PingEditor::savePreset (const juce::String& name)
@@ -1171,6 +1252,11 @@ void PingEditor::updateAllReadouts()
     bloomTimeReadout.setText      (juce::String (juce::roundToInt (v ("bloomTime"))) + " ms", juce::dontSendNotification);
     bloomIRFeedReadout.setText    (juce::String (v ("bloomIRFeed"),    2),  juce::dontSendNotification);
     bloomVolumeReadout.setText    (juce::String (v ("bloomVolume"),    2),  juce::dontSendNotification);
+    cloudDepthReadout.setText     (juce::String (v ("cloudDepth"),  2),         juce::dontSendNotification);
+    cloudRateReadout.setText      (juce::String (v ("cloudRate"),   2) + "\xc3\x97",   juce::dontSendNotification);
+    cloudSizeReadout.setText      (juce::String (v ("cloudSize"),   1) + " ms", juce::dontSendNotification);
+    cloudIRFeedReadout.setText    (juce::String (v ("cloudIRFeed"), 2),         juce::dontSendNotification);
+    cloudVolumeReadout.setText    (juce::String (v ("cloudVolume"), 2),         juce::dontSendNotification);
 }
 
 void PingEditor::refreshIRList()

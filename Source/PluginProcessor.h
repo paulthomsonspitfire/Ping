@@ -156,6 +156,29 @@ private:
     // Per-block intermediate buffer: cascade output stored here so both the IR-feed
     // injection (pre-conv) and the volume injection (post-conv) read the same values.
     juce::AudioBuffer<float> bloomBuffer;
+
+    // ── Cloud Multi-LFO ──────────────────────────────────────────────────────
+    // 8 LFO-modulated delay lines applied to the wet reverb tail (post-Tail Chorus).
+    // LFO rates span 0.04–0.35 Hz geometrically — no two share a rational beat frequency.
+    // R channel applies a π phase offset on all LFOs for stereo decorrelation.
+    // cloudBuffer persists between processBlock calls: Insertion 1 (pre-conv) reads the
+    // previous block's output; Insertion 2 (post-Tail Chorus) overwrites it.
+    static constexpr int   kNumCloudLines    = 8;
+    static constexpr float kCloudBaseDepthMs = 3.0f;   // max per-line LFO swing at cloudDepth=1
+    static constexpr float kCloudSizeMaxMs   = 40.0f;  // UI cloudSize upper bound
+    static constexpr float kCloudBufMs       = 45.0f;  // sizeMax + depthMax + 2 ms margin
+
+    std::array<std::array<std::vector<float>, kNumCloudLines>, 2> cloudBufs;      // [ch][line]
+    std::array<std::array<int,               kNumCloudLines>, 2> cloudWritePtrs {};
+
+    std::array<float, kNumCloudLines> cloudLfoPhases    {};   // 0..2π per line
+    std::array<float, kNumCloudLines> cloudLfoBaseRates {};   // rad/sample at rate=1×
+
+    // Bridge buffer: Insertion 2 writes current-block Cloud output;
+    // Insertion 1 in the *next* block reads it for IR-feed injection.
+    juce::AudioBuffer<float> cloudBuffer;
+    int                      cloudLastBlockSize = 0;
+
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand, lowShelfBand, highShelfBand;
     juce::SmoothedValue<float> inputGainSmoothed;

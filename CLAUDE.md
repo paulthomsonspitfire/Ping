@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 1.8.7 (see `CMakeLists.txt`)
+**Current version:** 1.8.8 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -380,6 +380,12 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `bloomTime` | Bloom Time (ms) | 50–500 | 200 |
 | `bloomIRFeed` | Bloom IR Feed | 0–1 | 0 |
 | `bloomVolume` | Bloom Volume | 0–1 | 0 |
+| `cloudOn` | Cloud On | bool | false |
+| `cloudDepth` | Cloud Depth | 0–1 | 0.3 |
+| `cloudRate` | Cloud Rate | 0.1–4.0 | 1.0 |
+| `cloudSize` | Cloud Size (ms) | 1–40 | 5.0 |
+| `cloudVolume` | Cloud Volume | 0–1 | 0 |
+| `cloudIRFeed` | Cloud IR Feed | 0–1 | 0 |
 | `reversetrim` | Reverse Trim | 0–0.95 | 0 |
 | `b3freq/b3gain/b3q` | Low Shelf EQ | 20–1200 Hz / ±12 dB / slope 0.3–2.0 | 200 Hz, 0 dB, 0.707 |
 | `b0freq/b0gain/b0q` | Peak 1 EQ | 50–16k Hz / ±12 dB / Q 0.3–10 | 400 Hz, 0 dB, 0.707 |
@@ -422,6 +428,10 @@ Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix +
   │   feedback tap: bloomFbBufs[ch][wp] = cascade output (NOT wet signal) — written here, same sample loop
   │
   ▼
+[Cloud Insertion 1: previous block's cloudBuffer × cloudIRFeed injected into main signal]  (if cloudOn && cloudIRFeed > 0)
+  │   1-block deferred: cloudBuffer written at Insertion 2, read here next block
+  │
+  ▼
 Convolution  ── see "Convolution modes" below
   │  (optional crossfeed: ER and Tail each get L↔R delayed/attenuated copy when on, then ER/Tail mix)
   ▼
@@ -438,6 +448,11 @@ Stereo Width (M/S: S × width)
   │
   ▼
 Tail Chorus Modulation (optional — variable delay ±depthMs, skipped for ER-only IRs)
+  │
+  ▼
+[Cloud Insertion 2: 8-line LFO delay bank on wet signal]  (if cloudOn)
+  │   cloudBuffer ← lineSum/8; wet signal += cloudBuffer × cloudVolume (if cloudVolume > 0)
+  │   LFO phases advanced per-sample; R channel uses π phase offset for decorrelation
   │
   ▼
 Output Gain (dB, smoothed)
@@ -595,6 +610,76 @@ Separate L/R prime delay sets at 48 kHz — L: `{ 241, 383, 577, 863, 1297, 1913
 ### UI layout (Row 4 — "Bloom hybrid")
 
 Immediately after Row 3 (Plate), same `rowKnobSize`/`rowStep`/`rowStartX` constants. Single group "Bloom hybrid" with 5 knobs + pill switch (`bloomOnButton`, component ID `BloomSwitch`) right-aligned in the group header. Group header bounds stored as `bloomGroupBounds`. Editor height bumped from 600 → **672 px**. Row 4 uses `row4AbsY = row3AbsY + row3TotalH_` (absolute anchor, same pattern as Rows 2/3). The 6-knob grid (LFO Depth/Width/etc.) is now anchored at `row4AbsY + row4TotalH_ + 70` (was `row3AbsY + row3TotalH_ + 70`).
+
+---
+
+## Cloud Multi-LFO (Feature 3 — implemented)
+
+### What it does
+
+Eight independently-paced LFO-modulated delay lines applied to the wet reverb tail, after Tail Chorus. Each line animates the tail with subtle pitch and time variation; together they produce a shimmering, living quality — widening and enlivening long reverb tails without discrete echoes. The R channel uses a π phase offset on all LFO phases for free stereo decorrelation.
+
+Unlike Plate (pre-conv diffusion) and Bloom (pre-conv feedback texture), Cloud is purely post-convolution. It does not have its own feedback loop — any "re-reverberation" effect must flow through the convolver via `cloudIRFeed`.
+
+### Architecture — post-convolution tail animator
+
+Cloud runs in two insertion points within `processBlock`:
+
+- **Cloud Insertion 1** (pre-convolution, before the convolver block): Reads `cloudBuffer` from the *previous* block and injects it × `cloudIRFeed` into the main signal before convolution. This implements a 1-block deferred IR feed — necessary because Cloud runs post-convolution but its output needs to enter the convolver.
+- **Cloud Insertion 2** (post-Tail Chorus, before Output Gain): Runs the 8-line LFO delay bank on the current wet signal. Stores `lineSum / 8` in `cloudBuffer` (the bridge to Insertion 1 next block). Adds `cloudBuffer × cloudVolume` to the wet signal if volume > 0.
+
+`cloudBuffer` is a persistent member variable that naturally bridges the two blocks. No separate deferred-write buffer is needed.
+
+### LFO rate design
+
+Geometric spacing: `r_i = 0.04 × k^i` Hz where `k = pow(0.35/0.04, 1/(kNumCloudLines-1)) ≈ 1.3165`, giving 8 lines from 0.04 Hz to 0.35 Hz. This ensures no two lines share a rational beat frequency (same principle as the FDN LFO spacing). LFO phases are staggered at `i × π/4` on initialisation.
+
+### DSP state (`PluginProcessor.h`)
+
+```cpp
+static constexpr int   kNumCloudLines    = 8;
+static constexpr float kCloudBaseDepthMs = 3.0f;
+static constexpr float kCloudSizeMaxMs   = 40.0f;
+static constexpr float kCloudBufMs       = 45.0f;  // sizeMax + depthMax + 2 ms margin
+
+std::array<std::array<std::vector<float>, kNumCloudLines>, 2> cloudBufs;       // [ch][line]
+std::array<std::array<int,               kNumCloudLines>, 2> cloudWritePtrs {};
+std::array<float, kNumCloudLines> cloudLfoPhases    {};
+std::array<float, kNumCloudLines> cloudLfoBaseRates {};
+juce::AudioBuffer<float> cloudBuffer;     // bridge: Insertion 2 → Insertion 1 (next block)
+int                      cloudLastBlockSize = 0;
+```
+
+### `prepareToPlay`
+
+Buffer size = `ceil(45.0 × sampleRate / 1000)` samples per line per channel (covers full `cloudSize` + `cloudDepth` range). Geometric LFO rates computed once. Phases staggered at `i × π/4`. `cloudBuffer` sized to `(2, samplesPerBlock)` and cleared.
+
+### `processBlock` details
+
+**Insertion 1** reads `cloudBuffer` (from previous block, `cloudLastBlockSize` samples) and adds `× cloudIRFeed` to the main input buffer before the convolver. On the first block, `cloudBuffer` is zeroed and has no effect.
+
+**Insertion 2** iterates per-sample:
+- Each LFO phase advances by `baseRate × cloudRate / sampleRate` (2π radians per cycle normalised).
+- Modulation depth per line = `cloudDepth × kCloudBaseDepthMs × sampleRate / 1000` samples.
+- Read position = `writePtr - cloudSize_samples - depth × sin(phase)`, with linear interpolation.
+- R channel: same rates/depths but `phase + π` for decorrelation.
+- `lineSum` averages all 8 lines; `cloudBuffer[ch][i] = lineSum / 8`.
+- If `cloudVolume > 0`: wet signal += `cloudBuffer[ch][i] × cloudVolume`.
+
+### Controls
+
+| Parameter ID | Range | Default | Effect |
+|---|---|---|---|
+| `cloudOn` | bool | false | Enables Cloud; zero overhead when off |
+| `cloudDepth` | 0–1 | 0.3 | LFO modulation depth — scales `kCloudBaseDepthMs` (3 ms). At 0: static delay (no shimmer). At 1: ±3 ms swing. Readout shows 0.00–1.00. |
+| `cloudRate` | 0.1–4.0 | 1.0 | Global rate multiplier applied to all 8 geometric LFO rates. At 1.0: lines span 0.04–0.35 Hz. At 4.0: 0.16–1.4 Hz (faster shimmer). Readout shows multiplier (e.g. "1.00×"). |
+| `cloudSize` | 1–40 ms | 5.0 ms | Base delay time shared by all 8 lines. Longer = more spacious, more pitched. Shorter = subtle smear. Readout shows ms (1 decimal). |
+| `cloudVolume` | 0–1 | 0 | Adds `cloudBuffer × cloudVolume` to the wet signal at Insertion 2. Audible at any dry/wet setting. Default 0 = no direct output until user raises it. |
+| `cloudIRFeed` | 0–1 | 0 | Injects previous-block `cloudBuffer × cloudIRFeed` into the convolver input (Insertion 1). Creates a "re-reverberated shimmer" — the Cloud output gets convolved again. Loop gain = `cloudIRFeed × convolver_gain` stays < 1 for real room IRs. Default 0 = no feed. |
+
+### UI layout (Row 5 — "Cloud multi-LFO")
+
+Immediately after Row 4 (Bloom), same `rowKnobSize`/`rowStep`/`rowStartX` constants. Single group "Cloud multi-LFO" with 5 knobs (DEPTH, RATE, SIZE, VOLUME, IR FEED) + pill switch (`cloudOnButton`, component ID `CloudSwitch`) right-aligned in the group header. Group header bounds stored as `cloudGroupBounds`. Editor height bumped from 672 → **744 px**. Row 5 uses `row5AbsY = row4AbsY + row4TotalH_` (absolute anchor). The 6-knob grid (LFO Depth/Width/etc.) is now anchored at `row5AbsY + row5TotalH_ + 70`.
 
 ---
 
@@ -782,4 +867,13 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Bloom uses separate L/R prime sets for genuine stereo independence** — L primes `{241, 383, 577, 863, 1297, 1913}` and R primes `{263, 431, 673, 1049, 1531, 2111}` are incommensurate (no shared factors). After several feedback cycles the L and R textures diverge into genuinely different patterns, filling the stereo field without any explicit width/decorrelation DSP. This is the primary source of Bloom's wide stereo character. Do not unify L/R primes or the stereo independence is lost.
 - **Bloom delay range is ~5–40 ms (at size=1.0)** — this is deliberately below the ~30 ms threshold at which allpass delays become audible as discrete echoes. The previous {~39–300 ms} primes were all above this threshold, making the individual taps clearly audible as fragments. At 5–40 ms the allpass stages act as diffusers rather than distinct echoes, producing the "textured swirl" character. `bloomSize` scales linearly — at size=2.0 delays reach ~10–80 ms (more spacious), at size=0.5 ~2.5–20 ms (very dense).
 - **Bloom feedback is safety-clamped at 0.65** — the loop gain is `bloomFeedback` alone (the convolver is no longer in the loop). The clamp provides a hard stability bound independent of IR content or signal level.
+- **Cloud uses a 1-block deferred IR feed via `cloudBuffer`** — Cloud runs post-convolution, but its output needs to reach the convolver input. The bridge is `cloudBuffer` (a member variable): Insertion 2 writes to it; Insertion 1 reads it the following block. This introduces exactly 1 block of latency on the IR feed path, which is inaudible at any normal buffer size. No separate circular deferred-write buffer is needed. `cloudLastBlockSize` tracks the previous block's sample count so Insertion 1 reads exactly the right number of samples.
+- **Cloud `cloudVolume` and `cloudIRFeed` both default to 0** — consistent with Bloom and Plate. Cloud has zero audible effect at defaults even when `cloudOn = true`. Users raise at least one output to hear it.
+- **Cloud `cloudBuffer` bridges Insertion 2 → Insertion 1 across blocks, not within the same block** — unlike `bloomBuffer` which is written and read within the same processBlock call, `cloudBuffer` is written at Insertion 2 and consumed at Insertion 1 of the *next* block. Do not clear `cloudBuffer` at the start of each block — it must survive between blocks.
+- **Cloud LFO rates use geometric spacing (0.04–0.35 Hz)** — same principle as FDN LFO. `k = pow(0.35/0.04, 1/(kNumCloudLines-1)) ≈ 1.3165`. No two lines share a rational beat frequency. LFO phases staggered at `i × π/4`. Do not change to arithmetic spacing.
+- **Cloud R-channel decorrelation uses a π phase offset** — all 8 LFO phases for the R channel are offset by π relative to L. This gives free stereo width without any extra DSP: at any given moment L lines are near their maximum delay excursion when R lines are near minimum, and vice versa. No separate delay line set needed (unlike Bloom which uses separate L/R prime arrays).
+- **Cloud has no self-feedback loop** — unlike Bloom, Cloud's delay lines do not feed back into themselves. The only recirculation path is via `cloudIRFeed` → convolver → wet signal → Cloud Insertion 2. The convolver is inherently attenuating for real room IRs, so loop gain < 1 for any physical IR. Very high-gain IR presets with boosted `outputGain` are the only edge case to be aware of.
+- **Cloud `cloudDepth` scales `kCloudBaseDepthMs = 3.0f`** — the maximum ±3 ms swing was chosen to keep modulation below the ~5 ms threshold where pitch variation becomes audible as vibrato on sustained tones. At `cloudDepth = 0` the delay lines are static (no modulation), which gives a comb-filter character rather than shimmer.
+- **Default editor height is now 744 px** — bumped from 672 (Row 4 Bloom) → 744 (Row 5 Cloud). The resize minimum remains 528. Both constants are at the top of the `PingEditor` constructor.
+- **The six large knobs (LFO Depth/Rate, Width, Tail Mod, Delay Depth, Tail Rate) are now anchored at `row5AbsY + row5TotalH_ + 70`** — updated from `row4AbsY + row4TotalH_ + 70` when Row 5 was added. Do not revert to the Row 4 anchor.
 - **EQ response curve is display-only** — `getResponseAt()` is an approximation. The actual audio uses JUCE biquad coefficients. The two will not match exactly at steep slopes or very high/low frequencies, but are visually representative for a mixing EQ.
