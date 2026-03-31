@@ -63,7 +63,7 @@ private:
     juce::ToggleButton plateOnButton;
 
     // Bloom controls (row 4)
-    juce::Slider bloomDiffusionSlider, bloomFeedbackSlider, bloomTimeSlider, bloomIRFeedSlider, bloomVolumeSlider;
+    juce::Slider bloomSizeSlider, bloomFeedbackSlider, bloomTimeSlider, bloomIRFeedSlider, bloomVolumeSlider;
     juce::ToggleButton bloomOnButton;
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
@@ -78,7 +78,7 @@ private:
     std::unique_ptr<ButtonAttachment> erCrossfeedOnAttach, tailCrossfeedOnAttach;
     std::unique_ptr<SliderAttachment> plateDiffusionAttach, plateColourAttach, plateSizeAttach, plateIRFeedAttach;
     std::unique_ptr<ButtonAttachment> plateOnAttach;
-    std::unique_ptr<SliderAttachment> bloomDiffusionAttach, bloomFeedbackAttach, bloomTimeAttach, bloomIRFeedAttach, bloomVolumeAttach;
+    std::unique_ptr<SliderAttachment> bloomSizeAttach, bloomFeedbackAttach, bloomTimeAttach, bloomIRFeedAttach, bloomVolumeAttach;
     std::unique_ptr<ButtonAttachment> bloomOnAttach;
 
     juce::Label dryWetLabel, predelayLabel, decayLabel, modDepthLabel;
@@ -89,7 +89,7 @@ private:
     juce::Label erCrossfeedDelayLabel, erCrossfeedAttLabel;
     juce::Label tailCrossfeedDelayLabel, tailCrossfeedAttLabel;
     juce::Label plateDiffusionLabel, plateColourLabel, plateSizeLabel, plateIRFeedLabel;
-    juce::Label bloomDiffusionLabel, bloomFeedbackLabel, bloomTimeLabel, bloomIRFeedLabel, bloomVolumeLabel;
+    juce::Label bloomSizeLabel, bloomFeedbackLabel, bloomTimeLabel, bloomIRFeedLabel, bloomVolumeLabel;
 
     juce::Label dryWetReadout, predelayReadout, decayReadout, modDepthReadout;
     juce::Label stretchReadout, widthReadout, modRateReadout;
@@ -99,7 +99,7 @@ private:
     juce::Label erCrossfeedDelayReadout, erCrossfeedAttReadout;
     juce::Label tailCrossfeedDelayReadout, tailCrossfeedAttReadout;
     juce::Label plateDiffusionReadout, plateColourReadout, plateSizeReadout, plateIRFeedReadout;
-    juce::Label bloomDiffusionReadout, bloomFeedbackReadout, bloomTimeReadout, bloomIRFeedReadout, bloomVolumeReadout;
+    juce::Label bloomSizeReadout, bloomFeedbackReadout, bloomTimeReadout, bloomIRFeedReadout, bloomVolumeReadout;
 
     PingLookAndFeel pingLook;
     EQGraphComponent eqGraph;

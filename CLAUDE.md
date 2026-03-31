@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 1.8.6 (see `CMakeLists.txt`)
+**Current version:** 1.8.7 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -133,7 +133,7 @@ Paste the printed `onset_offset` and `golden_iLL[30]` values into `IR_11` in `Pi
 - **DSP_05 rational-beat bound** — p,q ≤ 6 covers all perceptible simple LFO beat ratios. The original p,q ≤ 32 flagged 11/15, whose beat period at these rates would be many minutes — completely inaudible.
 - **DSP_10 first-return peak test** — allpass filters are IIR and never fully "drain," so drain-energy comparisons are unsuitable for testing `effLen`. Instead, DSP_10 exploits the fact that a single allpass of delay d, fed an impulse, produces its first large positive output exactly at sample d: `out[d] = 1 - g² ≈ 0.51`. At `plateSize=2.0`, d doubles from 691 to 1382 samples, making the peak position a direct, unambiguous observable of the `effLen` mechanism.
 - **DSP_11 short bloomTime is the worst case** — At 50 ms (minimum bloomTime) there are ~20 feedback round-trips per second. More trips per second means more opportunities for energy to accumulate if the loop gain is near 1. DSP_04 (300 ms) and DSP_11 (50 ms) together bound the stability guarantee across the full 50–500 ms range.
-- **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Bloom stages (not yet in production) leave `effLen = 0`; Plate stages set it each block via `plateSize`. Buffers are allocated at 4× the base primes so no reallocation is needed across the full `plateSize` 0.5–4.0 range.
+- **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Plate stages set `effLen` each block via `plateSize` (4× alloc, range 0.5–4.0). Bloom stages also now set `effLen` each block via `bloomSize` (2× alloc, range 0.25–2.0). Plate buffers at 4× base primes; Bloom buffers at 2× base primes.
 
 ---
 
@@ -375,7 +375,7 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `plateSize` | Plate Size | 0.5–4.0 | 1.0 |
 | `plateIRFeed` | Plate IR Feed | 0–1 | 0 |
 | `bloomOn` | Bloom On | bool | false |
-| `bloomDiffusion` | Bloom Diffusion | 0.30–0.88 | 0.60 |
+| `bloomSize` | Bloom Size | 0.25–2.0 | 1.0 |
 | `bloomFeedback` | Bloom Feedback | 0–0.65 | 0.25 |
 | `bloomTime` | Bloom Time (ms) | 50–500 | 200 |
 | `bloomIRFeed` | Bloom IR Feed | 0–1 | 0 |
@@ -417,23 +417,18 @@ Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix +
   │   plateBuffer stored; irFeed portion added to convolver input
   │
   ▼
-[Bloom Insertion 1: 4-stage allpass cascade (g=bloomDiffusion) on (input + feedbackTap)]  (if bloomOn)
+[Bloom Insertion 1: 6-stage allpass cascade (g=0.35 hardcoded, delays scaled by bloomSize) on (input + feedbackTap)]  (if bloomOn)
   │   bloomBuffer stored; bloomIRFeed portion added to convolver input
+  │   feedback tap: bloomFbBufs[ch][wp] = cascade output (NOT wet signal) — written here, same sample loop
   │
   ▼
 Convolution  ── see "Convolution modes" below
   │  (optional crossfeed: ER and Tail each get L↔R delayed/attenuated copy when on, then ER/Tail mix)
   ▼
-[Bloom Insertion 2: bloomBuffer × bloomVolume added to wet signal]  (if bloomOn, before EQ)
-  │
-  ▼
 5-band EQ: low shelf → peak 1 → peak 2 → peak 3 → high shelf (JUCE makeLowShelf / makePeakFilter / makeHighShelf, per-band ProcessorDuplicator)
   │
   ▼
 Stereo decorrelation allpass (R channel only: 2-stage, 7.13 ms + 14.27 ms, g=0.5 — preserves mono sum, widens tail)
-  │
-  ▼
-[Bloom Insertion 3: EQ-shaped wet written to bloomFbBufs for next block's feedback tap]  (if bloomOn)
   │
   ▼
 LFO Modulation (optional — wet gain × (1 + depth × sin(2π·phase)))
@@ -452,6 +447,9 @@ Output Gain (dB, smoothed)
   │
   ▼
 Dry/Wet blend: out = wet × √(mix) + dry × √(1−mix)   [constant-power crossfade]
+  │
+  ▼
+[Bloom Volume: bloomBuffer × bloomVolume added here]  (if bloomOn — independent of dry/wet control)
   │
   ▼
 Output (stereo) + L/R peak meter update
@@ -538,62 +536,61 @@ After the saturator, **before** the convolution block. At `density = 0` the blen
 
 ### What it does
 
-Creates a progressively-building reverb onset where the reverb grows out of silence and swells into the room, rather than all reflections arriving at once. Two elements work together:
+Creates a progressively-building, self-diffusing signal from the input. Think of it as a guitar pedal: it has its own internal feedback loop that builds a dense, swelling texture, with two independent outputs — one that feeds into the IR convolver (adding reverb on top of the bloom) and one that goes directly to the final output. The reverb has no return path into Bloom.
 
-- **Pre-convolution allpass cascade** — 4 stages with long delays (~39–300 ms), creating a gradual smear rather than Plate's immediate dense wash.
-- **Wet-output feedback** — a fraction of the post-EQ wet signal is fed back through the cascade and injected into the convolver, causing the reverb to continuously self-seed and expand. Each recirculation becomes more diffuse; the bloom grows rather than repeats.
+Two elements work together:
 
-### Architecture — Bloom follows the Plate model
+- **Pre-convolution allpass cascade** — 6 stages with short delays (~5–40 ms per channel), creating a textured diffuse swirl rather than discrete echoes. Separate L/R prime sets produce genuinely independent stereo textures.
+- **Self-contained cascade feedback** — a fraction of the cascade's own output is fed back into its input (`bloomTime` ms later), causing density to build with each recirculation. The convolved wet signal is **not** part of this loop.
+
+### Architecture — Bloom as a self-contained pedal upstream of the reverb
 
 The main signal into the convolver is **not modified** by the cascade itself. The cascade output is stored in `bloomBuffer` and delivered through two independent output paths, both defaulting to 0 (consistent with `plateIRFeed = 0`):
 
-- **`bloomIRFeed`** — adds `bloomBuffer * irFeed` additively to the convolver input (on top of the main signal, identical in concept to `plateIRFeed`).
-- **`bloomVolume`** — adds `bloomBuffer * volume` directly to the wet signal after convolution, **before EQ**, so EQ shapes the bloom texture the same way it shapes the reverb tail.
+- **`bloomIRFeed`** — adds `bloomBuffer * irFeed` additively to the convolver input (on top of the main signal). Like plugging a Bloom pedal into the reverb's input jack.
+- **`bloomVolume`** — adds `bloomBuffer * volume` directly to the **final output after the dry/wet blend**, so it is heard regardless of the wet/dry setting.
 
 At both defaults = 0, Bloom has no audible effect until the user raises at least one output control.
 
 ### DSP state (`PluginProcessor.h`)
 
 ```cpp
-static constexpr int kNumBloomStages     = 4;
+static constexpr int kNumBloomStages     = 6;
 static constexpr int kBloomFeedbackMaxMs = 500;
 std::array<std::array<SimpleAllpass, kNumBloomStages>, 2> bloomAPs; // [ch][stage]
 std::array<std::vector<float>, 2> bloomFbBufs;   // 500 ms circular feedback buffer
 std::array<int, 2>                bloomFbWritePtrs { 0, 0 };
-juce::AudioBuffer<float>          bloomBuffer;   // per-block bridge: Insertion 1 → Insertion 2
+juce::AudioBuffer<float>          bloomBuffer;   // per-block bridge: Insertion 1 → Volume output
 ```
 
 Bloom reuses the existing `SimpleAllpass` struct (defined for Plate). The `PingDSPTests.cpp` definition of `SimpleAllpass` must stay in sync.
 
 ### `prepareToPlay`
 
-Base prime delays at 48 kHz: `{ 1871, 3541, 7211, 14387 }` samples (~39, ~74, ~150, ~300 ms). No size-scaling — `effLen` stays 0 (full `buf.size()` used). All g values set to 0.60. Feedback buffer allocated at `500 ms × sampleRate`. `bloomBuffer` sized to `(2, samplesPerBlock)`.
+Separate L/R prime delay sets at 48 kHz — L: `{ 241, 383, 577, 863, 1297, 1913 }` (~5–40 ms), R: `{ 263, 431, 673, 1049, 1531, 2111 }` (~5.5–44 ms). Incommensurate across channels to produce genuinely independent L/R textures after feedback cycles. Buffers allocated at **2× base primes** so bloomSize 0.25–2.0 needs no reallocation. `effLen` set each block via `bloomSize` (same pattern as `plateSize`). g = 0.35f hardcoded (transparent scatter). Feedback buffer allocated at `500 ms × sampleRate`. `bloomBuffer` sized to `(2, samplesPerBlock)`.
 
-### `processBlock` insertion points (3 locations)
+### `processBlock` insertion points (2 locations)
 
-**Insertion 1 — after Plate block, before convolution:**
-- Read feedback tap (`bloomTime` ms back in `bloomFbBufs`), add to input, run through 4-stage cascade, store in `bloomBuffer`.
+**Insertion 1 — after Plate block, before convolution (the full Bloom cascade block):**
+- Read feedback tap (`bloomTime` ms back in `bloomFbBufs`), add to input, run through 6-stage cascade (L/R independent primes, `effLen` set per-block via `bloomSize`), store in `bloomBuffer`.
 - Add `bloomBuffer * bloomIRFeed` to the main signal before the convolver.
+- At the bottom of the same per-sample loop: write the cascade output (`diff`) into `bloomFbBufs[ch][wp]` and advance the write pointer. This is the feedback tap — it uses the cascade output, **not** the convolved wet signal, keeping Bloom's loop entirely self-contained.
 - `bloomOn = false` skips entirely — zero overhead.
 
-**Insertion 2 — after ER+Tail blend, before EQ:**
-- Add `bloomBuffer * bloomVolume` to the wet signal.
-- Runs through EQ → decorr → LFO → Width → Output Gain → Dry/Wet alongside the convolved reverb.
-
-**Insertion 3 — after EQ + stereo decorrelation, before LFO mod:**
-- Write current wet samples into `bloomFbBufs` for use by Insertion 1 next block.
-- The EQ-shaped wet is what blooms back, so EQ changes gradually shift the bloom character over several feedback cycles.
+**Insertion 2 — after dry/wet blend, before peak meter:**
+- Add `bloomBuffer * bloomVolume` to the final output buffer.
+- Because this is after the dry/wet blend, `bloomVolume` is audible regardless of the plugin's wet/dry setting — it behaves like the direct output of a pedal in parallel with the reverb.
 
 ### Controls
 
 | Parameter ID | Range | Default | Effect |
 |---|---|---|---|
 | `bloomOn` | bool | false | Enables Bloom; zero overhead when off |
-| `bloomDiffusion` | 0.30–0.88 | 0.60 | Allpass g coefficient for all 4 stages each block; higher = denser diffusion per pass |
+| `bloomSize` | 0.25–2.0 | 1.0 | Scales all 6 allpass delay times (like `plateSize` for Plate). At 1.0 the L delays span ~5–40 ms (textured, dense); at 2.0 they span ~10–80 ms (more spacious); at 0.25 ~1.25–10 ms (very dense, clangorous). Readout shows multiplier (e.g. "1.00×"). |
 | `bloomFeedback` | 0–0.65 | 0.25 | Wet→input feedback amount; safety-clamped at 0.65. Higher = more self-sustaining swell |
 | `bloomTime` | 50–500 ms | 200 ms | Feedback tap delay — how far back in the wet signal the feedback reads. Short = fast rhythmic bloom, long = slow expansive sustain. Readout displays integer ms. |
 | `bloomIRFeed` | 0–1 | 0 | How much bloom cascade output injects additively into the convolver input |
-| `bloomVolume` | 0–1 | 0 | How much bloom cascade output goes directly to the wet signal (before EQ) |
+| `bloomVolume` | 0–1 | 0 | How much bloom cascade output is added to the final output after dry/wet blend (independent of wet/dry) |
 
 ### UI layout (Row 4 — "Bloom hybrid")
 
@@ -777,9 +774,12 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **EQ control strip uses a row-per-parameter layout** — FREQ knobs all share the same Y (Row 1); GAIN knobs are shifted right by `colW/5 + gainDX` (Row 2, zig-zag); Q/SLOPE knobs return to the FREQ X column below GAIN (Row 3). Each row has independent `DX`/`DY` fine-tuning constants (`freqDX/DY`, `gainDX/DY`, `qDX/DY`) in `EQGraphComponent::resized()`. The control strip is reserved with `removeFromBottom(ctrlH - 75)` — the -75 shifts the entire strip (including the band-name header line) 75 px lower and extends the chart bottom by 75 px; the `DY` constants are set to counteract this shift for the knobs, so net knob positions equal the intended row offsets. Knob size is 42 px. The graph area top is trimmed 60 px downward (`b.withTrimmedTop(60)`). Each knob has an accent-orange live readout above its grey parameter label, updated every timer tick via `updateReadouts()` called from `syncKnobsFromParams()`.
 - **Row Y positions in `PluginEditor` use absolute anchors to avoid JUCE `removeFromTop` clamping** — `removeFromTop(n)` silently clamps `n` to the rectangle's remaining height, so when `mainArea` has shrunk (due to large `eqMinH`) to less than the combined row heights, subsequent rows land in wrong positions. Row 2/3/4 Y positions are computed as `row2AbsY = topKnobRow.getBottom()`, `row3AbsY = row2AbsY + row2TotalH_`, `row4AbsY = row3AbsY + row3TotalH_` — independent of whatever height remains in `mainArea`. All group-header bounds, toggle LED Y positions, and knob Y positions for all rows use these absolute anchors.
 - **The six large knobs (LFO Depth/Rate, Width, Tail Mod, Delay Depth, Tail Rate) are positioned at `row4AbsY + row4TotalH_ + 70`** — the +70 px offset pushes them clear of the Bloom row controls. Do not change this back to `row3AbsY + row3TotalH_ + 70` (pre-Bloom value) — the 6-knob grid must anchor off the last small-knob row.
-- **Bloom has two independent output paths (`bloomIRFeed` and `bloomVolume`), both defaulting to 0** — consistent with `plateIRFeed = 0`. The main signal is not modified by the bloom cascade; only additive injection via `bloomIRFeed` into the convolver and `bloomVolume` into the wet bus. At both defaults = 0, Bloom has zero effect when switched on.
-- **`bloomBuffer` bridges Insertion 1 (pre-conv) and Insertion 2 (post-conv) within the same processBlock call** — it is not a feedback buffer. Populated at Insertion 1, read at Insertion 2. `bloomBuffer.clear()` at the top of Insertion 1 ensures no stale data. A reallocation guard (`if (numSamples > bloomBuffer.getNumSamples())`) handles hosts that exceed `maximumExpectedSamplesPerBlock`.
-- **Bloom feedback tap position: after EQ + decorrelation, before LFO mod** — the EQ-shaped wet is what gets fed back. Changing EQ while bloom feedback is active gradually shifts the bloom character over several feedback cycles.
-- **Bloom `bloomDiffusion` sets g on all 4 stages once per block** — same pattern as `plateDiffusion`. Range 0.30–0.88, default 0.60. The higher default vs Plate (0.40) reflects Bloom's longer delays: at 300 ms a lower g would make the cascade nearly transparent.
-- **Bloom feedback is safety-clamped at 0.65** — the total loop gain is `bloomFeedback × convolver_gain`. For any physical IR, convolver gain < 1, so the loop is stable. The clamp provides a hard bound against borderline cases with very long IRs or unusual signal levels.
+- **Bloom has two independent output paths (`bloomIRFeed` and `bloomVolume`), both defaulting to 0** — consistent with `plateIRFeed = 0`. The main signal is not modified by the bloom cascade; only additive injection via `bloomIRFeed` into the convolver and `bloomVolume` into the final output. At both defaults = 0, Bloom has zero effect when switched on.
+- **`bloomBuffer` bridges Insertion 1 (pre-conv) and the post-dry/wet Volume injection within the same processBlock call** — it is not a feedback buffer. Populated at Insertion 1, read after the dry/wet blend. `bloomBuffer.clear()` at the top of Insertion 1 ensures no stale data. A reallocation guard (`if (numSamples > bloomBuffer.getNumSamples())`) handles hosts that exceed `maximumExpectedSamplesPerBlock`.
+- **Bloom feedback tap is written inside Insertion 1's per-sample loop** — immediately after computing `diff` (the cascade output), `bloomFbBufs[ch][wp] = diff` is written and the pointer advanced. The convolved wet signal is **never** written to `bloomFbBufs`. This makes the feedback loop entirely self-contained: Bloom → `bloomFbBufs` → Bloom. The old architecture wrote the post-EQ wet signal to `bloomFbBufs` (old Insertion 3), which put the convolver inside the loop and caused feedback explosions with stereo IRs where the LL convolver path had significantly higher gain than the RL/LR paths.
+- **`bloomVolume` is injected after the dry/wet blend** — it is added to the final output buffer after `buffer.addFrom(dryBuffer)`. This means `bloomVolume` is audible at any dry/wet setting, including fully dry. It behaves like the direct output level of a Bloom pedal sitting in parallel with the reverb unit. The old architecture injected before EQ, making it subject to both EQ and the dry/wet control.
+- **Bloom g is hardcoded at 0.35 (transparent)** — `bloomDiffusion` was removed. g=0.35 was chosen to keep individual delay taps transparent (each tap contributes ~35% reflection vs 65% pass-through), so the character comes from the delay times and feedback density rather than allpass coloration. Unlike Plate where g is user-adjustable for density vs transparency, Bloom's character is defined by its delay structure. Do not add a diffusion control back.
+- **Bloom uses separate L/R prime sets for genuine stereo independence** — L primes `{241, 383, 577, 863, 1297, 1913}` and R primes `{263, 431, 673, 1049, 1531, 2111}` are incommensurate (no shared factors). After several feedback cycles the L and R textures diverge into genuinely different patterns, filling the stereo field without any explicit width/decorrelation DSP. This is the primary source of Bloom's wide stereo character. Do not unify L/R primes or the stereo independence is lost.
+- **Bloom delay range is ~5–40 ms (at size=1.0)** — this is deliberately below the ~30 ms threshold at which allpass delays become audible as discrete echoes. The previous {~39–300 ms} primes were all above this threshold, making the individual taps clearly audible as fragments. At 5–40 ms the allpass stages act as diffusers rather than distinct echoes, producing the "textured swirl" character. `bloomSize` scales linearly — at size=2.0 delays reach ~10–80 ms (more spacious), at size=0.5 ~2.5–20 ms (very dense).
+- **Bloom feedback is safety-clamped at 0.65** — the loop gain is `bloomFeedback` alone (the convolver is no longer in the loop). The clamp provides a hard stability bound independent of IR content or signal level.
 - **EQ response curve is display-only** — `getResponseAt()` is an approximation. The actual audio uses JUCE biquad coefficients. The two will not match exactly at steep slopes or very high/low frequencies, but are visually representative for a mixing EQ.

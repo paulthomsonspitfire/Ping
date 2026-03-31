@@ -141,10 +141,13 @@ private:
     juce::AudioBuffer<float> plateBuffer;
 
     // ── Bloom hybrid ──────────────────────────────────────────────────────────
-    // 4-stage allpass cascade (reuses SimpleAllpass defined above).
-    // Base prime delays at 48 kHz: ~39 ms, ~74 ms, ~150 ms, ~300 ms.
-    // effLen stays 0 (= use full buf.size()) — Bloom has no size-scaling parameter.
-    static constexpr int kNumBloomStages     = 4;
+    // 6-stage allpass cascade (reuses SimpleAllpass defined above).
+    // Separate L/R prime sets for genuine stereo independence:
+    //   L: {241, 383, 577, 863, 1297, 1913}  (~5–40 ms at 48 kHz)
+    //   R: {263, 431, 673, 1049, 1531, 2111} (~5.5–44 ms at 48 kHz)
+    // g = 0.35f hardcoded (transparent scatter). Buffers allocated at 2× base primes
+    // so bloomSize 0.25–2.0 needs no reallocation. effLen set each block via bloomSize.
+    static constexpr int kNumBloomStages     = 6;
     static constexpr int kBloomFeedbackMaxMs = 500;
     std::array<std::array<SimpleAllpass, kNumBloomStages>, 2> bloomAPs; // [ch][stage]
     // Circular buffer holds post-EQ wet signal for feedback re-injection

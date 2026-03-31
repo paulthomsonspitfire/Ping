@@ -260,7 +260,7 @@ PingEditor::PingEditor (PingProcessor& p)
     }
 
     // Bloom row knobs (row 4 — same accent style)
-    for (auto* s : { &bloomDiffusionSlider, &bloomFeedbackSlider, &bloomTimeSlider,
+    for (auto* s : { &bloomSizeSlider, &bloomFeedbackSlider, &bloomTimeSlider,
                      &bloomIRFeedSlider, &bloomVolumeSlider })
         makeSlider (*s, "");
     {
@@ -293,7 +293,7 @@ PingEditor::PingEditor (PingProcessor& p)
     plateDiffusionSlider.setRange (0.30, 0.88, 0.01);
     plateColourSlider.setRange   (0.0,  1.0,  0.01);
     plateSizeSlider.setRange     (0.5,  4.0,  0.01);
-    bloomDiffusionSlider.setRange (0.30, 0.88, 0.01);
+    bloomSizeSlider.setRange (0.25, 2.0, 0.01);
     bloomFeedbackSlider.setRange  (0.0,  0.65, 0.01);
     bloomTimeSlider.setRange      (50.0, 500.0, 1.0);
     bloomIRFeedSlider.setRange    (0.0,  1.0,  0.01);
@@ -325,7 +325,7 @@ PingEditor::PingEditor (PingProcessor& p)
     plateColourAttach    = std::make_unique<SliderAttachment> (apvts, "plateColour",    plateColourSlider);
     plateSizeAttach      = std::make_unique<SliderAttachment> (apvts, "plateSize",      plateSizeSlider);
     plateOnAttach        = std::make_unique<ButtonAttachment> (apvts, "plateOn",        plateOnButton);
-    bloomDiffusionAttach = std::make_unique<SliderAttachment> (apvts, "bloomDiffusion", bloomDiffusionSlider);
+    bloomSizeAttach = std::make_unique<SliderAttachment> (apvts, "bloomSize", bloomSizeSlider);
     bloomFeedbackAttach  = std::make_unique<SliderAttachment> (apvts, "bloomFeedback",  bloomFeedbackSlider);
     bloomTimeAttach      = std::make_unique<SliderAttachment> (apvts, "bloomTime",      bloomTimeSlider);
     bloomIRFeedAttach    = std::make_unique<SliderAttachment> (apvts, "bloomIRFeed",    bloomIRFeedSlider);
@@ -343,7 +343,7 @@ PingEditor::PingEditor (PingProcessor& p)
                         &erCrossfeedDelayLabel, &erCrossfeedAttLabel,
                         &tailCrossfeedDelayLabel, &tailCrossfeedAttLabel,
                         &plateDiffusionLabel, &plateColourLabel, &plateSizeLabel, &plateIRFeedLabel,
-                        &bloomDiffusionLabel, &bloomFeedbackLabel, &bloomTimeLabel,
+                        &bloomSizeLabel, &bloomFeedbackLabel, &bloomTimeLabel,
                         &bloomIRFeedLabel, &bloomVolumeLabel })
     {
         addAndMakeVisible (label);
@@ -376,7 +376,7 @@ PingEditor::PingEditor (PingProcessor& p)
     plateDiffusionLabel.setText ("DIFFUSION", juce::dontSendNotification);
     plateColourLabel.setText    ("COLOUR",    juce::dontSendNotification);
     plateSizeLabel.setText      ("SIZE",      juce::dontSendNotification);
-    bloomDiffusionLabel.setText ("DIFFUSION", juce::dontSendNotification);
+    bloomSizeLabel.setText ("SIZE", juce::dontSendNotification);
     bloomFeedbackLabel.setText  ("FEEDBACK",  juce::dontSendNotification);
     bloomTimeLabel.setText      ("TIME",      juce::dontSendNotification);
     bloomIRFeedLabel.setText    ("IR FEED",   juce::dontSendNotification);
@@ -390,7 +390,7 @@ PingEditor::PingEditor (PingProcessor& p)
                      &erCrossfeedDelayReadout, &erCrossfeedAttReadout,
                      &tailCrossfeedDelayReadout, &tailCrossfeedAttReadout,
                      &plateDiffusionReadout, &plateColourReadout, &plateSizeReadout, &plateIRFeedReadout,
-                     &bloomDiffusionReadout, &bloomFeedbackReadout, &bloomTimeReadout,
+                     &bloomSizeReadout, &bloomFeedbackReadout, &bloomTimeReadout,
                      &bloomIRFeedReadout, &bloomVolumeReadout })
     {
         addAndMakeVisible (r);
@@ -771,17 +771,17 @@ void PingEditor::resized()
         lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,           rowLabelW,   labelH);
         rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,  rowLabelW,   readoutH);
     };
-    placeRow4Knob (bloomDiffusionSlider, bloomDiffusionLabel, bloomDiffusionReadout, 0);
-    placeRow4Knob (bloomFeedbackSlider,  bloomFeedbackLabel,  bloomFeedbackReadout,  1);
-    placeRow4Knob (bloomTimeSlider,      bloomTimeLabel,      bloomTimeReadout,      2);
-    placeRow4Knob (bloomIRFeedSlider,    bloomIRFeedLabel,    bloomIRFeedReadout,    3);
-    placeRow4Knob (bloomVolumeSlider,    bloomVolumeLabel,    bloomVolumeReadout,    4);
+    placeRow4Knob (bloomSizeSlider,     bloomSizeLabel,     bloomSizeReadout,     0);
+    placeRow4Knob (bloomFeedbackSlider, bloomFeedbackLabel, bloomFeedbackReadout, 1);
+    placeRow4Knob (bloomTimeSlider,     bloomTimeLabel,     bloomTimeReadout,     2);
+    placeRow4Knob (bloomIRFeedSlider,   bloomIRFeedLabel,   bloomIRFeedReadout,   3);
+    placeRow4Knob (bloomVolumeSlider,   bloomVolumeLabel,   bloomVolumeReadout,   4);
 
     // Group header spans all five knobs; toggle pill right-aligned within it
     bloomGroupBounds = juce::Rectangle<int> (
-        bloomDiffusionSlider.getX(),
+        bloomSizeSlider.getX(),
         row4AbsY,
-        bloomVolumeSlider.getRight() - bloomDiffusionSlider.getX(),
+        bloomVolumeSlider.getRight() - bloomSizeSlider.getX(),
         groupLabelH);
     {
         const int ledH = groupLabelH - 4;
@@ -975,9 +975,9 @@ void PingEditor::setMainPanelControlsVisible (bool visible)
     plateSizeLabel.setVisible (visible);
     plateSizeReadout.setVisible (visible);
     plateOnButton.setVisible (visible);
-    bloomDiffusionSlider.setVisible (visible);
-    bloomDiffusionLabel.setVisible (visible);
-    bloomDiffusionReadout.setVisible (visible);
+    bloomSizeSlider.setVisible (visible);
+    bloomSizeLabel.setVisible (visible);
+    bloomSizeReadout.setVisible (visible);
     bloomFeedbackSlider.setVisible (visible);
     bloomFeedbackLabel.setVisible (visible);
     bloomFeedbackReadout.setVisible (visible);
@@ -1166,7 +1166,7 @@ void PingEditor::updateAllReadouts()
         float sizeMs = v ("plateSize") * 691.0f / 48000.0f * 1000.0f;
         plateSizeReadout.setText (juce::String (sizeMs, 1) + " ms", juce::dontSendNotification);
     }
-    bloomDiffusionReadout.setText (juce::String (v ("bloomDiffusion"), 2),  juce::dontSendNotification);
+    bloomSizeReadout.setText      (juce::String (v ("bloomSize"), 2) + "\xc3\x97",  juce::dontSendNotification);
     bloomFeedbackReadout.setText  (juce::String (v ("bloomFeedback"),  2),  juce::dontSendNotification);
     bloomTimeReadout.setText      (juce::String (juce::roundToInt (v ("bloomTime"))) + " ms", juce::dontSendNotification);
     bloomIRFeedReadout.setText    (juce::String (v ("bloomIRFeed"),    2),  juce::dontSendNotification);

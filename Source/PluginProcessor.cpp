@@ -41,7 +41,7 @@ namespace IDs
     static const juce::String plateIRFeed     { "plateIRFeed" };
     // Bloom hybrid
     static const juce::String bloomOn         { "bloomOn" };
-    static const juce::String bloomDiffusion  { "bloomDiffusion" };
+    static const juce::String bloomSize       { "bloomSize" };
     static const juce::String bloomFeedback   { "bloomFeedback" };
     static const juce::String bloomTime       { "bloomTime" };
     static const juce::String bloomIRFeed     { "bloomIRFeed" };
@@ -253,7 +253,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateIRFeed,    "Plate IR Feed",    0.0f, 1.0f,  0.0f));
     // Bloom hybrid
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::bloomOn,        "Bloom On",         false));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomDiffusion, "Bloom Diffusion",  0.30f, 0.88f, 0.60f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomSize,      "Bloom Size",       0.25f, 2.0f, 1.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomFeedback,  "Bloom Feedback",   0.0f, 0.65f, 0.25f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomTime,      "Bloom Time",       50.0f, 500.0f, 200.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomIRFeed,    "Bloom IR Feed",    0.0f, 1.0f,   0.0f));
@@ -340,20 +340,26 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     plateBuffer.setSize (2, samplesPerBlock);
     plateBuffer.clear();
 
-    // Bloom hybrid: 4 allpass stages with long prime delays.
-    // At 48 kHz: 1871 → ~39 ms, 3541 → ~74 ms, 7211 → ~150 ms, 14387 → ~300 ms.
-    // No size-scaling — effLen stays 0 (full buf.size() used as the wrap length).
+    // Bloom hybrid: 6 allpass stages with separate L/R prime delay sets.
+    // Incommensurate primes produce genuinely independent L/R textures after feedback cycles.
+    // At 48 kHz: L {241,383,577,863,1297,1913} ≈ 5–40 ms, R {263,431,673,1049,1531,2111} ≈ 5.5–44 ms.
+    // Buffers allocated at 2× base primes to cover bloomSize 0.25–2.0 without reallocation.
+    // g = 0.35 hardcoded (transparent scatter). effLen set each processBlock via bloomSize.
     {
-        static constexpr int bloomPrimes[kNumBloomStages] = { 1871, 3541, 7211, 14387 };
+        static constexpr int bloomPrimesL[kNumBloomStages] = { 241,  383,  577,  863,  1297, 1913 };
+        static constexpr int bloomPrimesR[kNumBloomStages] = { 263,  431,  673, 1049,  1531, 2111 };
         for (int ch = 0; ch < 2; ++ch)
+        {
+            const int* primes = (ch == 0) ? bloomPrimesL : bloomPrimesR;
             for (int s = 0; s < kNumBloomStages; ++s)
             {
-                int d = (int)std::round (bloomPrimes[s] * sampleRate / 48000.0);
+                int d = (int)std::round (primes[s] * sampleRate / 48000.0 * 2.0); // 2× headroom for bloomSize up to 2.0
                 bloomAPs[ch][s].buf.assign ((size_t)d, 0.f);
                 bloomAPs[ch][s].ptr    = 0;
-                bloomAPs[ch][s].effLen = 0;   // 0 = use full buf.size()
-                bloomAPs[ch][s].g      = 0.60f;
+                bloomAPs[ch][s].effLen = 0;   // will be set each block via bloomSize
+                bloomAPs[ch][s].g      = 0.35f; // hardcoded — transparent scatter
             }
+        }
         int fbSamps = (int)std::ceil (kBloomFeedbackMaxMs * sampleRate / 1000.0);
         for (int ch = 0; ch < 2; ++ch)
         {
@@ -504,15 +510,17 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 
     // ——————————————————————————————————————————————————————————————————
-    // Bloom hybrid: pre-convolution allpass cascade + feedback
+    // Bloom hybrid: pre-convolution allpass cascade (self-contained feedback loop)
     //   bloomBuffer stores the cascade output for two uses:
     //     1) IR FEED  — added to the convolver input here (before convolution)
-    //     2) VOLUME   — added directly to the wet bus (after convolution, before EQ)
-    //   Feedback tap (Insertion 3) reads from bloomFbBufs, which is written after EQ+decorr.
+    //     2) VOLUME   — added to the final output after dry/wet blend (independent of wet/dry)
+    //   Feedback tap: writes cascade output to bloomFbBufs within this same sample loop.
+    //   The convolver output is NOT in the feedback path — Bloom is upstream of the reverb,
+    //   like a guitar pedal feeding into a reverb unit with no return path.
     // ——————————————————————————————————————————————————————————————————
     if (apvts.getRawParameterValue (IDs::bloomOn)->load() > 0.5f)
     {
-        const float bloomDiff  = apvts.getRawParameterValue (IDs::bloomDiffusion)->load();
+        const float bloomSz    = juce::jlimit (0.25f, 2.0f, apvts.getRawParameterValue (IDs::bloomSize)->load());
         const float fbAmt      = std::min (0.65f, apvts.getRawParameterValue (IDs::bloomFeedback)->load());
         const float bloomTimeMs = juce::jlimit (50.f, 500.f, apvts.getRawParameterValue (IDs::bloomTime)->load());
         const float irFeed     = apvts.getRawParameterValue (IDs::bloomIRFeed)->load();
@@ -522,10 +530,18 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             bloomBuffer.setSize (2, numSamples, false, true, true);
         bloomBuffer.clear();
 
-        // Set g on all stages once per block (consistent with Plate implementation pattern)
+        // Separate L/R primes for stereo independence — same values as prepareToPlay
+        static constexpr int bloomPrimesL[kNumBloomStages] = { 241,  383,  577,  863,  1297, 1913 };
+        static constexpr int bloomPrimesR[kNumBloomStages] = { 263,  431,  673, 1049,  1531, 2111 };
+
+        // Set effLen per channel/stage once per block using bloomSize (like Plate pattern)
+        // g = 0.35f is hardcoded; no per-block write needed as it was set in prepareToPlay.
         for (int ch = 0; ch < numChannels; ++ch)
+        {
+            const int* primes = (ch == 0) ? bloomPrimesL : bloomPrimesR;
             for (int s = 0; s < kNumBloomStages; ++s)
-                bloomAPs[ch][s].g = bloomDiff;
+                bloomAPs[ch][s].effLen = (int)std::round (primes[s] * currentSampleRate / 48000.0 * bloomSz);
+        }
 
         for (int ch = 0; ch < numChannels; ++ch)
         {
@@ -537,20 +553,25 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
 
             for (int i = 0; i < numSamples; ++i)
             {
-                // Read feedback: bloomTime ms back in the post-EQ wet buffer
+                // Read feedback: bloomTime ms back in the cascade feedback buffer
                 const int rdPtr = (bloomFbWritePtrs[ch] - timeInSamples + fbLen) % fbLen;
                 const float fb  = bloomFbBufs[ch][(size_t)rdPtr] * fbAmt;
 
-                // Run (input + feedback) through the 4-stage allpass cascade
+                // Run (input + feedback) through the 6-stage allpass cascade
                 float diff = data[i] + fb;
                 for (int s = 0; s < kNumBloomStages; ++s)
                     diff = bloomAPs[ch][s].process (diff);
 
-                // Store cascade output — used for IR feed (here) and volume output (Insertion 2)
+                // Store cascade output — used for IR feed (here) and volume output (after dry/wet)
                 bloom[i] = diff;
 
                 // IR feed: add bloom output into the convolver input (additive, on top of main signal)
                 data[i] += diff * irFeed;
+
+                // Feedback tap: write cascade output into bloomFbBufs.
+                // Using the cascade output (not the convolved wet) keeps Bloom's loop self-contained.
+                bloomFbBufs[ch][(size_t)bloomFbWritePtrs[ch]] = diff;
+                bloomFbWritePtrs[ch] = (bloomFbWritePtrs[ch] + 1) % fbLen;
             }
         }
     }
@@ -724,24 +745,6 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         buffer.applyGain (0.5f);
     }
 
-    // ——————————————————————————————————————————————————————————————————
-    // Bloom hybrid Insertion 2: direct volume output (before EQ so EQ shapes the bloom texture)
-    // ——————————————————————————————————————————————————————————————————
-    if (apvts.getRawParameterValue (IDs::bloomOn)->load() > 0.5f && numSamples <= bloomBuffer.getNumSamples())
-    {
-        const float bloomVol = apvts.getRawParameterValue (IDs::bloomVolume)->load();
-        if (bloomVol > 0.f)
-        {
-            for (int ch = 0; ch < numChannels; ++ch)
-            {
-                float*       data  = buffer.getWritePointer (ch);
-                const float* bloom = bloomBuffer.getReadPointer (ch);
-                for (int i = 0; i < numSamples; ++i)
-                    data[i] += bloom[i] * bloomVol;
-            }
-        }
-    }
-
     // EQ: low shelf → peak 1 → peak 2 → peak 3 → high shelf
     lowShelfBand.process (context);
     lowBand.process (context);
@@ -767,25 +770,6 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                 s = -decorrG * w + delayed;
             }
             R[i] = s;
-        }
-    }
-
-    // ——————————————————————————————————————————————————————————————————
-    // Bloom hybrid Insertion 3: feedback tap — capture EQ-shaped wet for re-injection next block
-    // Position: after EQ + stereo decorrelation, before LFO mod.
-    // The EQ-shaped signal is what blooms back, so EQ changes gradually shift the bloom character.
-    // ——————————————————————————————————————————————————————————————————
-    if (apvts.getRawParameterValue (IDs::bloomOn)->load() > 0.5f)
-    {
-        for (int ch = 0; ch < numChannels; ++ch)
-        {
-            const float* data = buffer.getReadPointer (ch);
-            const int    fbLen = (int)bloomFbBufs[ch].size();
-            for (int i = 0; i < numSamples; ++i)
-            {
-                bloomFbBufs[ch][(size_t)bloomFbWritePtrs[ch]] = data[i];
-                bloomFbWritePtrs[ch] = (bloomFbWritePtrs[ch] + 1) % fbLen;
-            }
         }
     }
 
@@ -861,6 +845,26 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     {
         buffer.applyGain (ch, 0, numSamples, wet);
         buffer.addFrom (ch, 0, dryBuffer, ch, 0, numSamples, dry);
+    }
+
+    // ——————————————————————————————————————————————————————————————————
+    // Bloom hybrid Volume output: injected after dry/wet blend so it is independent
+    // of the plugin's wet/dry control. Behaves like the direct output of a Bloom pedal
+    // in parallel with the dry/wet-controlled reverb signal.
+    // ——————————————————————————————————————————————————————————————————
+    if (apvts.getRawParameterValue (IDs::bloomOn)->load() > 0.5f && numSamples <= bloomBuffer.getNumSamples())
+    {
+        const float bloomVol = apvts.getRawParameterValue (IDs::bloomVolume)->load();
+        if (bloomVol > 0.f)
+        {
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                float*       data  = buffer.getWritePointer (ch);
+                const float* bloom = bloomBuffer.getReadPointer (ch);
+                for (int i = 0; i < numSamples; ++i)
+                    data[i] += bloom[i] * bloomVol;
+            }
+        }
     }
 
     // Output level for meter (peak follower with decay), L/R separately

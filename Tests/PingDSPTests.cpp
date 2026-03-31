@@ -23,7 +23,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // SimpleAllpass — single all-pass filter stage.
-// Used in both Plate (6-stage cascade) and Bloom (4-stage cascade).
+// Used in both Plate (6-stage cascade) and Bloom (6-stage cascade).
 //
 // effLen: effective delay length, used by Plate to support the plateSize parameter
 // (which scales all delay times without reallocation). When effLen == 0 or exceeds
@@ -66,16 +66,20 @@ static std::array<SimpleAllpass, 6> makePlateStages (int sr, float plateSize = 1
     return stages;
 }
 
-// Build a 4-stage Bloom cascade (longer prime delays, g=0.60).
-static std::array<SimpleAllpass, 4> makeBloomStages (int sr)
+// Build a 6-stage Bloom cascade (shorter prime delays, g=0.35 transparent).
+// Uses the L-channel primes from the production implementation.
+// Cascade group delay ≈ 5274 samples at 48 kHz (sum of all 6 primes ≈ 110 ms).
+// Tests use 1× base allocation (effLen=0 = use full buf.size()), which equals
+// bloomSize=1.0 in the production code.
+static std::array<SimpleAllpass, 6> makeBloomStages (int sr)
 {
-    const int bloomPrimes[4] = { 1871, 3541, 7211, 14387 };
-    std::array<SimpleAllpass, 4> stages;
-    for (int s = 0; s < 4; ++s)
+    const int bloomPrimesL[6] = { 241, 383, 577, 863, 1297, 1913 };
+    std::array<SimpleAllpass, 6> stages;
+    for (int s = 0; s < 6; ++s)
     {
-        int d = (int)std::round(bloomPrimes[s] * (double)sr / 48000.0);
+        int d = (int)std::round(bloomPrimesL[s] * (double)sr / 48000.0);
         stages[s].buf.assign((size_t)d, 0.f);
-        stages[s].g = 0.60f;
+        stages[s].g = 0.35f;
     }
     return stages;
 }
@@ -159,11 +163,11 @@ TEST_CASE("DSP_02: Plate at density=0 is bit-identical to input", "[dsp][plate][
 TEST_CASE("DSP_03: Bloom allpass is causal — no echo before first delay drains", "[dsp][bloom][causality]")
 {
     const int sr = 48000;
-    // Stage 0 delay: round(1871 * 48000/48000) = 1871 samples (~39 ms).
-    // Before sample 1871, the delayed component of stage 0 is zero (fresh buffer).
-    // The direct path through g produces output of magnitude g^4 * impulse ≈ 0.13.
+    // Stage 0 delay: round(241 * 48000/48000) = 241 samples (~5 ms).
+    // Before sample 241, the delayed component of stage 0 is zero (fresh buffer).
+    // The direct path through g produces output of magnitude g^6 * impulse ≈ 0.35^6 ≈ 0.0018.
     // An erroneous circular buffer would produce a full-level repeat.
-    const int firstDelay = 1871;
+    const int firstDelay = 241;
 
     auto stages = makeBloomStages(sr);
 
@@ -193,7 +197,7 @@ TEST_CASE("DSP_03: Bloom allpass is causal — no echo before first delay drains
 //
 // N_total is set long enough to see multiple 300 ms feedback round-trips and
 // their decay after the input stops.  The Bloom cascade itself has a group delay
-// of ~562 ms (sum of the four stage delays: 27010 samples at 48 kHz), so
+// of ~110 ms (sum of the six stage delays: ~5274 samples at 48 kHz), so
 // measurement windows must be placed well clear of the cascade drain time.
 TEST_CASE("DSP_04: Bloom feedback is stable at max setting (0.65)", "[dsp][bloom][stability]")
 {
@@ -234,7 +238,7 @@ TEST_CASE("DSP_04: Bloom feedback is stable at max setting (0.65)", "[dsp][bloom
         float diff = in;
         for (auto& s : stages) diff = s.process(diff);
 
-        // Blend: 50% raw + 50% diffused (representative of bloomDiffusion = 0.5).
+        // Blend: 50% raw + 50% diffused (conservative stability test).
         float out = in * 0.5f + diff * 0.5f;
 
         fbBuf[(size_t)fbWp] = out;
@@ -246,7 +250,7 @@ TEST_CASE("DSP_04: Bloom feedback is stable at max setting (0.65)", "[dsp][bloom
     CHECK_FALSE(hasNaNorInfF(outputs));
 
     // 2. Compare two windows well after the input stops and well past the cascade
-    //    drain time (cascade group delay ≈ 562 ms = 27010 samples at 48 kHz).
+    //    drain time (cascade group delay ≈ 110 ms = ~5274 samples at 48 kHz).
     //    Window 1: sample 50000 ≈ 1.04 s after input stops (≥ 2 feedback round-trips).
     //    Window 2: sample 72000 ≈ 1.50 s later (≥ 3 additional round-trips at 0.65×).
     //    Each round-trip attenuates by 0.65, so window 2 must be quieter.
@@ -664,7 +668,7 @@ TEST_CASE("DSP_11: Bloom feedback is stable at minimum bloomTime (50 ms)", "[dsp
     CHECK_FALSE(hasNaNorInfF(outputs));
 
     // 2. Energy must decrease after input stops.
-    //    The Bloom cascade drain time is ~562 ms (27010 samples). Place measurement
+    //    The Bloom cascade drain time is ~110 ms (~5274 samples). Place measurement
     //    windows well after the cascade has drained and the feedback is free-running.
     //    Window 1: ~40000 samples after input stops (cascade drained + many trips).
     //    Window 2: ~30000 samples later — must not be louder.
