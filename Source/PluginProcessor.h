@@ -137,6 +137,8 @@ private:
     std::array<std::array<SimpleAllpass, kNumPlateStages>, 2> plateAPs; // [ch][stage]
     // 1-pole lowpass state for plateColour (one value per channel)
     std::array<float, 2> plateShelfState { 0.f, 0.f };
+    // Pre-allocated buffer for the processed plate signal (used across pre/post-convolution injection points)
+    juce::AudioBuffer<float> plateBuffer;
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand;
     juce::SmoothedValue<float> inputGainSmoothed;

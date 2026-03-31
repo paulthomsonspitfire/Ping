@@ -59,7 +59,7 @@ private:
     juce::ToggleButton erCrossfeedOnButton, tailCrossfeedOnButton;
 
     // Plate controls (row 3)
-    juce::Slider plateDryWetSlider, plateDiffusionSlider, plateColourSlider, plateSizeSlider, plateVolumeSlider;
+    juce::Slider plateDiffusionSlider, plateColourSlider, plateSizeSlider, plateIRFeedSlider;
     juce::ToggleButton plateOnButton;
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
@@ -72,7 +72,7 @@ private:
     std::unique_ptr<SliderAttachment> erCrossfeedDelayAttach, erCrossfeedAttAttach;
     std::unique_ptr<SliderAttachment> tailCrossfeedDelayAttach, tailCrossfeedAttAttach;
     std::unique_ptr<ButtonAttachment> erCrossfeedOnAttach, tailCrossfeedOnAttach;
-    std::unique_ptr<SliderAttachment> plateDryWetAttach, plateDiffusionAttach, plateColourAttach, plateSizeAttach, plateVolumeAttach;
+    std::unique_ptr<SliderAttachment> plateDiffusionAttach, plateColourAttach, plateSizeAttach, plateIRFeedAttach;
     std::unique_ptr<ButtonAttachment> plateOnAttach;
 
     juce::Label dryWetLabel, predelayLabel, decayLabel, modDepthLabel;
@@ -82,7 +82,7 @@ private:
     juce::Label erLevelLabel, tailLevelLabel;
     juce::Label erCrossfeedDelayLabel, erCrossfeedAttLabel;
     juce::Label tailCrossfeedDelayLabel, tailCrossfeedAttLabel;
-    juce::Label plateDryWetLabel, plateDiffusionLabel, plateColourLabel, plateSizeLabel, plateVolumeLabel;
+    juce::Label plateDiffusionLabel, plateColourLabel, plateSizeLabel, plateIRFeedLabel;
 
     juce::Label dryWetReadout, predelayReadout, decayReadout, modDepthReadout;
     juce::Label stretchReadout, widthReadout, modRateReadout;
@@ -91,7 +91,7 @@ private:
     juce::Label erLevelReadout, tailLevelReadout;
     juce::Label erCrossfeedDelayReadout, erCrossfeedAttReadout;
     juce::Label tailCrossfeedDelayReadout, tailCrossfeedAttReadout;
-    juce::Label plateDryWetReadout, plateDiffusionReadout, plateColourReadout, plateSizeReadout, plateVolumeReadout;
+    juce::Label plateDiffusionReadout, plateColourReadout, plateSizeReadout, plateIRFeedReadout;
 
     PingLookAndFeel pingLook;
     EQGraphComponent eqGraph;

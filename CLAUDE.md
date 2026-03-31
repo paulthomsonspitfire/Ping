@@ -201,11 +201,11 @@ Immediately after Row 1, `mainArea.removeFromTop(row2TotalH)` reserves a second 
 
 Group header bounds stored as `erCrossfadeGroupBounds` and `tailCrossfadeGroupBounds`. All 6 controls are live/real-time — they do not affect IR synthesis or loading; see [Post-convolution crossfeed](#post-convolution-crossfeed-er-and-tail).
 
-### Row 3 — Plate (5 small knobs + 1 switch)
+### Row 3 — Plate pre-diffuser (4 small knobs + 1 switch)
 
-Immediately after Row 2, `mainArea.removeFromTop(row3TotalH)` reserves a third strip using the same constants. **No** extra inter-group gap — all five knobs belong to a single **"Plate"** group:
+Immediately after Row 2, `mainArea.removeFromTop(row3TotalH)` reserves a third strip using the same constants. **No** extra inter-group gap — all four knobs belong to a single **"Plate pre-diffuser"** group:
 
-- knob 0 = DRY/WET (`plateDryWetSlider`), knob 1 = DIFFUSION (`plateDiffusionSlider`), knob 2 = COLOUR (`plateColourSlider`), knob 3 = SIZE (`plateSizeSlider`), knob 4 = VOLUME (`plateVolumeSlider`), pill switch (`plateOnButton`) right-aligned in the group header
+- knob 0 = DIFFUSION (`plateDiffusionSlider`), knob 1 = COLOUR (`plateColourSlider`), knob 2 = SIZE (`plateSizeSlider`), knob 3 = IR FEED (`plateIRFeedSlider`), pill switch (`plateOnButton`) right-aligned in the group header
 
 Group header bounds stored as `plateGroupBounds`. The switch uses component ID `PlateSwitch` and triggers `repaint()` so the header text glows orange when active. All controls are live/real-time — no IR recalculation on any change. Default editor height was increased from 528 → **600 px** to accommodate the new row (`editorH` in `PluginEditor.cpp`; minimum resize limit remains 528).
 
@@ -325,11 +325,10 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `tailCrossfeedDelayMs` | Tail Crossfeed Delay (ms) | 5–15 | 10 |
 | `tailCrossfeedAttDb` | Tail Crossfeed Att (dB) | -24–0 | -6 |
 | `plateOn` | Plate On | bool | false |
-| `plateDryWet` | Plate Dry/Wet | 0–1 | 0.5 |
 | `plateDiffusion` | Plate Diffusion | 0.30–0.88 | 0.70 |
 | `plateColour` | Plate Colour | 0–1 | 0.5 |
 | `plateSize` | Plate Size | 0.5–4.0 | 1.0 |
-| `plateVolume` | Plate Volume | 0–2 | 1.0 |
+| `plateIRFeed` | Plate IR Feed | 0–1 | 0 |
 | `reversetrim` | Reverse Trim | 0–0.95 | 0 |
 | `b0freq/b0gain/b0q` | Band 0 EQ | 20–20k Hz / ±12 dB / 0.3–10 | 400 Hz, 0 dB, 0.707 |
 | `b1freq/b1gain/b1q` | Band 1 EQ | — | 1000 Hz, 0 dB, 0.707 |
@@ -361,7 +360,8 @@ Input Gain (dB, smoothed)
 Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix + compensation)
   │
   ▼
-[Plate: 6-stage allpass diffuser (g=diffusion) + 1-pole colour LP, dry/wet blend × volume]  (if plateOn)
+[Plate: parallel path — 6-stage allpass diffuser (g=diffusion) + 1-pole colour LP]  (if plateOn)
+  │   plateBuffer stored; irFeed portion added to convolver input; volume portion added after convolution
   │
   ▼
 Convolution  ── see "Convolution modes" below
@@ -451,7 +451,7 @@ The `SimpleAllpass` struct in `PingDSPTests.cpp` must stay **exactly in sync** w
 
 ### `prepareToPlay`
 
-Base prime delays at 48 kHz: `{ 24, 71, 157, 293, 431, 691 }` samples. Buffers allocated at **2× base primes** so the full `plateSize` 0.5–2.0 range needs no reallocation. All g values set to 0.70. `plateShelfState` filled to zero.
+Base prime delays at 48 kHz: `{ 24, 71, 157, 293, 431, 691 }` samples. Buffers allocated at **4× base primes** so the full `plateSize` 0.5–4.0 range needs no reallocation. All g values set to 0.70. `plateShelfState` filled to zero. `plateBuffer` sized to `(2, samplesPerBlock)` and cleared.
 
 ### `processBlock` insertion point
 
@@ -464,11 +464,10 @@ After the saturator, **before** the convolution block. At `density = 0` the blen
 | Parameter ID | Range | Default | Effect |
 |---|---|---|---|
 | `plateOn` | bool | false | Enables the cascade; zero overhead when off |
-| `plateDryWet` | 0–1 | 0.5 | Blend between unprocessed input and diffused+coloured signal; 0 = fully dry (bypass within plate stage), 1 = fully wet |
 | `plateDiffusion` | 0.30–0.88 | 0.70 | Allpass g coefficient applied to all 6 stages each block; lower = gentle scatter, higher = very dense diffusion |
 | `plateColour` | 0–1 | 0.5 | 1-pole LP cutoff applied to the diffused signal: 0 → 2 kHz (warm), 1 → 8 kHz (bright). Readout displays the actual cutoff in kHz. |
 | `plateSize` | 0.5–4.0 | 1.0 | Scales all 6 allpass delays; readout shows the largest delay time in ms (prime 691 × size / 48000 × 1000). At size=1.0 → ~14.4 ms, size=4.0 → ~57.6 ms. Buffers allocated at 4× base primes to cover the full range without reallocation. |
-| `plateVolume` | 0–2 | 1.0 | Output gain applied after the dry/wet blend; scales the entire plate stage independently of the main signal chain |
+| `plateIRFeed` | 0–1 | 0 | Adds the processed plate signal into the IR convolver input (on top of the main signal). At 0: plate has no effect; at 1: full plate signal added to convolver input. |
 
 ---
 
@@ -637,9 +636,9 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Preset and IR save overwrite prompts are selection-based** — Save actions only prompt when the typed name matches the currently selected existing item in the corresponding editable combo (`presetCombo` or IR synth `irCombo`) and the target file already exists. Typing a different name saves directly as a new file. Use async JUCE dialogs (`AlertWindow::showAsync`) in plugin UI; avoid blocking modal loops.
 - **`rawSynthBuffer` stores the pre-processing synth IR — do not save it after any transforms** — It must be saved as the very first thing inside the `fromSynth` block of `loadIRFromBuffer`, before reverse/trim/stretch/decay are applied. If it were saved after transforms, `reloadSynthIR()` would double-apply them on every Reverse or Trim interaction.
 - **+15 dB output trim is intentional** — `synthIR()` applies a fixed `+15 dB` scalar (`gain15dB = pow(10, 15/20)`) to all four IR channels as the very last step, correcting for the observed output level shortfall. Do not remove this. It does not affect the synthesis calculations, RT60, ER/tail balance, or FDN gain calibration — it is a pure post-process scalar applied after everything else.
-- **Plate is a pre-convolution diffuser — it does not touch the IR or the IR Synth engine** — All Plate DSP runs in `processBlock` on the live audio buffer, applied after the saturator and before the convolution. Changing any Plate parameter never triggers an IR recalculation. The IR output (and therefore all IR_01–IR_11 test golden values) is unchanged.
+- **Plate pre-diffuser is a pure convolver pre-feed** — The Plate DSP runs in `processBlock` after the saturator. It processes the post-saturator signal through the allpass cascade and colour LP, storing the result in `plateBuffer`. **IR FEED** adds `plateBuffer * irFeed` to the convolver input before convolution — the diffused signal feeds the IR alongside the main signal. The only output is via the convolver; there is no direct parallel output. At irFeed=0 the plate has no effect. Plate parameters never trigger an IR recalculation. The IR output (and therefore all IR_01–IR_11 test golden values) is unchanged.
 - **Plate `effLen` and `g` are set per block, not per sample** — `plateSize` is read once, the 6 effective delay lengths are computed, and all `effLen` fields written before the sample loop. `plateDiffusion` is also read once and written to all `plateAPs[ch][s].g` before the sample loop. This avoids redundant computation while keeping the sample loop tight.
-- **Plate `plateColour` is a 1-pole lowpass, not a high-shelf** — A simple 1-pole lowpass applied to the diffused signal before the dry/wet blend. At `colour = 0` the cutoff is 2 kHz (warm, dark — EMT 140 character); at `colour = 1` it is 8 kHz (bright — AMS RMX16 character). Do not replace it with a true biquad shelf — the 1-pole is intentional.
-- **Plate signal path: dry/wet blend then volume** — The sample loop computes `blend = in * (1 - drywet) + coloured * drywet`, then `data[i] = blend * volume`. `volume` is an independent output gain (0–2×) applied after the blend, so it scales the entire plate stage without affecting the upstream dry signal or the overall convolver input. `drywet = 0` collapses to the raw input regardless of volume, and `plateOn = false` skips the block entirely — zero overhead.
+- **Plate `plateColour` is a 1-pole lowpass, not a high-shelf** — A simple 1-pole lowpass applied to the diffused signal before feeding to the convolver. At `colour = 0` the cutoff is 2 kHz (warm, dark — EMT 140 character); at `colour = 1` it is 8 kHz (bright — AMS RMX16 character). Do not replace it with a true biquad shelf — the 1-pole is intentional.
+- **Plate signal path: pre-diffuser into convolver only** — The sample loop processes the input through the allpass cascade + colour LP, stores the result in `plateBuffer`, and adds `plate[i] * irFeed` to the main buffer. The convolver receives the main signal plus the diffused plate signal. There is no direct output path. `plateOn = false` skips the block entirely — zero overhead.
 - **`plateDiffusion` sets g on all 6 stages simultaneously** — The g coefficient is written to all `plateAPs[ch][s].g` once per block before the sample loop. Range 0.30–0.88 keeps the filter stable and well below the unit-circle limit. Lower g = gentle, transparent scatter; higher g = very dense, metallic diffusion. Default 0.70 matches the original fixed g used when the parameter did not yet exist.
 - **Default editor height is now 600 px** — bumped from 528 to accommodate Row 3 (Plate). The resize minimum (`minH`) remains 528 so users can still shrink the window. Both constants are at the top of the `PingEditor` constructor in `PluginEditor.cpp`.

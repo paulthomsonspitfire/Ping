@@ -32,11 +32,10 @@ namespace IDs
     static const juce::String tailCrossfeedAttDb { "tailCrossfeedAttDb" };
     // Plate onset
     static const juce::String plateOn         { "plateOn" };
-    static const juce::String plateDryWet     { "plateDryWet" };
     static const juce::String plateDiffusion  { "plateDiffusion" };
     static const juce::String plateColour     { "plateColour" };
     static const juce::String plateSize       { "plateSize" };
-    static const juce::String plateVolume     { "plateVolume" };
+    static const juce::String plateIRFeed     { "plateIRFeed" };
 }
 
 static juce::File getLicenceDirectory()
@@ -231,11 +230,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailCrossfeedAttDb, "Tail Crossfeed Att (dB)", -24.0f, 0.0f, -6.0f));
     // Plate onset
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::plateOn,        "Plate On",         false));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDryWet,    "Plate Dry/Wet",    0.0f, 1.0f,  0.5f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDiffusion, "Plate Diffusion",  0.30f, 0.88f, 0.70f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateColour,    "Plate Colour",     0.0f, 1.0f,  0.5f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateSize,      "Plate Size",       0.5f, 4.0f,  1.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateVolume,    "Plate Volume",     0.0f, 2.0f,  1.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateIRFeed,    "Plate IR Feed",    0.0f, 1.0f,  0.0f));
     return layout;
 }
 
@@ -313,6 +311,8 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
             }
         plateShelfState.fill (0.f);
     }
+    plateBuffer.setSize (2, samplesPerBlock);
+    plateBuffer.clear();
 
     updateGains();
     updatePredelay();
@@ -394,18 +394,21 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 
     // ——————————————————————————————————————————————————————————————————
-    // Plate onset: pre-convolution allpass diffuser cascade
+    // Plate onset: parallel allpass diffuser cascade
+    //   Processes the post-saturator signal through 6 allpass stages + colour LP.
+    //   plateBuffer stores the processed signal for two uses:
+    //     1) IR FEED  — added to the convolver input (here, before convolution)
+    //     2) VOLUME   — added directly to the wet bus (after convolution, before EQ)
     // ——————————————————————————————————————————————————————————————————
     if (apvts.getRawParameterValue (IDs::plateOn)->load() > 0.5f)
     {
-        const float drywet    = apvts.getRawParameterValue (IDs::plateDryWet)->load();
+        const float irFeed    = apvts.getRawParameterValue (IDs::plateIRFeed)->load();
         const float diffusion = apvts.getRawParameterValue (IDs::plateDiffusion)->load();
         const float colour    = apvts.getRawParameterValue (IDs::plateColour)->load();
         const float plateSz   = juce::jlimit (0.5f, 4.0f, apvts.getRawParameterValue (IDs::plateSize)->load());
-        const float volume    = apvts.getRawParameterValue (IDs::plateVolume)->load();
 
         // colour → 1-pole lowpass cutoff: 0 → 2 kHz (warm/dark), 1 → 8 kHz (bright)
-        const float cutHz    = 2000.f + colour * 6000.f;
+        const float cutHz      = 2000.f + colour * 6000.f;
         const float shelfAlpha = 1.f - std::exp (-2.f * juce::MathConstants<float>::pi * cutHz / (float)currentSampleRate);
 
         // Pre-compute effective delay lengths per stage (constant within this block)
@@ -419,27 +422,35 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             for (int s = 0; s < kNumPlateStages; ++s)
                 plateAPs[ch][s].g = diffusion;
 
+        // Compute plate signal and store in plateBuffer; add to convolver input via IR FEED
         for (int ch = 0; ch < numChannels; ++ch)
         {
-            float* data = buffer.getWritePointer (ch);
+            float* data  = buffer.getWritePointer (ch);
+            float* plate = plateBuffer.getWritePointer (ch);
+
             for (int s = 0; s < kNumPlateStages; ++s)
                 plateAPs[ch][s].effLen = stageLens[s];
 
             for (int i = 0; i < numSamples; ++i)
             {
-                const float in = data[i];
-                float diff = in;
+                const float x = data[i];   // capture input before any modification
+                float diff = x;
                 for (int s = 0; s < kNumPlateStages; ++s)
                     diff = plateAPs[ch][s].process (diff);
 
                 // 1-pole lowpass shapes colour: low cutoff = warm/dark, high cutoff = bright
                 plateShelfState[ch] = plateShelfState[ch] + shelfAlpha * (diff - plateShelfState[ch]);
+                plate[i] = plateShelfState[ch];   // store processed plate signal
 
-                // Dry/wet blend, then output volume
-                float blend = in * (1.f - drywet) + plateShelfState[ch] * drywet;
-                data[i] = blend * volume;
+                // Add plate signal into convolver input (IR FEED — additive on top of main signal)
+                data[i] = x + plate[i] * irFeed;
             }
         }
+    }
+    else
+    {
+        // plateBuffer not needed this block — zero it so post-convolution injection is silent
+        plateBuffer.clear();
     }
 
     float erDb = apvts.getRawParameterValue (IDs::erLevel)->load();
