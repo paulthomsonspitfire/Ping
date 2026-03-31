@@ -24,6 +24,9 @@ namespace IDs
     static const juce::String band0Freq { "b0freq" }, band0Gain { "b0gain" }, band0Q { "b0q" };
     static const juce::String band1Freq { "b1freq" }, band1Gain { "b1gain" }, band1Q { "b1q" };
     static const juce::String band2Freq { "b2freq" }, band2Gain { "b2gain" }, band2Q { "b2q" };
+    // b3 = Low Shelf, b4 = High Shelf
+    static const juce::String band3Freq { "b3freq" }, band3Gain { "b3gain" }, band3Q { "b3q" };
+    static const juce::String band4Freq { "b4freq" }, band4Gain { "b4gain" }, band4Q { "b4q" };
     static const juce::String erCrossfeedOn { "erCrossfeedOn" };
     static const juce::String erCrossfeedDelayMs { "erCrossfeedDelayMs" };
     static const juce::String erCrossfeedAttDb { "erCrossfeedAttDb" };
@@ -222,6 +225,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band2Freq, "Band 2 Freq (Hz)", 20.0f, 20000.0f, 4000.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band2Gain, "Band 2 Gain (dB)", -12.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band2Q, "Band 2 Q", 0.3f, 10.0f, 0.707f));
+    // Low shelf (b3) and High shelf (b4)
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band3Freq, "Low Shelf Freq (Hz)", 20.0f, 1200.0f, 200.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band3Gain, "Low Shelf Gain (dB)", -12.0f, 12.0f, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band3Q, "Low Shelf Slope", 0.3f, 2.0f, 0.707f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band4Freq, "High Shelf Freq (Hz)", 2000.0f, 20000.0f, 8000.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band4Gain, "High Shelf Gain (dB)", -12.0f, 12.0f, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band4Q, "High Shelf Slope", 0.3f, 2.0f, 0.707f));
     layout.add (std::make_unique<juce::AudioParameterBool> (IDs::erCrossfeedOn, "ER Crossfeed On", false));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::erCrossfeedDelayMs, "ER Crossfeed Delay (ms)", 5.0f, 15.0f, 10.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::erCrossfeedAttDb, "ER Crossfeed Att (dB)", -24.0f, 0.0f, -6.0f));
@@ -230,7 +240,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailCrossfeedAttDb, "Tail Crossfeed Att (dB)", -24.0f, 0.0f, -6.0f));
     // Plate onset
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::plateOn,        "Plate On",         false));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDiffusion, "Plate Diffusion",  0.30f, 0.88f, 0.70f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDiffusion, "Plate Diffusion",  0.30f, 0.88f, 0.40f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateColour,    "Plate Colour",     0.0f, 1.0f,  0.5f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateSize,      "Plate Size",       0.5f, 4.0f,  1.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateIRFeed,    "Plate IR Feed",    0.0f, 1.0f,  0.0f));
@@ -277,9 +287,11 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     saturatorDriveSmoothed.reset (sampleRate, 0.02);
 
     updateEQ();
+    lowShelfBand.prepare (spec);
     lowBand.prepare (spec);
     midBand.prepare (spec);
     highBand.prepare (spec);
+    highShelfBand.prepare (spec);
 
     // Stereo decorrelation allpass (R channel only): 7.13 ms, 14.27 ms — incommensurate with FDN
     decorrDelays[0] = std::max (1, (int)std::round (7.13 * sampleRate / 1000.0));
@@ -307,7 +319,7 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
                 plateAPs[ch][s].buf.assign ((size_t)d, 0.f);
                 plateAPs[ch][s].ptr    = 0;
                 plateAPs[ch][s].effLen = 0;
-                plateAPs[ch][s].g      = 0.70f;
+                plateAPs[ch][s].g      = 0.40f;
             }
         plateShelfState.fill (0.f);
     }
@@ -616,10 +628,12 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         buffer.applyGain (0.5f);
     }
 
-    // EQ
+    // EQ: low shelf → peak 1 → peak 2 → peak 3 → high shelf
+    lowShelfBand.process (context);
     lowBand.process (context);
     midBand.process (context);
     highBand.process (context);
+    highShelfBand.process (context);
 
     // Stereo decorrelation: 2-stage allpass on R channel only (preserves mono sum, widens tail image)
     if (numChannels >= 2)
@@ -785,9 +799,11 @@ void PingProcessor::updateEQ()
     auto freq = [this] (const juce::String& id) { return apvts.getRawParameterValue (id)->load(); };
     auto gain = [this] (const juce::String& id) { return juce::Decibels::decibelsToGain (apvts.getRawParameterValue (id)->load()); };
     auto q    = [this] (const juce::String& id) { return apvts.getRawParameterValue (id)->load(); };
-    *lowBand.state  = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (currentSampleRate, freq (IDs::band0Freq), q (IDs::band0Q), gain (IDs::band0Gain));
-    *midBand.state  = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (currentSampleRate, freq (IDs::band1Freq), q (IDs::band1Q), gain (IDs::band1Gain));
-    *highBand.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (currentSampleRate, freq (IDs::band2Freq), q (IDs::band2Q), gain (IDs::band2Gain));
+    *lowShelfBand.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf  (currentSampleRate, freq (IDs::band3Freq), q (IDs::band3Q), gain (IDs::band3Gain));
+    *lowBand.state      = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (currentSampleRate, freq (IDs::band0Freq), q (IDs::band0Q), gain (IDs::band0Gain));
+    *midBand.state      = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (currentSampleRate, freq (IDs::band1Freq), q (IDs::band1Q), gain (IDs::band1Gain));
+    *highBand.state     = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (currentSampleRate, freq (IDs::band2Freq), q (IDs::band2Q), gain (IDs::band2Gain));
+    *highShelfBand.state= *juce::dsp::IIR::Coefficients<float>::makeHighShelf (currentSampleRate, freq (IDs::band4Freq), q (IDs::band4Q), gain (IDs::band4Gain));
 }
 
 void PingProcessor::applyWidth (juce::AudioBuffer<float>& wet, float width)

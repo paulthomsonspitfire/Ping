@@ -517,8 +517,8 @@ void PingEditor::resized()
     const int readoutH = juce::jmax (10, (int) (0.022f * ch));
     const int sixRowH = sixKnobSize + labelH + readoutH + (int) (0.01f * ch);
     const int bigKnobSize = juce::jmax (80, juce::jmin (128, (int) (0.15f * cw)));
-    const int eqMinH = 175;
-    const int eqHeight = juce::jmax (eqMinH, (int) (0.36f * ch));
+    const int eqMinH = 300;  // must fit the 3-row knob control strip (ctrlH ≈ 246 with 42 px knobs)
+    const int eqHeight = juce::jmax (eqMinH, (int) (0.45f * ch));
     const int gapV = (int) (0.01f * ch) + (int) (0.008f * ch);
     const int marginV = juce::jmin (12, ch / 38);
     const int availableForMainAndEq = ch - 2 * marginV - topRowH - gapV;
@@ -608,8 +608,19 @@ void PingEditor::resized()
     const int rowGap       = juce::jmax (6,  (int)(0.008f * cw));
     const int groupLabelH  = 14;   // height reserved for "IR Input" text + line above knobs 0-1
     const int rowTotalH    = rowKnobSize + labelH + readoutH + 6;
+    // Hoist row 2/3 heights here so they can be used to compute absolute Y anchors below
+    const int row2TotalH_  = groupLabelH + rowKnobSize + labelH + readoutH + 6;
+    const int row3TotalH_  = row2TotalH_;   // identical formula
     auto topKnobRow = mainArea.removeFromTop (rowTotalH + 4 + groupLabelH);
-    const int rowY       = topKnobRow.getY() + groupLabelH;  // knobs sit below the group header
+    const int rowY       = topKnobRow.getY() + groupLabelH - 10;  // knobs sit below the group header (-10 px offset)
+
+    // Anchor rows 2 and 3 from topKnobRow.getBottom() rather than from mainArea.getY()
+    // after the removeFromTop calls.  When mainHeight < sum of all row heights, JUCE's
+    // removeFromTop clamps to the remaining rect height, causing subsequent rows to be
+    // placed far too high (they pile up inside row 2 / row 1).  Using absolute offsets
+    // from topKnobRow.getBottom() guarantees correct spacing regardless of mainHeight.
+    const int row2AbsY = topKnobRow.getBottom();
+    const int row3AbsY = row2AbsY + row2TotalH_;
     const int rowStep    = rowKnobSize + rowGap;
     const int rowStartX  = juce::jmax (8, w / 128) + 5;     // 5 px right of the window edge margin
 
@@ -631,12 +642,12 @@ void PingEditor::resized()
     // Store group bounds for painting (text + line above each pair/triple)
     irInputGroupBounds = juce::Rectangle<int> (
         irInputGainSlider.getX(),
-        topKnobRow.getY(),
+        topKnobRow.getY() - 10,
         irInputDriveSlider.getRight() - irInputGainSlider.getX(),
         groupLabelH);
     irControlsGroupBounds = juce::Rectangle<int> (
         predelaySlider.getX(),
-        topKnobRow.getY(),
+        topKnobRow.getY() - 10,
         stretchSlider.getRight() - predelaySlider.getX(),
         groupLabelH);
 
@@ -644,7 +655,7 @@ void PingEditor::resized()
     // Toggles live in the group header line (LED-style, right-aligned); no extra height needed.
     const int row2TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     auto row2Area = mainArea.removeFromTop (row2TotalH);
-    const int row2KnobY = row2Area.getY() + groupLabelH;
+    const int row2KnobY = row2AbsY + groupLabelH;
 
     auto placeRow2Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
     {
@@ -662,12 +673,12 @@ void PingEditor::resized()
     // Store group header bounds for painting
     erCrossfadeGroupBounds = juce::Rectangle<int> (
         erCrossfeedDelaySlider.getX(),
-        row2Area.getY(),
+        row2AbsY,
         erCrossfeedAttSlider.getRight() - erCrossfeedDelaySlider.getX(),
         groupLabelH);
     tailCrossfadeGroupBounds = juce::Rectangle<int> (
         tailCrossfeedDelaySlider.getX(),
-        row2Area.getY(),
+        row2AbsY,
         tailCrossfeedAttSlider.getRight() - tailCrossfeedDelaySlider.getX(),
         groupLabelH);
 
@@ -675,7 +686,7 @@ void PingEditor::resized()
     {
         const int ledH = groupLabelH - 4;   // fits snugly inside the 14 px header strip
         const int ledW = ledH * 2;
-        const int ledY = row2Area.getY() + (groupLabelH - ledH) / 2;
+        const int ledY = row2AbsY + (groupLabelH - ledH) / 2;
         erCrossfeedOnButton.setBounds   (erCrossfadeGroupBounds.getRight()   - ledW, ledY, ledW, ledH);
         tailCrossfeedOnButton.setBounds (tailCrossfadeGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
@@ -684,7 +695,7 @@ void PingEditor::resized()
     // Single group spanning all four knobs; no extra inter-group gap.
     const int row3TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     auto row3Area = mainArea.removeFromTop (row3TotalH);
-    const int row3KnobY = row3Area.getY() + groupLabelH;
+    const int row3KnobY = row3AbsY + groupLabelH;
 
     auto placeRow3Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
     {
@@ -702,18 +713,19 @@ void PingEditor::resized()
     // Group header spans all four knobs; toggle pill right-aligned within it
     plateGroupBounds = juce::Rectangle<int> (
         plateDiffusionSlider.getX(),
-        row3Area.getY(),
+        row3AbsY,
         plateIRFeedSlider.getRight() - plateDiffusionSlider.getX(),
         groupLabelH);
     {
         const int ledH = groupLabelH - 4;
         const int ledW = ledH * 2;
-        const int ledY = row3Area.getY() + (groupLabelH - ledH) / 2;
+        const int ledY = row3AbsY + (groupLabelH - ledH) / 2;
         plateOnButton.setBounds (plateGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
     // —— Remaining 6 knobs (grid): LFO Depth | Width | LFO Rate | Tail Mod | Delay Depth | Rate ——
-    int y = mainArea.getY();   // below the row
+    // Positioned 70 px below the bottom of row 3, using the same absolute-Y strategy as the rows.
+    int y = row3AbsY + row3TotalH_ + 70;
 
     modDepthSlider.setBounds (x1, y, sixKnobSize, sixKnobSize);
     modDepthLabel.setBounds  (x1, y + sixKnobSize + 2,          sixKnobSize, labelH);
@@ -728,7 +740,7 @@ void PingEditor::resized()
     modRateLabel.setBounds   (x2, y + sixKnobSize + 2,          sixKnobSize, labelH);
     modRateReadout.setBounds (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
 
-    y = mainArea.getY();
+    y = row3AbsY + row3TotalH_ + 70;
     tailModSlider.setBounds  (x3, y, sixKnobSize, sixKnobSize);
     tailModLabel.setBounds   (x3, y + sixKnobSize + 2,          sixKnobSize, labelH);
     tailModReadout.setBounds (x3, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
@@ -765,11 +777,14 @@ void PingEditor::resized()
     tailLevelSlider.setBounds (tailLevelLabel.getRight() + gap, erTailRow.getY(), eachSliderW, sliderH);
     tailLevelReadout.setBounds (tailLevelSlider.getRight() + gap, erTailRow.getY(), readoutW, sliderH);
 
-    // —— Bottom: EQ (right) ——
+    // —— Bottom: EQ (right) — extends into the h/6 bottom margin strip ——
     int eqWidth = juce::jmax (420, (int) (0.62f * cw));
     auto bottomRow = b.removeFromBottom (eqHeight);
     auto eqRect = bottomRow.removeFromRight (eqWidth);
-    eqGraph.setBounds (eqRect);
+    // Expand the EQ component downward to fill the unused h/6 window margin,
+    // pinning the control knobs all the way to the window bottom edge.
+    const int eqTotalH = eqHeight + (h - ch);
+    eqGraph.setBounds (eqRect.getX(), eqRect.getY(), eqRect.getWidth(), eqTotalH);
 
     licenceLabel.setBounds (leftPad + 12, ch - 20, cw - 24, 16);
     versionLabel.setBounds (tailRateSlider.getX(), ch - 20, tailRateSlider.getWidth(), 16);

@@ -140,7 +140,7 @@ private:
     // Pre-allocated buffer for the processed plate signal (used across pre/post-convolution injection points)
     juce::AudioBuffer<float> plateBuffer;
     juce::dsp::Gain<float> dryGain, wetGain;
-    juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand;
+    juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand, lowShelfBand, highShelfBand;
     juce::SmoothedValue<float> inputGainSmoothed;
     juce::SmoothedValue<float> outputGainSmoothed;
     juce::SmoothedValue<float> saturatorDriveSmoothed;

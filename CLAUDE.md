@@ -147,7 +147,7 @@ Source/
   IRSynthEngine.h/.cpp     — Room acoustic simulation (image-source + FDN)
   IRSynthComponent.h/.cpp  — UI panel for the IR Synth
   FloorPlanComponent.h/.cpp— 2D floor-plan visualiser for speaker/mic placement
-  EQGraphComponent.h/.cpp  — Draws the EQ frequency response curve
+  EQGraphComponent.h/.cpp  — 5-band EQ graph + rotary knob controls (low shelf, 3× peak, high shelf)
   WaveformComponent.h/.cpp — IR waveform thumbnail display (dB logarithmic scale)
   PingLookAndFeel.h/.cpp   — Custom JUCE LookAndFeel (colours, knob style)
   PresetManager.h/.cpp     — Save/load named presets
@@ -190,6 +190,8 @@ Below the main-area header, `mainArea.removeFromTop(rowTotalH + 4 + groupLabelH)
 - **IR Input** (group header + line): knob 0 = GAIN (`irInputGainSlider`), knob 1 = DRIVE (`irInputDriveSlider`)
 - **IR Controls** (group header + line): knob 2 = PREDELAY, knob 3 = DAMPING, knob 4 = STRETCH
 
+The knobs and both group headers are shifted **−10 px** vertically: `rowY = topKnobRow.getY() + groupLabelH - 10` and both `irInputGroupBounds`/`irControlsGroupBounds` use `topKnobRow.getY() - 10` as their Y origin. This moves the entire Row 1 strip (knobs, readouts, labels, and header text + line) 10 px upward without affecting any other row.
+
 Group header bounds are stored as `irInputGroupBounds` and `irControlsGroupBounds` (set in `resized()`, drawn in `paint()` via `drawGroupHeader`).
 
 ### Row 2 — ER Crossfade + Tail Crossfade (4 small knobs + 2 switches)
@@ -208,6 +210,49 @@ Immediately after Row 2, `mainArea.removeFromTop(row3TotalH)` reserves a third s
 - knob 0 = DIFFUSION (`plateDiffusionSlider`), knob 1 = COLOUR (`plateColourSlider`), knob 2 = SIZE (`plateSizeSlider`), knob 3 = IR FEED (`plateIRFeedSlider`), pill switch (`plateOnButton`) right-aligned in the group header
 
 Group header bounds stored as `plateGroupBounds`. The switch uses component ID `PlateSwitch` and triggers `repaint()` so the header text glows orange when active. All controls are live/real-time — no IR recalculation on any change. Default editor height was increased from 528 → **600 px** to accommodate the new row (`editorH` in `PluginEditor.cpp`; minimum resize limit remains 528).
+
+### EQ section (bottom of window)
+
+The `EQGraphComponent` occupies the **bottom-right** of the editor, pinned to the full window bottom edge. Its bounds are set in `PluginEditor::resized()` as:
+
+```cpp
+const int eqTotalH = eqHeight + (h - ch);   // extends into the h/6 bottom margin
+eqGraph.setBounds (eqRect.getX(), eqRect.getY(), eqRect.getWidth(), eqTotalH);
+```
+
+`eqHeight` is `max(300, 0.45 × ch)`. Adding `(h − ch)` = `h/6` means the component's bottom aligns with the window bottom edge, filling the empty margin strip that the rest of the UI leaves unused.
+
+#### EQGraphComponent layout
+
+The component is split into two parts by `resized()`:
+
+**Graph area** — the upper portion, sized to whatever remains after the control strip is reserved. Displays: spectrum analyser (lock-free FIFO), grid lines, frequency-response curve (sigmoid approximation for shelves, Gaussian for peaks), and draggable band handles (diamond ◆ for shelf bands, circle ● for peaks). Bands are draggable via `mouseDown`/`mouseDrag` — dragging sets freq+gain in APVTS directly.
+
+**Control strip** — the lower portion, reserved via `b.removeFromBottom(ctrlH - 75)`. Subtracting 75 from `ctrlH` shifts the entire control strip (band-name header + all knobs) 75 px lower than the default `ctrlH` position, and simultaneously extends the chart's bottom edge downward by 75 px. Three horizontal rows, one per parameter type, span all five bands:
+
+| Row | Parameter | Position | Notes |
+|-----|-----------|----------|-------|
+| Row 1 | FREQ | `colCentre` | All 5 freq knobs at the same Y; `freqDX = −10`, `freqDY = −5` (net −10 px X, +70 px Y relative to base, after ctrlArea shift) |
+| Row 2 | GAIN | `colCentre + colW/5 + gainDX` (shifted right), lower Y | `gainDX = +20`, `gainDY = −45` (net +20 px X on top of `gainXOff`, +30 px Y relative to base, after ctrlArea shift) |
+| Row 3 | Q / SLOPE | `colCentre` | `qDX = −10`, `qDY = −65` (net −10 px X, +10 px Y relative to base, after ctrlArea shift) |
+
+The `DY` values are negative because they counteract the +75 px downward shift of `ctrlArea`; the net knob positions are the intended offsets from the row base Y. Do not change `removeFromBottom(ctrlH - 75)` back to `ctrlH` without also adjusting all three `DY` constants by +75.
+
+Under each knob: an **accent-orange value readout** (live, 9 pt) showing the current value (e.g. "400 Hz", "+3.0 dB", "0.71"), then a grey parameter-name label ("FREQ", "GAIN", "Q"/"SLOPE"). Knob size is 42 px. The graph area has its top edge trimmed by 60 px (`b.withTrimmedTop(60)`) to push the visible display down.
+
+Band order (left→right): LOW (low shelf, purple) · MID 1 (peak, blue) · MID 2 (peak, amber) · MID 3 (peak, green) · HIGH (high shelf, red). Band colours are set via `rotarySliderFillColourId` so they pick up the `PingLookAndFeel` dotted-ring style automatically.
+
+#### EQ DSP (PluginProcessor)
+
+Five `ProcessorDuplicator` instances in series: `lowShelfBand → lowBand → midBand → highBand → highShelfBand`. Updated together in `updateEQ()` called from `parameterChanged`. Filter types:
+
+- `lowShelfBand` — `juce::dsp::IIR::Coefficients<float>::makeLowShelf` (b3)
+- `lowBand / midBand / highBand` — `makePeakFilter` (b0 / b1 / b2)
+- `highShelfBand` — `makeHighShelf` (b4)
+
+The slope parameter (`b3q`, `b4q`) maps directly to the S (slope) argument of `makeLowShelf` / `makeHighShelf`. For peak bands the same field is Q.
+
+**Backward compatibility:** the 3-band peak parameters (`b0`, `b1`, `b2`) keep their original IDs and defaults. The new shelf parameters use `b3` (low shelf) and `b4` (high shelf) so existing presets missing these keys default to 0 dB gain (silent shelf = no change).
 
 ### Wet Output Gain position
 
@@ -325,14 +370,16 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `tailCrossfeedDelayMs` | Tail Crossfeed Delay (ms) | 5–15 | 10 |
 | `tailCrossfeedAttDb` | Tail Crossfeed Att (dB) | -24–0 | -6 |
 | `plateOn` | Plate On | bool | false |
-| `plateDiffusion` | Plate Diffusion | 0.30–0.88 | 0.70 |
+| `plateDiffusion` | Plate Diffusion | 0.30–0.88 | 0.40 |
 | `plateColour` | Plate Colour | 0–1 | 0.5 |
 | `plateSize` | Plate Size | 0.5–4.0 | 1.0 |
 | `plateIRFeed` | Plate IR Feed | 0–1 | 0 |
 | `reversetrim` | Reverse Trim | 0–0.95 | 0 |
-| `b0freq/b0gain/b0q` | Band 0 EQ | 20–20k Hz / ±12 dB / 0.3–10 | 400 Hz, 0 dB, 0.707 |
-| `b1freq/b1gain/b1q` | Band 1 EQ | — | 1000 Hz, 0 dB, 0.707 |
-| `b2freq/b2gain/b2q` | Band 2 EQ | — | 4000 Hz, 0 dB, 0.707 |
+| `b3freq/b3gain/b3q` | Low Shelf EQ | 20–1200 Hz / ±12 dB / slope 0.3–2.0 | 200 Hz, 0 dB, 0.707 |
+| `b0freq/b0gain/b0q` | Peak 1 EQ | 50–16k Hz / ±12 dB / Q 0.3–10 | 400 Hz, 0 dB, 0.707 |
+| `b1freq/b1gain/b1q` | Peak 2 EQ | — | 1000 Hz, 0 dB, 0.707 |
+| `b2freq/b2gain/b2q` | Peak 3 EQ | — | 4000 Hz, 0 dB, 0.707 |
+| `b4freq/b4gain/b4q` | High Shelf EQ | 2000–20k Hz / ±12 dB / slope 0.3–2.0 | 8000 Hz, 0 dB, 0.707 |
 
 `LFO Rate` is display-inverted: `period_seconds = 2.01 - rawValue`. So UI left = slow, UI right = fast.
 
@@ -367,7 +414,7 @@ Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix +
 Convolution  ── see "Convolution modes" below
   │  (optional crossfeed: ER and Tail each get L↔R delayed/attenuated copy when on, then ER/Tail mix)
   ▼
-3-band Parametric EQ (JUCE makePeakFilter, peak IIR)
+5-band EQ: low shelf → peak 1 → peak 2 → peak 3 → high shelf (JUCE makeLowShelf / makePeakFilter / makeHighShelf, per-band ProcessorDuplicator)
   │
   ▼
 Stereo decorrelation allpass (R channel only: 2-stage, 7.13 ms + 14.27 ms, g=0.5 — preserves mono sum, widens tail)
@@ -640,5 +687,11 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Plate `effLen` and `g` are set per block, not per sample** — `plateSize` is read once, the 6 effective delay lengths are computed, and all `effLen` fields written before the sample loop. `plateDiffusion` is also read once and written to all `plateAPs[ch][s].g` before the sample loop. This avoids redundant computation while keeping the sample loop tight.
 - **Plate `plateColour` is a 1-pole lowpass, not a high-shelf** — A simple 1-pole lowpass applied to the diffused signal before feeding to the convolver. At `colour = 0` the cutoff is 2 kHz (warm, dark — EMT 140 character); at `colour = 1` it is 8 kHz (bright — AMS RMX16 character). Do not replace it with a true biquad shelf — the 1-pole is intentional.
 - **Plate signal path: pre-diffuser into convolver only** — The sample loop processes the input through the allpass cascade + colour LP, stores the result in `plateBuffer`, and adds `plate[i] * irFeed` to the main buffer. The convolver receives the main signal plus the diffused plate signal. There is no direct output path. `plateOn = false` skips the block entirely — zero overhead.
-- **`plateDiffusion` sets g on all 6 stages simultaneously** — The g coefficient is written to all `plateAPs[ch][s].g` once per block before the sample loop. Range 0.30–0.88 keeps the filter stable and well below the unit-circle limit. Lower g = gentle, transparent scatter; higher g = very dense, metallic diffusion. Default 0.70 matches the original fixed g used when the parameter did not yet exist.
+- **`plateDiffusion` sets g on all 6 stages simultaneously** — The g coefficient is written to all `plateAPs[ch][s].g` once per block before the sample loop. Range 0.30–0.88 keeps the filter stable and well below the unit-circle limit. Lower g = gentle, transparent scatter; higher g = very dense, metallic diffusion. Default 0.40 gives a gentle, transparent scatter suitable for a pre-diffuser.
 - **Default editor height is now 600 px** — bumped from 528 to accommodate Row 3 (Plate). The resize minimum (`minH`) remains 528 so users can still shrink the window. Both constants are at the top of the `PingEditor` constructor in `PluginEditor.cpp`.
+- **EQ is pinned to the window bottom** — `eqGraph.setBounds(x, y, w, eqHeight + (h−ch))` extends the component into the `h/6` bottom margin, so the knob strip sits flush with the window bottom edge. Do not revert to `eqGraph.setBounds(eqRect)` — that clips the control strip at `ch` and leaves a dead strip below.
+- **EQ has 5 bands: low shelf, 3 peaks, high shelf** — DSP order: `lowShelfBand → lowBand → midBand → highBand → highShelfBand` (all `ProcessorDuplicator`). IDs are `b3`/`b0`/`b1`/`b2`/`b4` (b3 and b4 are the shelves; b0–b2 are the original peaks preserved for preset backward-compat). Frequency response in `EQGraphComponent::getResponseAt()` uses a tanh-sigmoid approximation for shelves and a Gaussian for peaks — close enough for display, avoids needing DSP coefficient access at paint time.
+- **EQ control strip uses a row-per-parameter layout** — FREQ knobs all share the same Y (Row 1); GAIN knobs are shifted right by `colW/5 + gainDX` (Row 2, zig-zag); Q/SLOPE knobs return to the FREQ X column below GAIN (Row 3). Each row has independent `DX`/`DY` fine-tuning constants (`freqDX/DY`, `gainDX/DY`, `qDX/DY`) in `EQGraphComponent::resized()`. The control strip is reserved with `removeFromBottom(ctrlH - 75)` — the -75 shifts the entire strip (including the band-name header line) 75 px lower and extends the chart bottom by 75 px; the `DY` constants are set to counteract this shift for the knobs, so net knob positions equal the intended row offsets. Knob size is 42 px. The graph area top is trimmed 60 px downward (`b.withTrimmedTop(60)`). Each knob has an accent-orange live readout above its grey parameter label, updated every timer tick via `updateReadouts()` called from `syncKnobsFromParams()`.
+- **Row Y positions in `PluginEditor` use absolute anchors to avoid JUCE `removeFromTop` clamping** — `removeFromTop(n)` silently clamps `n` to the rectangle's remaining height, so when `mainArea` has shrunk (due to large `eqMinH`) to less than the combined row heights, subsequent rows land in wrong positions. Row 2 and Row 3 Y positions are computed as `row2AbsY = topKnobRow.getBottom()` and `row3AbsY = row2AbsY + row2TotalH_` — independent of whatever height remains in `mainArea`. All group-header bounds, toggle LED Y positions, and knob Y positions for Rows 2 and 3 use these absolute anchors.
+- **The six large knobs (LFO Depth/Rate, Width, Tail Mod, Delay Depth, Tail Rate) are positioned at `row3AbsY + row3TotalH_ + 70`** — the +70 px offset pushes them clear of the Plate row controls. Do not change this to `mainArea.getY()` (pre-fix pattern) — that anchor is unreliable once `mainArea` height is exhausted by the three small-knob rows.
+- **EQ response curve is display-only** — `getResponseAt()` is an approximation. The actual audio uses JUCE biquad coefficients. The two will not match exactly at steep slopes or very high/low frequencies, but are visually representative for a mixing EQ.
