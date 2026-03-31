@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 1.7.0 (see `CMakeLists.txt`)
+**Current version:** 1.8.0 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -97,7 +97,7 @@ g++ -std=c++17 -O2 \
 | IR_10 | Measured RT60 within 2× of Eyring-predicted value (lower bound 0.4×, upper 2×) |
 | IR_11 | Golden regression lock — 30 samples from onset at index 371, locked to 17 sig-fig |
 
-**DSP tests (DSP_01 – DSP_11)** — test the reference implementations of the planned hybrid-mode DSP blocks. These tests are self-contained (they define their own structs locally) and serve as specifications for the production code in `PluginProcessor.h`.
+**DSP tests (DSP_01 – DSP_11)** — test the hybrid-mode DSP building blocks. DSP_01–DSP_02 and DSP_10 cover `SimpleAllpass` (Plate), which is now implemented in `PluginProcessor.h`. The remaining tests (Bloom, Cloud, Shimmer) are self-contained reference specs for blocks not yet implemented in production code. All tests define their own structs locally and must stay in sync with any production implementation.
 
 | ID | Description |
 |----|-------------|
@@ -127,13 +127,13 @@ Paste the printed `onset_offset` and `golden_iLL[30]` values into `IR_11` in `Pi
 
 - **`PING_TESTING_BUILD=1`** — defined for the `PingTests` target; gates out `#include <JuceHeader.h>` in `IRSynthEngine.h`, making the engine compilable with no JUCE dependency.
 - **Small-room params** — `width=10, depth=8, height=5 m`. Generates a ~2 s IR instead of the default 25 s, keeping individual test runtime under 4 s.
-- **DSP tests are self-contained** — `SimpleAllpass`, the Cloud LFO, and the grain engine are defined locally in `PingDSPTests.cpp`. When the production implementation is written into `PluginProcessor.h`, the struct definition there must match the one in the tests exactly.
+- **DSP tests are self-contained** — `SimpleAllpass`, the Cloud LFO, and the grain engine are defined locally in `PingDSPTests.cpp`. The `SimpleAllpass` production implementation now lives in `PluginProcessor.h`; the struct definition there must stay in sync with the one in the tests exactly. Cloud LFO and grain engine are not yet in production code.
 - **DSP_07 uses 375 Hz input** (not 440 Hz) — 375 × 512/48000 = 4 exact integer cycles per grain, making grain resets phase-coherent. 440 Hz gives 4.69 cycles/grain, producing phase discontinuities that shift the DFT peak ~65 Hz below the true pitch-shifted frequency.
 - **DSP_04 feedback delay** — the Bloom feedback circular buffer must be read from `fbWp` (the oldest slot, = full `fbLen` samples of delay), not `(fbWp-1)` (1-sample IIR). The same convention applies in the production implementation. DSP_04 tests bloomTime = 300 ms (mid-range); DSP_11 tests the 50 ms minimum.
 - **DSP_05 rational-beat bound** — p,q ≤ 6 covers all perceptible simple LFO beat ratios. The original p,q ≤ 32 flagged 11/15, whose beat period at these rates would be many minutes — completely inaudible.
 - **DSP_10 first-return peak test** — allpass filters are IIR and never fully "drain," so drain-energy comparisons are unsuitable for testing `effLen`. Instead, DSP_10 exploits the fact that a single allpass of delay d, fed an impulse, produces its first large positive output exactly at sample d: `out[d] = 1 - g² ≈ 0.51`. At `plateSize=2.0`, d doubles from 691 to 1382 samples, making the peak position a direct, unambiguous observable of the `effLen` mechanism.
 - **DSP_11 short bloomTime is the worst case** — At 50 ms (minimum bloomTime) there are ~20 feedback round-trips per second. More trips per second means more opportunities for energy to accumulate if the loop gain is near 1. DSP_04 (300 ms) and DSP_11 (50 ms) together bound the stability guarantee across the full 50–500 ms range.
-- **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Bloom stages leave `effLen = 0`; Plate stages set it each block via `plateSize`. `makePlateStages` allocates buffers at 2× the base primes so no reallocation is needed across the full `plateSize` range.
+- **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Bloom stages (not yet in production) leave `effLen = 0`; Plate stages set it each block via `plateSize`. Buffers are allocated at 2× the base primes so no reallocation is needed across the full `plateSize` 0.5–2.0 range.
 
 ---
 
@@ -181,32 +181,44 @@ The **Reverse Trim** handle overlay is drawn on top when Reverse is engaged.
 
 ## UI layout notes
 
-The editor (`PluginEditor.cpp` `resized()`) uses a set of named anchor constants for layout. Key constants relevant to the gain section:
+The editor (`PluginEditor.cpp` `resized()`) uses a content-area offset to place the controls in the right 5/6 of the window width and the top 5/6 of the window height, leaving ~20% empty space on the left and bottom (`leftPad = w/6`, `cw = w - leftPad`, `ch = h - h/6`). All proportional constants use `cw`/`ch` rather than `w`/`h`.
 
-- `smallKnobSize` — diameter of the small knobs (IR Input Gain, IR Input Drive, Wet Output Gain, ER Level, Tail Level).
-- `irKnobsCenterX` — original horizontal centre for the IR-gain knob row.
-- `dryWetCenterY` — vertical centre of the Dry/Wet knob; IR gain knobs are positioned above this.
-- `irKnobGap` — vertical gap between the knob bottom and the `dryWetCenterY` line.
+### Row 1 — IR Input + IR Controls (5 small knobs)
 
-### IR Input Gain position
+Below the main-area header, `mainArea.removeFromTop(rowTotalH + 4 + groupLabelH)` reserves a strip for five rotary knobs sized at `rowKnobSize = (int)(sixKnobSize * 0.6f)`. They are placed from `rowStartX = max(8, w/128) + 5` with step `rowStep = rowKnobSize + rowGap`. A 5 px extra gap is inserted before knob index 2, splitting the strip into two labelled groups:
 
-IR Input Gain is shifted **left** of `irKnobsCenterX` by `irGainShift = (smallKnobSize * 3) / 4`. This offset is applied to the slider, label, and readout independently:
+- **IR Input** (group header + line): knob 0 = GAIN (`irInputGainSlider`), knob 1 = DRIVE (`irInputDriveSlider`)
+- **IR Controls** (group header + line): knob 2 = PREDELAY, knob 3 = DAMPING, knob 4 = STRETCH
 
-```cpp
-const int irGainShift = (smallKnobSize * 3) / 4;
-irInputGainSlider.setBounds (irKnobsCenterX - smallKnobSize/2 - irGainShift, ...);
-```
+Group header bounds are stored as `irInputGroupBounds` and `irControlsGroupBounds` (set in `resized()`, drawn in `paint()` via `drawGroupHeader`).
+
+### Row 2 — ER Crossfade + Tail Crossfade (4 small knobs + 2 switches)
+
+Immediately after Row 1, `mainArea.removeFromTop(row2TotalH)` reserves a second strip using the same `rowKnobSize`/`rowStep`/`rowStartX` constants. Same 5 px extra gap before index 2 splits into two groups:
+
+- **ER Crossfade** (group header + line): knob 0 = DELAY (`erCrossfeedDelaySlider`), knob 1 = ATT (`erCrossfeedAttSlider`), pill switch (`erCrossfeedOnButton`) centred below the pair
+- **Tail Crossfade** (group header + line): knob 2 = DELAY (`tailCrossfeedDelaySlider`), knob 3 = ATT (`tailCrossfeedAttSlider`), pill switch (`tailCrossfeedOnButton`) centred below the pair
+
+Group header bounds stored as `erCrossfadeGroupBounds` and `tailCrossfadeGroupBounds`. All 6 controls are live/real-time — they do not affect IR synthesis or loading; see [Post-convolution crossfeed](#post-convolution-crossfeed-er-and-tail).
+
+### Row 3 — Plate (3 small knobs + 1 switch)
+
+Immediately after Row 2, `mainArea.removeFromTop(row3TotalH)` reserves a third strip using the same constants. **No** extra inter-group gap — all three knobs belong to a single **"Plate"** group:
+
+- knob 0 = DENSITY (`plateDensitySlider`), knob 1 = COLOUR (`plateColourSlider`), knob 2 = SIZE (`plateSizeSlider`), pill switch (`plateOnButton`) right-aligned in the group header
+
+Group header bounds stored as `plateGroupBounds`. The switch uses component ID `PlateSwitch` and triggers `repaint()` so the header text glows orange when active. All controls are live/real-time — no IR recalculation on any change. Default editor height was increased from 528 → **600 px** to accommodate the new row (`editorH` in `PluginEditor.cpp`; minimum resize limit remains 528).
 
 ### Wet Output Gain position
 
-Wet Output Gain sits on the **same Y axis** as IR Input Gain (not below the Dry/Wet knob as originally). It is placed to the right of the already-shifted IR Input Gain slider. The centre is computed as:
+Wet Output Gain is positioned to the right of `irKnobsCenterX`, at:
 
 ```cpp
-const int outputGainCenterX = irInputGainSlider.getRight() + smallKnobSize/2 + smallKnobSize/2 - smallKnobSize/4;
+const int outputGainCenterX = irKnobsCenterX + smallKnobSize / 2;
 const int outputGainY = dryWetCenterY - smallKnobSize - irKnobGap;
 ```
 
-Net gap between the right edge of IR Input Gain and the left edge of Wet Output Gain = `smallKnobSize/2 + smallKnobSize/2 - smallKnobSize/4` = `3/4 × smallKnobSize`.
+(IR Input Gain and IR Input Drive now live in Row 1 rather than near `irKnobsCenterX`, so `outputGainCenterX` no longer depends on `irInputGainSlider.getRight()`.)
 
 ### Version label
 
@@ -312,6 +324,10 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `tailCrossfeedOn` | Tail Crossfeed On | bool | false |
 | `tailCrossfeedDelayMs` | Tail Crossfeed Delay (ms) | 5–15 | 10 |
 | `tailCrossfeedAttDb` | Tail Crossfeed Att (dB) | -24–0 | -6 |
+| `plateOn` | Plate On | bool | false |
+| `plateDensity` | Plate Density | 0–1 | 0.5 |
+| `plateColour` | Plate Colour | 0–1 | 0.5 |
+| `plateSize` | Plate Size | 0.5–2.0 | 1.0 |
 | `reversetrim` | Reverse Trim | 0–0.95 | 0 |
 | `b0freq/b0gain/b0q` | Band 0 EQ | 20–20k Hz / ±12 dB / 0.3–10 | 400 Hz, 0 dB, 0.707 |
 | `b1freq/b1gain/b1q` | Band 1 EQ | — | 1000 Hz, 0 dB, 0.707 |
@@ -341,6 +357,9 @@ Input Gain (dB, smoothed)
   │
   ▼
 Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix + compensation)
+  │
+  ▼
+[Plate: 6-stage allpass diffuser cascade + 1-pole colour LP, density mix]  (if plateOn)
   │
   ▼
 Convolution  ── see "Convolution modes" below
@@ -397,7 +416,55 @@ After convolution and **before** the ER/tail mix (and before EQ), each path can 
 - **Two independent paths:** **ER crossfeed** (early reflections only) and **Tail crossfeed** (tail only), each with its own on/off switch, delay (5–15 ms), and attenuation (−24–0 dB). When a path’s switch is off, that path’s crossfeed is skipped; delay/att knobs have no “off” meaning.
 - **Processing:** For each path that is on, the corresponding buffer(s) are processed in place: L += gain × delayed(R), R += gain × delayed(L), using circular delay lines (max 15 ms at current sample rate). Same logic for both true-stereo (separate lEr/rEr and lTail/rTail) and stereo 2ch (buffer = ER, tailBuffer = tail).
 - **State:** Four delay lines in `PluginProcessor` (`crossfeedErBufRtoL`, `crossfeedErBufLtoR`, `crossfeedTailBufRtoL`, `crossfeedTailBufLtoR`), initialised in `prepareToPlay()`, used only in `processBlock()`. No IR Synth engine changes.
-- **UI (Placement tab, IR Synth dialog):** Below the Height row, left column. One row of four rotary knobs: ER Delay, ER Att, Tail Delay, Tail Att (labels and readouts under each). Under the first pair, a pill-style on/off switch centred below the two knobs, with the label **ER CROSSFADE** in small caps below the switch. Under the second pair, same layout with **TAIL CROSSFADE**. Controls are wired to APVTS via `IRSynthComponent::setApvts()`; the switches use `PingLookAndFeel` (component IDs `ERCrossfeedSwitch`, `TailCrossfeedSwitch`) for the pill-switch drawing. Knobs use `rotarySliderFillColourId = accent` so the active arc is visible (yellow/orange).
+- **UI (main editor, Row 2):** Two groups of two rotary knobs each, directly below the IR Controls row in the main editor. **ER Crossfade**: DELAY + ATT knobs, pill-style on/off switch (`erCrossfeedOnButton`, component ID `ERCrossfeedSwitch`) centred below the pair, group header "ER Crossfade" drawn above. **Tail Crossfade**: same layout with `tailCrossfeedOnButton` (ID `TailCrossfeedSwitch`) and header "Tail Crossfade". Controls live in `PluginEditor` (not `IRSynthComponent`) and are wired directly to APVTS in the editor constructor. The switches use `PingLookAndFeel` pill-switch drawing. Knobs use `rotarySliderFillColourId = accent`. Controls are purely live/real-time — they do not trigger any IR recalculation.
+
+---
+
+## Plate onset (Feature 1 — implemented)
+
+### What it does
+
+Replaces the "room geometry in the first 50 ms" feel with a dense, immediate diffuse wash — the defining acoustic property of a physical plate reverb. Rather than discrete early reflections that reveal room shape, the onset blooms instantly into an undifferentiated density.
+
+### How it works
+
+A cascade of 6 allpass filters applied to the **input signal after the saturator and before convolution** acts as a pre-diffuser. Every incoming transient is scattered across neighbouring samples. When that cloud passes through the convolution IR, the early reflections are blurred together into something that sounds and feels like the fast-building onset of a plate.
+
+### DSP state (`PluginProcessor.h`)
+
+```cpp
+struct SimpleAllpass {
+    std::vector<float> buf;
+    int   ptr    = 0;
+    int   effLen = 0;   // 0 = use buf.size(); set each block for plateSize scaling
+    float g      = 0.7f;
+    float process (float x) noexcept { ... }
+};
+static constexpr int kNumPlateStages = 6;
+std::array<std::array<SimpleAllpass, kNumPlateStages>, 2> plateAPs; // [ch][stage]
+std::array<float, 2> plateShelfState { 0.f, 0.f };  // 1-pole lowpass state per channel
+```
+
+The `SimpleAllpass` struct in `PingDSPTests.cpp` must stay **exactly in sync** with this definition (field names, field order, `effLen` semantics, `process()` logic). The DSP tests define it locally and serve as the spec.
+
+### `prepareToPlay`
+
+Base prime delays at 48 kHz: `{ 24, 71, 157, 293, 431, 691 }` samples. Buffers allocated at **2× base primes** so the full `plateSize` 0.5–2.0 range needs no reallocation. All g values set to 0.70. `plateShelfState` filled to zero.
+
+### `processBlock` insertion point
+
+After the saturator, **before** the convolution block. At `density = 0` the blend formula `in * (1 - density) + shaped * density` collapses to the raw input, so no audible effect even if `plateOn = true`. At `plateOn = false` the block is skipped entirely — zero DSP overhead.
+
+`plateColour` sets the 1-pole lowpass cutoff applied to the diffused signal: 0 → 2 kHz (warm, dark — EMT 140 character), 1 → 8 kHz (bright — AMS RMX16 character). The `effLen` for each stage is computed once per block (not per sample) as `round(platePrimes[s] * sr / 48000 * plateSize)`.
+
+### Controls
+
+| Parameter ID | Range | Default | Effect |
+|---|---|---|---|
+| `plateOn` | bool | false | Enables the cascade; zero overhead when off |
+| `plateDensity` | 0–1 | 0.5 | Mix between raw and diffused input; 0 = bypass |
+| `plateColour` | 0–1 | 0.5 | 1-pole LP cutoff: 0 → 2 kHz (warm), 1 → 8 kHz (bright) |
+| `plateSize` | 0.5–2.0 | 1.0 | Scales all 6 allpass delays; 0.5 = tight/punchy, 2.0 = slow/vintage |
 
 ---
 
@@ -538,7 +605,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Speaker directivity in image-source** — `spkG()` is applied using the real source→receiver angle, not the image-source position. This is deliberate: image-source positions aren't physical emitters and using them would give wrong distance-dependent directivity results.
 - **Deferred allpass diffusion** — The allpass starts at 65 ms (not sample 0) to prevent early-reflection spikes from creating audible 17ms-interval echoes in the tail.
 - **Stereo decorrelation allpass (R only)** — After EQ and before Width, the **right** channel of the wet buffer is passed through a 2-stage allpass (7.13 ms, 14.27 ms, g=0.5). Delays are incommensurate with FDN/diffuser times. Allpass has unity gain so the mono sum L+R is unchanged; the phase/time difference on R alone reduces stereo collapse at strong FDN modes and makes the tail feel more spacious. Implemented in `PluginProcessor` (decorrDelays, decorrBufs, decorrPtrs, decorrG); initialised in `prepareToPlay()`, processed in `processBlock()` before `applyWidth()`.
-- **Post-convolution crossfeed (ER and Tail)** — After convolution, before ER/tail mix: when **ER crossfeed on** or **Tail crossfeed on**, the corresponding buffer(s) get a delayed (5–15 ms) and attenuated (−24–0 dB) copy of the opposite channel (L→R, R→L). Four delay lines (two per path), on/off switch per path. Params: `erCrossfeedOn`, `erCrossfeedDelayMs`, `erCrossfeedAttDb`, `tailCrossfeedOn`, `tailCrossfeedDelayMs`, `tailCrossfeedAttDb`. UI: Placement tab (IR Synth), below Height — one row of four knobs (ER Dly, ER Att, Tail Dly, Tail Att), then a pill-style switch and small-caps label (“ER CROSSFADE” / “TAIL CROSSFADE”) centred under each pair. No IR Synth engine changes.
+- **Post-convolution crossfeed (ER and Tail)** — After convolution, before ER/tail mix: when **ER crossfeed on** or **Tail crossfeed on**, the corresponding buffer(s) get a delayed (5–15 ms) and attenuated (−24–0 dB) copy of the opposite channel (L→R, R→L). Four delay lines (two per path), on/off switch per path. Params: `erCrossfeedOn`, `erCrossfeedDelayMs`, `erCrossfeedAttDb`, `tailCrossfeedOn`, `tailCrossfeedDelayMs`, `tailCrossfeedAttDb`. UI: **main editor Row 2** (see UI layout notes) — controls live in `PluginEditor`, not `IRSynthComponent`. Purely live/real-time; no IR recalculation on any crossfeed parameter change. No IR Synth engine changes.
 - **Constant-power dry/wet** — `√(mix)` / `√(1−mix)` crossfade. Don't change to linear without a reason.
 - **SmoothedValue everywhere** — All parameters that scale audio use `SmoothedValue` (20 ms). Any new audio-scaling parameter should do the same.
 - **loadIR from message thread only** — Convolver loading is not real-time safe. Always call `loadIRFromFile` / `loadIRFromBuffer` from the message thread (UI callbacks, timer, not processBlock).
@@ -560,7 +627,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Waveform display uses dB scale, not linear** — Synthesised IRs are 8× the longest RT60 in length (up to 30 s). On a linear scale the entire tail collapses to a flat line 60+ dB below the onset spike. `dBFloor = −60.0f` maps the full decay range to [0, 1] so all room sizes produce a visible "ski-slope" shape. Do not revert to linear scale. The per-pixel peak-envelope scan (scanning every sample in each pixel's time range) is also essential — stride-based single-sample lookup misses the true peak because each pixel covers hundreds of samples.
 - **Version label is derived from `ProjectInfo::versionString`** — Do not hard-code the version string in `PluginEditor.cpp`. JUCE generates `ProjectInfo::versionString` automatically from `project(Ping VERSION x.y.z)` in `CMakeLists.txt`, so the label is always in sync with the build. Update `CMakeLists.txt` version when cutting a release; do not update `PluginEditor.cpp` separately.
 - **Installer version lives in `Installer/build_installer.sh`** — The package filename/version passed to `pkgbuild` is controlled by the script `VERSION` variable. When cutting a release, bump both `project(Ping VERSION x.y.z)` in `CMakeLists.txt` and `VERSION` in `Installer/build_installer.sh` to keep the generated `.pkg` name/version in sync.
-- **IR Input Gain and Wet Output Gain share the same Y row** — The two knobs are positioned on the same horizontal band (same `outputGainY = dryWetCenterY − smallKnobSize − irKnobGap`). IR Input Gain is to the left, shifted `(smallKnobSize * 3) / 4` west of `irKnobsCenterX`; Wet Output Gain anchors off `irInputGainSlider.getRight()` with a `smallKnobSize / 2` gap. Preserve this relationship if changing knob sizing — both derive from the same `smallKnobSize` constant.
+- **IR Input Gain and IR Input Drive live in Row 1; Wet Output Gain sits near `irKnobsCenterX`** — IR Input Gain (GAIN) and IR Input Drive (DRIVE) were moved to the small-knob Row 1 strip at the top of the main area. Wet Output Gain is now positioned independently at `outputGainCenterX = irKnobsCenterX + smallKnobSize / 2` (it no longer anchors off `irInputGainSlider.getRight()`). `outputGainY = dryWetCenterY − smallKnobSize − irKnobGap` is unchanged. Do not re-introduce the old `irGainShift` formula — it was removed when the gain knobs moved to Row 1.
 - **Trailing silence is auto-trimmed from synth IRs at load time** — `synthIR()` allocates `8 × max_RT60` (up to 30 s) but the signal decays to below −80 dB well before the end. `loadIRFromBuffer` trims to the last sample above `peak × 1e-4` plus a 200 ms safety tail (min 300 ms), before saving `rawSynthBuffer`. This keeps the convolvers lean and makes the Reverse Trim handle span actual signal. File-based IRs are not affected. Do not move this trim to after the `rawSynthBuffer` save — `reloadSynthIR()` would then re-introduce silence on every Reverse or Trim interaction.
 - **`loadSelectedIR()` is the single entry point for all IR reloads — never call `loadIRFromFile()` or `reloadSynthIR()` directly from parameter listeners** — `parameterChanged` (Stretch, Decay) and all UI callbacks must go through `loadSelectedIR()`, which routes to `reloadSynthIR()` for synth IRs and `loadIRFromFile()` for file IRs. Bypassing this (e.g. calling `loadIRFromFile(getLastLoadedIRFile())` directly) will clobber any active synth IR because `lastLoadedIRFile` is never cleared when a synth IR is loaded.
 - **Preset and IR save overwrite prompts are selection-based** — Save actions only prompt when the typed name matches the currently selected existing item in the corresponding editable combo (`presetCombo` or IR synth `irCombo`) and the target file already exists. Typing a different name saves directly as a new file. Use async JUCE dialogs (`AlertWindow::showAsync`) in plugin UI; avoid blocking modal loops.

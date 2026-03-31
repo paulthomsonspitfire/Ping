@@ -30,6 +30,11 @@ namespace IDs
     static const juce::String tailCrossfeedOn { "tailCrossfeedOn" };
     static const juce::String tailCrossfeedDelayMs { "tailCrossfeedDelayMs" };
     static const juce::String tailCrossfeedAttDb { "tailCrossfeedAttDb" };
+    // Plate onset
+    static const juce::String plateOn      { "plateOn" };
+    static const juce::String plateDensity { "plateDensity" };
+    static const juce::String plateColour  { "plateColour" };
+    static const juce::String plateSize    { "plateSize" };
 }
 
 static juce::File getLicenceDirectory()
@@ -222,6 +227,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterBool> (IDs::tailCrossfeedOn, "Tail Crossfeed On", false));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailCrossfeedDelayMs, "Tail Crossfeed Delay (ms)", 5.0f, 15.0f, 10.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailCrossfeedAttDb, "Tail Crossfeed Att (dB)", -24.0f, 0.0f, -6.0f));
+    // Plate onset
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::plateOn,      "Plate On",      false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDensity, "Plate Density", 0.0f, 1.0f,   0.5f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateColour,  "Plate Colour",  0.0f, 1.0f,   0.5f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateSize,    "Plate Size",    0.5f, 2.0f,   1.0f));
     return layout;
 }
 
@@ -283,6 +293,22 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     crossfeedTailBufRtoL.resize ((size_t)crossfeedMaxSamples, 0.0f);
     crossfeedTailBufLtoR.resize ((size_t)crossfeedMaxSamples, 0.0f);
     crossfeedErWriteRtoL = crossfeedErWriteLtoR = crossfeedTailWriteRtoL = crossfeedTailWriteLtoR = 0;
+
+    // Plate onset: 6 allpass stages, prime delay times (at 48 kHz base).
+    // Buffers allocated at 2× base primes so plateSize 0.5–2.0 needs no reallocation.
+    {
+        static constexpr int platePrimes[kNumPlateStages] = { 24, 71, 157, 293, 431, 691 };
+        for (int ch = 0; ch < 2; ++ch)
+            for (int s = 0; s < kNumPlateStages; ++s)
+            {
+                int d = (int)std::round (platePrimes[s] * sampleRate / 48000.0 * 2.0);
+                plateAPs[ch][s].buf.assign ((size_t)d, 0.f);
+                plateAPs[ch][s].ptr    = 0;
+                plateAPs[ch][s].effLen = 0;
+                plateAPs[ch][s].g      = 0.70f;
+            }
+        plateShelfState.fill (0.f);
+    }
 
     updateGains();
     updatePredelay();
@@ -360,6 +386,45 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             float out = drySample * (1.0f - mix) + saturated * mix;
             out *= compensation;
             buffer.setSample (ch, i, out);
+        }
+    }
+
+    // ——————————————————————————————————————————————————————————————————
+    // Plate onset: pre-convolution allpass diffuser cascade
+    // ——————————————————————————————————————————————————————————————————
+    if (apvts.getRawParameterValue (IDs::plateOn)->load() > 0.5f)
+    {
+        const float density  = apvts.getRawParameterValue (IDs::plateDensity)->load();
+        const float colour   = apvts.getRawParameterValue (IDs::plateColour)->load();
+        const float plateSz  = juce::jlimit (0.5f, 2.0f, apvts.getRawParameterValue (IDs::plateSize)->load());
+
+        // colour → 1-pole lowpass cutoff: 0 → 2 kHz (warm/dark), 1 → 8 kHz (bright)
+        const float cutHz    = 2000.f + colour * 6000.f;
+        const float shelfAlpha = 1.f - std::exp (-2.f * juce::MathConstants<float>::pi * cutHz / (float)currentSampleRate);
+
+        // Pre-compute effective delay lengths per stage (constant within this block)
+        static constexpr int platePrimes[kNumPlateStages] = { 24, 71, 157, 293, 431, 691 };
+        int stageLens[kNumPlateStages];
+        for (int s = 0; s < kNumPlateStages; ++s)
+            stageLens[s] = (int)std::round (platePrimes[s] * currentSampleRate / 48000.0 * (double)plateSz);
+
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            float* data = buffer.getWritePointer (ch);
+            for (int s = 0; s < kNumPlateStages; ++s)
+                plateAPs[ch][s].effLen = stageLens[s];
+
+            for (int i = 0; i < numSamples; ++i)
+            {
+                const float in = data[i];
+                float diff = in;
+                for (int s = 0; s < kNumPlateStages; ++s)
+                    diff = plateAPs[ch][s].process (diff);
+
+                // 1-pole lowpass shapes colour: low cutoff = warm/dark, high cutoff = bright
+                plateShelfState[ch] = plateShelfState[ch] + shelfAlpha * (diff - plateShelfState[ch]);
+                data[i] = in * (1.f - density) + plateShelfState[ch] * density;
+            }
         }
     }
 

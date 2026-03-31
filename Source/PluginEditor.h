@@ -58,6 +58,10 @@ private:
     juce::Slider tailCrossfeedDelaySlider, tailCrossfeedAttSlider;
     juce::ToggleButton erCrossfeedOnButton, tailCrossfeedOnButton;
 
+    // Plate controls (row 3)
+    juce::Slider plateDensitySlider, plateColourSlider, plateSizeSlider;
+    juce::ToggleButton plateOnButton;
+
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
     std::unique_ptr<SliderAttachment> dryWetAttach, predelayAttach, decayAttach;
@@ -68,6 +72,8 @@ private:
     std::unique_ptr<SliderAttachment> erCrossfeedDelayAttach, erCrossfeedAttAttach;
     std::unique_ptr<SliderAttachment> tailCrossfeedDelayAttach, tailCrossfeedAttAttach;
     std::unique_ptr<ButtonAttachment> erCrossfeedOnAttach, tailCrossfeedOnAttach;
+    std::unique_ptr<SliderAttachment> plateDensityAttach, plateColourAttach, plateSizeAttach;
+    std::unique_ptr<ButtonAttachment> plateOnAttach;
 
     juce::Label dryWetLabel, predelayLabel, decayLabel, modDepthLabel;
     juce::Label stretchLabel, widthLabel, modRateLabel;
@@ -76,6 +82,7 @@ private:
     juce::Label erLevelLabel, tailLevelLabel;
     juce::Label erCrossfeedDelayLabel, erCrossfeedAttLabel;
     juce::Label tailCrossfeedDelayLabel, tailCrossfeedAttLabel;
+    juce::Label plateDensityLabel, plateColourLabel, plateSizeLabel;
 
     juce::Label dryWetReadout, predelayReadout, decayReadout, modDepthReadout;
     juce::Label stretchReadout, widthReadout, modRateReadout;
@@ -84,6 +91,7 @@ private:
     juce::Label erLevelReadout, tailLevelReadout;
     juce::Label erCrossfeedDelayReadout, erCrossfeedAttReadout;
     juce::Label tailCrossfeedDelayReadout, tailCrossfeedAttReadout;
+    juce::Label plateDensityReadout, plateColourReadout, plateSizeReadout;
 
     PingLookAndFeel pingLook;
     EQGraphComponent eqGraph;
@@ -102,6 +110,7 @@ private:
     juce::Rectangle<int> irControlsGroupBounds; // area above the "IR Controls" knob triple (text + line)
     juce::Rectangle<int> erCrossfadeGroupBounds;   // area above the ER Crossfade pair
     juce::Rectangle<int> tailCrossfadeGroupBounds; // area above the Tail Crossfade pair
+    juce::Rectangle<int> plateGroupBounds;         // area above the Plate triple
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PingEditor)
 };

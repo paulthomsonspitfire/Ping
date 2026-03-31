@@ -89,22 +89,46 @@ void PingLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b
                                         bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown)
 {
     juce::String id = button.getComponentID();
-    if (id == "ERCrossfeedSwitch" || id == "TailCrossfeedSwitch")
+    if (id == "ERCrossfeedSwitch" || id == "TailCrossfeedSwitch" || id == "PlateSwitch")
     {
         auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
         bool on = button.getToggleState();
-        float pillRadius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
-        g.setColour (buttonBgDark);
-        g.fillRoundedRectangle (bounds, pillRadius);
-        g.setColour (buttonBorder);
-        g.drawRoundedRectangle (bounds, pillRadius, 1.0f);
-        float thumbRadius = pillRadius - 2.0f;
-        float cx = on ? (bounds.getRight() - 1.0f - thumbRadius) : (bounds.getX() + 1.0f + thumbRadius);
-        float cy = bounds.getCentreY();
-        g.setColour (on ? accentOrange : juce::Colour (0xff505050));
-        g.fillEllipse (cx - thumbRadius, cy - thumbRadius, thumbRadius * 2.0f, thumbRadius * 2.0f);
-        g.setColour (on ? accentOrange.brighter (0.2f) : buttonBorder);
-        g.drawEllipse (cx - thumbRadius, cy - thumbRadius, thumbRadius * 2.0f, thumbRadius * 2.0f, 1.0f);
+        bool hovered = shouldDrawButtonAsHighlighted;
+        float pillR = bounds.getHeight() * 0.5f;   // fully rounded ends
+
+        // Soft drop-shadow
+        g.setColour (juce::Colour (0x28000000));
+        g.fillRoundedRectangle (bounds.translated (0.0f, 1.2f).expanded (0.3f), pillR);
+
+        // Body — horizontal gradient matching knob body colours
+        juce::ColourGradient grad (knobBodyLight,
+                                   bounds.getX(),     bounds.getCentreY(),
+                                   knobBodyDark,
+                                   bounds.getRight(), bounds.getCentreY(), false);
+        g.setGradientFill (grad);
+        g.fillRoundedRectangle (bounds, pillR);
+
+        // Subtle inner edge darkening
+        g.setColour (juce::Colour (0x18000000));
+        g.drawRoundedRectangle (bounds, pillR, 0.8f);
+
+        // LED glow fill when on — radial gradient, bright amber centre fading to transparent
+        if (on)
+        {
+            const float glowR = bounds.getHeight() * 0.8f;
+            juce::ColourGradient ledGlow (accentOrange.brighter (0.25f).withAlpha (0.90f),
+                                          bounds.getCentreX(), bounds.getCentreY(),
+                                          accentOrange.withAlpha (0.0f),
+                                          bounds.getCentreX() + glowR, bounds.getCentreY(), true);
+            g.setGradientFill (ledGlow);
+            g.fillRoundedRectangle (bounds, pillR);
+        }
+
+        // Border — accent orange when on, dim grey when off
+        juce::Colour borderCol = on ? (hovered ? accentOrange.brighter (0.15f) : accentOrange)
+                                    : (hovered ? juce::Colour (0xff606060) : juce::Colour (0xff404040));
+        g.setColour (borderCol);
+        g.drawRoundedRectangle (bounds, pillR, on ? 1.5f : 1.0f);
         return;
     }
     juce::LookAndFeel_V4::drawToggleButton (g, button, shouldDrawButtonAsHighlighted, shouldDrawButtonAsDown);

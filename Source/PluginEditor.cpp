@@ -5,7 +5,7 @@
 namespace
 {
     constexpr int editorW = 1104;
-    constexpr int editorH = 528;
+    constexpr int editorH = 600;
     constexpr int minW = 864;
     constexpr int minH = 528;
     constexpr int maxW = 1920;
@@ -245,6 +245,19 @@ PingEditor::PingEditor (PingProcessor& p)
     }
     erCrossfeedOnButton.setComponentID ("ERCrossfeedSwitch");
     tailCrossfeedOnButton.setComponentID ("TailCrossfeedSwitch");
+    // Repaint the editor when either crossfeed toggle changes so the header text colour updates
+    erCrossfeedOnButton.onClick  = [this] { repaint(); };
+    tailCrossfeedOnButton.onClick = [this] { repaint(); };
+
+    // Plate row knobs (row 3 — same accent style as crossfeed)
+    for (auto* s : { &plateDensitySlider, &plateColourSlider, &plateSizeSlider })
+        makeSlider (*s, "");
+    {
+        addAndMakeVisible (plateOnButton);
+        plateOnButton.setButtonText ("");
+        plateOnButton.setComponentID ("PlateSwitch");
+        plateOnButton.onClick = [this] { repaint(); };
+    }
 
     dryWetSlider.setRange (0.0, 1.0, 0.01);
     predelaySlider.setRange (0.0, 500.0, 1.0);
@@ -265,6 +278,9 @@ PingEditor::PingEditor (PingProcessor& p)
     erCrossfeedAttSlider.setRange (-24.0, 0.0, 0.5);
     tailCrossfeedDelaySlider.setRange (5.0, 15.0, 0.5);
     tailCrossfeedAttSlider.setRange (-24.0, 0.0, 0.5);
+    plateDensitySlider.setRange (0.0, 1.0, 0.01);
+    plateColourSlider.setRange  (0.0, 1.0, 0.01);
+    plateSizeSlider.setRange    (0.5, 2.0, 0.01);
 
     dryWetAttach    = std::make_unique<SliderAttachment> (apvts, "drywet",   dryWetSlider);
     predelayAttach  = std::make_unique<SliderAttachment> (apvts, "predelay", predelaySlider);
@@ -287,6 +303,10 @@ PingEditor::PingEditor (PingProcessor& p)
     tailCrossfeedAttAttach   = std::make_unique<SliderAttachment> (apvts, "tailCrossfeedAttDb",   tailCrossfeedAttSlider);
     erCrossfeedOnAttach      = std::make_unique<ButtonAttachment> (apvts, "erCrossfeedOn",        erCrossfeedOnButton);
     tailCrossfeedOnAttach    = std::make_unique<ButtonAttachment> (apvts, "tailCrossfeedOn",      tailCrossfeedOnButton);
+    plateDensityAttach = std::make_unique<SliderAttachment> (apvts, "plateDensity", plateDensitySlider);
+    plateColourAttach  = std::make_unique<SliderAttachment> (apvts, "plateColour",  plateColourSlider);
+    plateSizeAttach    = std::make_unique<SliderAttachment> (apvts, "plateSize",    plateSizeSlider);
+    plateOnAttach      = std::make_unique<ButtonAttachment> (apvts, "plateOn",      plateOnButton);
 
     setLookAndFeel (&pingLook);
 
@@ -297,7 +317,8 @@ PingEditor::PingEditor (PingProcessor& p)
                         &irInputGainLabel, &irInputDriveLabel, &outputGainLabel,
                         &erLevelLabel, &tailLevelLabel,
                         &erCrossfeedDelayLabel, &erCrossfeedAttLabel,
-                        &tailCrossfeedDelayLabel, &tailCrossfeedAttLabel })
+                        &tailCrossfeedDelayLabel, &tailCrossfeedAttLabel,
+                        &plateDensityLabel, &plateColourLabel, &plateSizeLabel })
     {
         addAndMakeVisible (label);
         label->setJustificationType (juce::Justification::centred);
@@ -321,10 +342,13 @@ PingEditor::PingEditor (PingProcessor& p)
     irInputDriveLabel.setText ("DRIVE", juce::dontSendNotification);
     erLevelLabel.setText ("ER", juce::dontSendNotification);
     tailLevelLabel.setText ("TAIL", juce::dontSendNotification);
-    erCrossfeedDelayLabel.setText   ("DELAY", juce::dontSendNotification);
-    erCrossfeedAttLabel.setText     ("ATT",   juce::dontSendNotification);
-    tailCrossfeedDelayLabel.setText ("DELAY", juce::dontSendNotification);
-    tailCrossfeedAttLabel.setText   ("ATT",   juce::dontSendNotification);
+    erCrossfeedDelayLabel.setText   ("DELAY",   juce::dontSendNotification);
+    erCrossfeedAttLabel.setText     ("ATT",     juce::dontSendNotification);
+    tailCrossfeedDelayLabel.setText ("DELAY",   juce::dontSendNotification);
+    tailCrossfeedAttLabel.setText   ("ATT",     juce::dontSendNotification);
+    plateDensityLabel.setText       ("DENSITY", juce::dontSendNotification);
+    plateColourLabel.setText        ("COLOUR",  juce::dontSendNotification);
+    plateSizeLabel.setText          ("SIZE",    juce::dontSendNotification);
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
@@ -332,7 +356,8 @@ PingEditor::PingEditor (PingProcessor& p)
                      &irInputGainReadout, &irInputDriveReadout, &outputGainReadout,
                      &erLevelReadout, &tailLevelReadout,
                      &erCrossfeedDelayReadout, &erCrossfeedAttReadout,
-                     &tailCrossfeedDelayReadout, &tailCrossfeedAttReadout })
+                     &tailCrossfeedDelayReadout, &tailCrossfeedAttReadout,
+                     &plateDensityReadout, &plateColourReadout, &plateSizeReadout })
     {
         addAndMakeVisible (r);
         r->setJustificationType (juce::Justification::centred);
@@ -428,22 +453,37 @@ void PingEditor::paint (juce::Graphics& g)
         }
     }
 
-    // Group headers: label text above a horizontal line
-    g.setColour (textDim);
+    // Group headers: label text above a horizontal line; active sections glow orange
     g.setFont (juce::FontOptions (9.0f));
-    auto drawGroupHeader = [&](const juce::Rectangle<int>& bounds, const juce::String& text)
+    auto drawGroupHeader = [&](const juce::Rectangle<int>& bounds, const juce::String& text, bool active)
     {
         if (bounds.getWidth() <= 0) return;
         const float lineY = (float) bounds.getBottom() - 1.0f;
+        if (active)
+        {
+            // Soft glow: draw text offset in cardinal directions at low alpha
+            g.setColour (accent.withAlpha (0.22f));
+            const int gOff[4][2] = { {-1,0}, {1,0}, {0,-1}, {0,1} };
+            for (auto& o : gOff)
+                g.drawText (text, bounds.getX() + o[0], bounds.getY() + o[1],
+                            bounds.getWidth(), bounds.getHeight() - 3,
+                            juce::Justification::centredLeft, false);
+            g.setColour (accent);
+        }
+        else
+        {
+            g.setColour (textDim);
+        }
         g.drawText (text, bounds.getX(), bounds.getY(),
                     bounds.getWidth(), bounds.getHeight() - 3,
                     juce::Justification::centredLeft, false);
         g.drawLine ((float) bounds.getX(), lineY, (float) bounds.getRight(), lineY, 1.0f);
     };
-    drawGroupHeader (irInputGroupBounds,    "IR Input");
-    drawGroupHeader (irControlsGroupBounds, "IR Controls");
-    drawGroupHeader (erCrossfadeGroupBounds,   "ER Crossfade");
-    drawGroupHeader (tailCrossfadeGroupBounds, "Tail Crossfade");
+    drawGroupHeader (irInputGroupBounds,    "IR Input",       false);
+    drawGroupHeader (irControlsGroupBounds, "IR Controls",    false);
+    drawGroupHeader (erCrossfadeGroupBounds,   "ER Crossfade",   erCrossfeedOnButton.getToggleState());
+    drawGroupHeader (tailCrossfadeGroupBounds, "Tail Crossfade", tailCrossfeedOnButton.getToggleState());
+    drawGroupHeader (plateGroupBounds,         "Plate",          plateOnButton.getToggleState());
 
 }
 
@@ -597,10 +637,9 @@ void PingEditor::resized()
         stretchSlider.getRight() - predelaySlider.getX(),
         groupLabelH);
 
-    // —— Row 2: ER Crossfade (delay, att, switch) | Tail Crossfade (delay, att, switch) ——
-    const int switchH = 18;
-    const int switchW = 36;
-    const int row2TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6 + switchH + 4;
+    // —— Row 2: ER Crossfade (delay, att) | Tail Crossfade (delay, att) ——
+    // Toggles live in the group header line (LED-style, right-aligned); no extra height needed.
+    const int row2TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     auto row2Area = mainArea.removeFromTop (row2TotalH);
     const int row2KnobY = row2Area.getY() + groupLabelH;
 
@@ -617,15 +656,6 @@ void PingEditor::resized()
     placeRow2Knob (tailCrossfeedDelaySlider, tailCrossfeedDelayLabel, tailCrossfeedDelayReadout, 2);
     placeRow2Knob (tailCrossfeedAttSlider,   tailCrossfeedAttLabel,   tailCrossfeedAttReadout,   3);
 
-    // Switches: centred under each 2-knob pair
-    {
-        const int erCentreX  = (erCrossfeedDelaySlider.getX()   + erCrossfeedAttSlider.getRight())   / 2;
-        const int tailCentreX = (tailCrossfeedDelaySlider.getX() + tailCrossfeedAttSlider.getRight()) / 2;
-        const int switchY = erCrossfeedAttReadout.getBottom() + 4;
-        erCrossfeedOnButton.setBounds   (erCentreX   - switchW / 2, switchY, switchW, switchH);
-        tailCrossfeedOnButton.setBounds (tailCentreX - switchW / 2, switchY, switchW, switchH);
-    }
-
     // Store group header bounds for painting
     erCrossfadeGroupBounds = juce::Rectangle<int> (
         erCrossfeedDelaySlider.getX(),
@@ -637,6 +667,46 @@ void PingEditor::resized()
         row2Area.getY(),
         tailCrossfeedAttSlider.getRight() - tailCrossfeedDelaySlider.getX(),
         groupLabelH);
+
+    // Toggles: pill, right-aligned in their group header line (3× wide, same height as LED)
+    {
+        const int ledH = groupLabelH - 4;   // fits snugly inside the 14 px header strip
+        const int ledW = ledH * 2;
+        const int ledY = row2Area.getY() + (groupLabelH - ledH) / 2;
+        erCrossfeedOnButton.setBounds   (erCrossfadeGroupBounds.getRight()   - ledW, ledY, ledW, ledH);
+        tailCrossfeedOnButton.setBounds (tailCrossfadeGroupBounds.getRight() - ledW, ledY, ledW, ledH);
+    }
+
+    // —— Row 3: Plate (density, colour, size) + on/off toggle ——
+    // Single group spanning all three knobs; no extra inter-group gap.
+    const int row3TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
+    auto row3Area = mainArea.removeFromTop (row3TotalH);
+    const int row3KnobY = row3Area.getY() + groupLabelH;
+
+    auto placeRow3Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
+    {
+        // No extra gap — all three knobs belong to the single "Plate" group
+        const int cx = rowStartX + rowKnobSize / 2 + idx * rowStep;
+        s.setBounds    (cx - rowKnobSize / 2, row3KnobY,                   rowKnobSize, rowKnobSize);
+        lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,           rowLabelW,   labelH);
+        rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,  rowLabelW,   readoutH);
+    };
+    placeRow3Knob (plateDensitySlider, plateDensityLabel, plateDensityReadout, 0);
+    placeRow3Knob (plateColourSlider,  plateColourLabel,  plateColourReadout,  1);
+    placeRow3Knob (plateSizeSlider,    plateSizeLabel,    plateSizeReadout,    2);
+
+    // Group header spans all three knobs; toggle pill right-aligned within it
+    plateGroupBounds = juce::Rectangle<int> (
+        plateDensitySlider.getX(),
+        row3Area.getY(),
+        plateSizeSlider.getRight() - plateDensitySlider.getX(),
+        groupLabelH);
+    {
+        const int ledH = groupLabelH - 4;
+        const int ledW = ledH * 2;
+        const int ledY = row3Area.getY() + (groupLabelH - ledH) / 2;
+        plateOnButton.setBounds (plateGroupBounds.getRight() - ledW, ledY, ledW, ledH);
+    }
 
     // —— Remaining 6 knobs (grid): LFO Depth | Width | LFO Rate | Tail Mod | Delay Depth | Rate ——
     int y = mainArea.getY();   // below the row
@@ -806,6 +876,16 @@ void PingEditor::setMainPanelControlsVisible (bool visible)
     tailCrossfeedAttLabel.setVisible (visible);
     tailCrossfeedAttReadout.setVisible (visible);
     tailCrossfeedOnButton.setVisible (visible);
+    plateDensitySlider.setVisible (visible);
+    plateDensityLabel.setVisible (visible);
+    plateDensityReadout.setVisible (visible);
+    plateColourSlider.setVisible (visible);
+    plateColourLabel.setVisible (visible);
+    plateColourReadout.setVisible (visible);
+    plateSizeSlider.setVisible (visible);
+    plateSizeLabel.setVisible (visible);
+    plateSizeReadout.setVisible (visible);
+    plateOnButton.setVisible (visible);
 }
 
 void PingEditor::savePreset (const juce::String& name)
@@ -969,6 +1049,9 @@ void PingEditor::updateAllReadouts()
     tailCrossfeedDelayReadout.setText(juce::String (v ("tailCrossfeedDelayMs"), 1) + " ms", juce::dontSendNotification);
     float tailAttDb = v ("tailCrossfeedAttDb");
     tailCrossfeedAttReadout.setText  (tailAttDb <= -23.5f ? "-inf dB" : juce::String (juce::roundToInt (tailAttDb)) + " dB", juce::dontSendNotification);
+    plateDensityReadout.setText (juce::String (v ("plateDensity"), 2), juce::dontSendNotification);
+    plateColourReadout.setText  (juce::String (v ("plateColour"),  2), juce::dontSendNotification);
+    plateSizeReadout.setText    (juce::String (v ("plateSize"),    2), juce::dontSendNotification);
 }
 
 void PingEditor::refreshIRList()

@@ -115,6 +115,28 @@ private:
     std::vector<float> crossfeedErBufRtoL, crossfeedErBufLtoR, crossfeedTailBufRtoL, crossfeedTailBufLtoR;
     int crossfeedErWriteRtoL = 0, crossfeedErWriteLtoR = 0, crossfeedTailWriteRtoL = 0, crossfeedTailWriteLtoR = 0;
     int crossfeedMaxSamples = 0;
+
+    // Plate onset: pre-convolution allpass diffuser cascade
+    // SimpleAllpass: Schroeder allpass section with variable effective delay length.
+    // effLen = 0 means use buf.size() as the wrap length.
+    struct SimpleAllpass {
+        std::vector<float> buf;
+        int   ptr    = 0;
+        int   effLen = 0;   // effective delay length (≤ buf.size()); set each block for plateSize support
+        float g      = 0.7f;
+        float process (float x) noexcept {
+            int len = (effLen > 0 && effLen <= (int)buf.size()) ? effLen : (int)buf.size();
+            float d = buf[(size_t)ptr];
+            float w = x + g * d;
+            buf[(size_t)ptr] = w;
+            ptr = (ptr + 1) % len;
+            return d - g * w;
+        }
+    };
+    static constexpr int kNumPlateStages = 6;
+    std::array<std::array<SimpleAllpass, kNumPlateStages>, 2> plateAPs; // [ch][stage]
+    // 1-pole lowpass state for plateColour (one value per channel)
+    std::array<float, 2> plateShelfState { 0.f, 0.f };
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand;
     juce::SmoothedValue<float> inputGainSmoothed;
