@@ -133,7 +133,7 @@ Paste the printed `onset_offset` and `golden_iLL[30]` values into `IR_11` in `Pi
 - **DSP_05 rational-beat bound** — p,q ≤ 6 covers all perceptible simple LFO beat ratios. The original p,q ≤ 32 flagged 11/15, whose beat period at these rates would be many minutes — completely inaudible.
 - **DSP_10 first-return peak test** — allpass filters are IIR and never fully "drain," so drain-energy comparisons are unsuitable for testing `effLen`. Instead, DSP_10 exploits the fact that a single allpass of delay d, fed an impulse, produces its first large positive output exactly at sample d: `out[d] = 1 - g² ≈ 0.51`. At `plateSize=2.0`, d doubles from 691 to 1382 samples, making the peak position a direct, unambiguous observable of the `effLen` mechanism.
 - **DSP_11 short bloomTime is the worst case** — At 50 ms (minimum bloomTime) there are ~20 feedback round-trips per second. More trips per second means more opportunities for energy to accumulate if the loop gain is near 1. DSP_04 (300 ms) and DSP_11 (50 ms) together bound the stability guarantee across the full 50–500 ms range.
-- **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Bloom stages (not yet in production) leave `effLen = 0`; Plate stages set it each block via `plateSize`. Buffers are allocated at 2× the base primes so no reallocation is needed across the full `plateSize` 0.5–2.0 range.
+- **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Bloom stages (not yet in production) leave `effLen = 0`; Plate stages set it each block via `plateSize`. Buffers are allocated at 4× the base primes so no reallocation is needed across the full `plateSize` 0.5–4.0 range.
 
 ---
 
@@ -201,11 +201,11 @@ Immediately after Row 1, `mainArea.removeFromTop(row2TotalH)` reserves a second 
 
 Group header bounds stored as `erCrossfadeGroupBounds` and `tailCrossfadeGroupBounds`. All 6 controls are live/real-time — they do not affect IR synthesis or loading; see [Post-convolution crossfeed](#post-convolution-crossfeed-er-and-tail).
 
-### Row 3 — Plate (3 small knobs + 1 switch)
+### Row 3 — Plate (5 small knobs + 1 switch)
 
-Immediately after Row 2, `mainArea.removeFromTop(row3TotalH)` reserves a third strip using the same constants. **No** extra inter-group gap — all three knobs belong to a single **"Plate"** group:
+Immediately after Row 2, `mainArea.removeFromTop(row3TotalH)` reserves a third strip using the same constants. **No** extra inter-group gap — all five knobs belong to a single **"Plate"** group:
 
-- knob 0 = DENSITY (`plateDensitySlider`), knob 1 = COLOUR (`plateColourSlider`), knob 2 = SIZE (`plateSizeSlider`), pill switch (`plateOnButton`) right-aligned in the group header
+- knob 0 = DRY/WET (`plateDryWetSlider`), knob 1 = DIFFUSION (`plateDiffusionSlider`), knob 2 = COLOUR (`plateColourSlider`), knob 3 = SIZE (`plateSizeSlider`), knob 4 = VOLUME (`plateVolumeSlider`), pill switch (`plateOnButton`) right-aligned in the group header
 
 Group header bounds stored as `plateGroupBounds`. The switch uses component ID `PlateSwitch` and triggers `repaint()` so the header text glows orange when active. All controls are live/real-time — no IR recalculation on any change. Default editor height was increased from 528 → **600 px** to accommodate the new row (`editorH` in `PluginEditor.cpp`; minimum resize limit remains 528).
 
@@ -325,9 +325,11 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `tailCrossfeedDelayMs` | Tail Crossfeed Delay (ms) | 5–15 | 10 |
 | `tailCrossfeedAttDb` | Tail Crossfeed Att (dB) | -24–0 | -6 |
 | `plateOn` | Plate On | bool | false |
-| `plateDensity` | Plate Density | 0–1 | 0.5 |
+| `plateDryWet` | Plate Dry/Wet | 0–1 | 0.5 |
+| `plateDiffusion` | Plate Diffusion | 0.30–0.88 | 0.70 |
 | `plateColour` | Plate Colour | 0–1 | 0.5 |
-| `plateSize` | Plate Size | 0.5–2.0 | 1.0 |
+| `plateSize` | Plate Size | 0.5–4.0 | 1.0 |
+| `plateVolume` | Plate Volume | 0–2 | 1.0 |
 | `reversetrim` | Reverse Trim | 0–0.95 | 0 |
 | `b0freq/b0gain/b0q` | Band 0 EQ | 20–20k Hz / ±12 dB / 0.3–10 | 400 Hz, 0 dB, 0.707 |
 | `b1freq/b1gain/b1q` | Band 1 EQ | — | 1000 Hz, 0 dB, 0.707 |
@@ -359,7 +361,7 @@ Input Gain (dB, smoothed)
 Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix + compensation)
   │
   ▼
-[Plate: 6-stage allpass diffuser cascade + 1-pole colour LP, density mix]  (if plateOn)
+[Plate: 6-stage allpass diffuser (g=diffusion) + 1-pole colour LP, dry/wet blend × volume]  (if plateOn)
   │
   ▼
 Convolution  ── see "Convolution modes" below
@@ -462,9 +464,11 @@ After the saturator, **before** the convolution block. At `density = 0` the blen
 | Parameter ID | Range | Default | Effect |
 |---|---|---|---|
 | `plateOn` | bool | false | Enables the cascade; zero overhead when off |
-| `plateDensity` | 0–1 | 0.5 | Mix between raw and diffused input; 0 = bypass |
-| `plateColour` | 0–1 | 0.5 | 1-pole LP cutoff: 0 → 2 kHz (warm), 1 → 8 kHz (bright) |
-| `plateSize` | 0.5–2.0 | 1.0 | Scales all 6 allpass delays; 0.5 = tight/punchy, 2.0 = slow/vintage |
+| `plateDryWet` | 0–1 | 0.5 | Blend between unprocessed input and diffused+coloured signal; 0 = fully dry (bypass within plate stage), 1 = fully wet |
+| `plateDiffusion` | 0.30–0.88 | 0.70 | Allpass g coefficient applied to all 6 stages each block; lower = gentle scatter, higher = very dense diffusion |
+| `plateColour` | 0–1 | 0.5 | 1-pole LP cutoff applied to the diffused signal: 0 → 2 kHz (warm), 1 → 8 kHz (bright). Readout displays the actual cutoff in kHz. |
+| `plateSize` | 0.5–4.0 | 1.0 | Scales all 6 allpass delays; readout shows the largest delay time in ms (prime 691 × size / 48000 × 1000). At size=1.0 → ~14.4 ms, size=4.0 → ~57.6 ms. Buffers allocated at 4× base primes to cover the full range without reallocation. |
+| `plateVolume` | 0–2 | 1.0 | Output gain applied after the dry/wet blend; scales the entire plate stage independently of the main signal chain |
 
 ---
 
@@ -633,3 +637,9 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Preset and IR save overwrite prompts are selection-based** — Save actions only prompt when the typed name matches the currently selected existing item in the corresponding editable combo (`presetCombo` or IR synth `irCombo`) and the target file already exists. Typing a different name saves directly as a new file. Use async JUCE dialogs (`AlertWindow::showAsync`) in plugin UI; avoid blocking modal loops.
 - **`rawSynthBuffer` stores the pre-processing synth IR — do not save it after any transforms** — It must be saved as the very first thing inside the `fromSynth` block of `loadIRFromBuffer`, before reverse/trim/stretch/decay are applied. If it were saved after transforms, `reloadSynthIR()` would double-apply them on every Reverse or Trim interaction.
 - **+15 dB output trim is intentional** — `synthIR()` applies a fixed `+15 dB` scalar (`gain15dB = pow(10, 15/20)`) to all four IR channels as the very last step, correcting for the observed output level shortfall. Do not remove this. It does not affect the synthesis calculations, RT60, ER/tail balance, or FDN gain calibration — it is a pure post-process scalar applied after everything else.
+- **Plate is a pre-convolution diffuser — it does not touch the IR or the IR Synth engine** — All Plate DSP runs in `processBlock` on the live audio buffer, applied after the saturator and before the convolution. Changing any Plate parameter never triggers an IR recalculation. The IR output (and therefore all IR_01–IR_11 test golden values) is unchanged.
+- **Plate `effLen` and `g` are set per block, not per sample** — `plateSize` is read once, the 6 effective delay lengths are computed, and all `effLen` fields written before the sample loop. `plateDiffusion` is also read once and written to all `plateAPs[ch][s].g` before the sample loop. This avoids redundant computation while keeping the sample loop tight.
+- **Plate `plateColour` is a 1-pole lowpass, not a high-shelf** — A simple 1-pole lowpass applied to the diffused signal before the dry/wet blend. At `colour = 0` the cutoff is 2 kHz (warm, dark — EMT 140 character); at `colour = 1` it is 8 kHz (bright — AMS RMX16 character). Do not replace it with a true biquad shelf — the 1-pole is intentional.
+- **Plate signal path: dry/wet blend then volume** — The sample loop computes `blend = in * (1 - drywet) + coloured * drywet`, then `data[i] = blend * volume`. `volume` is an independent output gain (0–2×) applied after the blend, so it scales the entire plate stage without affecting the upstream dry signal or the overall convolver input. `drywet = 0` collapses to the raw input regardless of volume, and `plateOn = false` skips the block entirely — zero overhead.
+- **`plateDiffusion` sets g on all 6 stages simultaneously** — The g coefficient is written to all `plateAPs[ch][s].g` once per block before the sample loop. Range 0.30–0.88 keeps the filter stable and well below the unit-circle limit. Lower g = gentle, transparent scatter; higher g = very dense, metallic diffusion. Default 0.70 matches the original fixed g used when the parameter did not yet exist.
+- **Default editor height is now 600 px** — bumped from 528 to accommodate Row 3 (Plate). The resize minimum (`minH`) remains 528 so users can still shrink the window. Both constants are at the top of the `PingEditor` constructor in `PluginEditor.cpp`.

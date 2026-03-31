@@ -250,7 +250,7 @@ PingEditor::PingEditor (PingProcessor& p)
     tailCrossfeedOnButton.onClick = [this] { repaint(); };
 
     // Plate row knobs (row 3 — same accent style as crossfeed)
-    for (auto* s : { &plateDensitySlider, &plateColourSlider, &plateSizeSlider })
+    for (auto* s : { &plateDryWetSlider, &plateDiffusionSlider, &plateColourSlider, &plateSizeSlider, &plateVolumeSlider })
         makeSlider (*s, "");
     {
         addAndMakeVisible (plateOnButton);
@@ -278,9 +278,11 @@ PingEditor::PingEditor (PingProcessor& p)
     erCrossfeedAttSlider.setRange (-24.0, 0.0, 0.5);
     tailCrossfeedDelaySlider.setRange (5.0, 15.0, 0.5);
     tailCrossfeedAttSlider.setRange (-24.0, 0.0, 0.5);
-    plateDensitySlider.setRange (0.0, 1.0, 0.01);
-    plateColourSlider.setRange  (0.0, 1.0, 0.01);
-    plateSizeSlider.setRange    (0.5, 2.0, 0.01);
+    plateDryWetSlider.setRange   (0.0,  1.0,  0.01);
+    plateDiffusionSlider.setRange (0.30, 0.88, 0.01);
+    plateColourSlider.setRange   (0.0,  1.0,  0.01);
+    plateSizeSlider.setRange     (0.5,  4.0,  0.01);
+    plateVolumeSlider.setRange   (0.0,  2.0,  0.01);
 
     dryWetAttach    = std::make_unique<SliderAttachment> (apvts, "drywet",   dryWetSlider);
     predelayAttach  = std::make_unique<SliderAttachment> (apvts, "predelay", predelaySlider);
@@ -303,10 +305,12 @@ PingEditor::PingEditor (PingProcessor& p)
     tailCrossfeedAttAttach   = std::make_unique<SliderAttachment> (apvts, "tailCrossfeedAttDb",   tailCrossfeedAttSlider);
     erCrossfeedOnAttach      = std::make_unique<ButtonAttachment> (apvts, "erCrossfeedOn",        erCrossfeedOnButton);
     tailCrossfeedOnAttach    = std::make_unique<ButtonAttachment> (apvts, "tailCrossfeedOn",      tailCrossfeedOnButton);
-    plateDensityAttach = std::make_unique<SliderAttachment> (apvts, "plateDensity", plateDensitySlider);
-    plateColourAttach  = std::make_unique<SliderAttachment> (apvts, "plateColour",  plateColourSlider);
-    plateSizeAttach    = std::make_unique<SliderAttachment> (apvts, "plateSize",    plateSizeSlider);
-    plateOnAttach      = std::make_unique<ButtonAttachment> (apvts, "plateOn",      plateOnButton);
+    plateDryWetAttach    = std::make_unique<SliderAttachment> (apvts, "plateDryWet",    plateDryWetSlider);
+    plateDiffusionAttach = std::make_unique<SliderAttachment> (apvts, "plateDiffusion", plateDiffusionSlider);
+    plateColourAttach    = std::make_unique<SliderAttachment> (apvts, "plateColour",    plateColourSlider);
+    plateSizeAttach      = std::make_unique<SliderAttachment> (apvts, "plateSize",      plateSizeSlider);
+    plateVolumeAttach    = std::make_unique<SliderAttachment> (apvts, "plateVolume",    plateVolumeSlider);
+    plateOnAttach        = std::make_unique<ButtonAttachment> (apvts, "plateOn",        plateOnButton);
 
     setLookAndFeel (&pingLook);
 
@@ -318,7 +322,7 @@ PingEditor::PingEditor (PingProcessor& p)
                         &erLevelLabel, &tailLevelLabel,
                         &erCrossfeedDelayLabel, &erCrossfeedAttLabel,
                         &tailCrossfeedDelayLabel, &tailCrossfeedAttLabel,
-                        &plateDensityLabel, &plateColourLabel, &plateSizeLabel })
+                        &plateDryWetLabel, &plateDiffusionLabel, &plateColourLabel, &plateSizeLabel, &plateVolumeLabel })
     {
         addAndMakeVisible (label);
         label->setJustificationType (juce::Justification::centred);
@@ -346,9 +350,11 @@ PingEditor::PingEditor (PingProcessor& p)
     erCrossfeedAttLabel.setText     ("ATT",     juce::dontSendNotification);
     tailCrossfeedDelayLabel.setText ("DELAY",   juce::dontSendNotification);
     tailCrossfeedAttLabel.setText   ("ATT",     juce::dontSendNotification);
-    plateDensityLabel.setText       ("DENSITY", juce::dontSendNotification);
-    plateColourLabel.setText        ("COLOUR",  juce::dontSendNotification);
-    plateSizeLabel.setText          ("SIZE",    juce::dontSendNotification);
+    plateDryWetLabel.setText    ("DRY/WET",   juce::dontSendNotification);
+    plateDiffusionLabel.setText ("DIFFUSION", juce::dontSendNotification);
+    plateColourLabel.setText    ("COLOUR",    juce::dontSendNotification);
+    plateSizeLabel.setText      ("SIZE",      juce::dontSendNotification);
+    plateVolumeLabel.setText    ("VOLUME",    juce::dontSendNotification);
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
@@ -357,7 +363,7 @@ PingEditor::PingEditor (PingProcessor& p)
                      &erLevelReadout, &tailLevelReadout,
                      &erCrossfeedDelayReadout, &erCrossfeedAttReadout,
                      &tailCrossfeedDelayReadout, &tailCrossfeedAttReadout,
-                     &plateDensityReadout, &plateColourReadout, &plateSizeReadout })
+                     &plateDryWetReadout, &plateDiffusionReadout, &plateColourReadout, &plateSizeReadout, &plateVolumeReadout })
     {
         addAndMakeVisible (r);
         r->setJustificationType (juce::Justification::centred);
@@ -677,29 +683,31 @@ void PingEditor::resized()
         tailCrossfeedOnButton.setBounds (tailCrossfadeGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
-    // —— Row 3: Plate (density, colour, size) + on/off toggle ——
-    // Single group spanning all three knobs; no extra inter-group gap.
+    // —— Row 3: Plate (dryWet, diffusion, colour, size, volume) + on/off toggle ——
+    // Single group spanning all five knobs; no extra inter-group gap.
     const int row3TotalH = groupLabelH + rowKnobSize + labelH + readoutH + 6;
     auto row3Area = mainArea.removeFromTop (row3TotalH);
     const int row3KnobY = row3Area.getY() + groupLabelH;
 
     auto placeRow3Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
     {
-        // No extra gap — all three knobs belong to the single "Plate" group
+        // No extra gap — all five knobs belong to the single "Plate" group
         const int cx = rowStartX + rowKnobSize / 2 + idx * rowStep;
         s.setBounds    (cx - rowKnobSize / 2, row3KnobY,                   rowKnobSize, rowKnobSize);
         lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,           rowLabelW,   labelH);
         rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,  rowLabelW,   readoutH);
     };
-    placeRow3Knob (plateDensitySlider, plateDensityLabel, plateDensityReadout, 0);
-    placeRow3Knob (plateColourSlider,  plateColourLabel,  plateColourReadout,  1);
-    placeRow3Knob (plateSizeSlider,    plateSizeLabel,    plateSizeReadout,    2);
+    placeRow3Knob (plateDryWetSlider,    plateDryWetLabel,    plateDryWetReadout,    0);
+    placeRow3Knob (plateDiffusionSlider, plateDiffusionLabel, plateDiffusionReadout, 1);
+    placeRow3Knob (plateColourSlider,    plateColourLabel,    plateColourReadout,    2);
+    placeRow3Knob (plateSizeSlider,      plateSizeLabel,      plateSizeReadout,      3);
+    placeRow3Knob (plateVolumeSlider,    plateVolumeLabel,    plateVolumeReadout,    4);
 
-    // Group header spans all three knobs; toggle pill right-aligned within it
+    // Group header spans all five knobs; toggle pill right-aligned within it
     plateGroupBounds = juce::Rectangle<int> (
-        plateDensitySlider.getX(),
+        plateDryWetSlider.getX(),
         row3Area.getY(),
-        plateSizeSlider.getRight() - plateDensitySlider.getX(),
+        plateVolumeSlider.getRight() - plateDryWetSlider.getX(),
         groupLabelH);
     {
         const int ledH = groupLabelH - 4;
@@ -876,15 +884,21 @@ void PingEditor::setMainPanelControlsVisible (bool visible)
     tailCrossfeedAttLabel.setVisible (visible);
     tailCrossfeedAttReadout.setVisible (visible);
     tailCrossfeedOnButton.setVisible (visible);
-    plateDensitySlider.setVisible (visible);
-    plateDensityLabel.setVisible (visible);
-    plateDensityReadout.setVisible (visible);
+    plateDryWetSlider.setVisible (visible);
+    plateDryWetLabel.setVisible (visible);
+    plateDryWetReadout.setVisible (visible);
+    plateDiffusionSlider.setVisible (visible);
+    plateDiffusionLabel.setVisible (visible);
+    plateDiffusionReadout.setVisible (visible);
     plateColourSlider.setVisible (visible);
     plateColourLabel.setVisible (visible);
     plateColourReadout.setVisible (visible);
     plateSizeSlider.setVisible (visible);
     plateSizeLabel.setVisible (visible);
     plateSizeReadout.setVisible (visible);
+    plateVolumeSlider.setVisible (visible);
+    plateVolumeLabel.setVisible (visible);
+    plateVolumeReadout.setVisible (visible);
     plateOnButton.setVisible (visible);
 }
 
@@ -1049,9 +1063,19 @@ void PingEditor::updateAllReadouts()
     tailCrossfeedDelayReadout.setText(juce::String (v ("tailCrossfeedDelayMs"), 1) + " ms", juce::dontSendNotification);
     float tailAttDb = v ("tailCrossfeedAttDb");
     tailCrossfeedAttReadout.setText  (tailAttDb <= -23.5f ? "-inf dB" : juce::String (juce::roundToInt (tailAttDb)) + " dB", juce::dontSendNotification);
-    plateDensityReadout.setText (juce::String (v ("plateDensity"), 2), juce::dontSendNotification);
-    plateColourReadout.setText  (juce::String (v ("plateColour"),  2), juce::dontSendNotification);
-    plateSizeReadout.setText    (juce::String (v ("plateSize"),    2), juce::dontSendNotification);
+    plateDryWetReadout.setText    (juce::String (v ("plateDryWet"),    2), juce::dontSendNotification);
+    plateDiffusionReadout.setText (juce::String (v ("plateDiffusion"), 2), juce::dontSendNotification);
+    {
+        // Colour → show cutoff frequency: 0→2 kHz, 1→8 kHz
+        float colourHz = 2000.f + v ("plateColour") * 6000.f;
+        plateColourReadout.setText (juce::String (colourHz / 1000.f, 1) + " kHz", juce::dontSendNotification);
+    }
+    {
+        // Size → show largest allpass delay time: prime 691 × plateSize / 48000 × 1000 ms
+        float sizeMs = v ("plateSize") * 691.0f / 48000.0f * 1000.0f;
+        plateSizeReadout.setText (juce::String (sizeMs, 1) + " ms", juce::dontSendNotification);
+    }
+    plateVolumeReadout.setText (juce::String (v ("plateVolume"), 2), juce::dontSendNotification);
 }
 
 void PingEditor::refreshIRList()

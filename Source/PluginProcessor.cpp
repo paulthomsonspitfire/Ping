@@ -31,10 +31,12 @@ namespace IDs
     static const juce::String tailCrossfeedDelayMs { "tailCrossfeedDelayMs" };
     static const juce::String tailCrossfeedAttDb { "tailCrossfeedAttDb" };
     // Plate onset
-    static const juce::String plateOn      { "plateOn" };
-    static const juce::String plateDensity { "plateDensity" };
-    static const juce::String plateColour  { "plateColour" };
-    static const juce::String plateSize    { "plateSize" };
+    static const juce::String plateOn         { "plateOn" };
+    static const juce::String plateDryWet     { "plateDryWet" };
+    static const juce::String plateDiffusion  { "plateDiffusion" };
+    static const juce::String plateColour     { "plateColour" };
+    static const juce::String plateSize       { "plateSize" };
+    static const juce::String plateVolume     { "plateVolume" };
 }
 
 static juce::File getLicenceDirectory()
@@ -228,10 +230,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailCrossfeedDelayMs, "Tail Crossfeed Delay (ms)", 5.0f, 15.0f, 10.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailCrossfeedAttDb, "Tail Crossfeed Att (dB)", -24.0f, 0.0f, -6.0f));
     // Plate onset
-    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::plateOn,      "Plate On",      false));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDensity, "Plate Density", 0.0f, 1.0f,   0.5f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateColour,  "Plate Colour",  0.0f, 1.0f,   0.5f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateSize,    "Plate Size",    0.5f, 2.0f,   1.0f));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::plateOn,        "Plate On",         false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDryWet,    "Plate Dry/Wet",    0.0f, 1.0f,  0.5f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDiffusion, "Plate Diffusion",  0.30f, 0.88f, 0.70f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateColour,    "Plate Colour",     0.0f, 1.0f,  0.5f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateSize,      "Plate Size",       0.5f, 4.0f,  1.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateVolume,    "Plate Volume",     0.0f, 2.0f,  1.0f));
     return layout;
 }
 
@@ -301,7 +305,7 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         for (int ch = 0; ch < 2; ++ch)
             for (int s = 0; s < kNumPlateStages; ++s)
             {
-                int d = (int)std::round (platePrimes[s] * sampleRate / 48000.0 * 2.0);
+                int d = (int)std::round (platePrimes[s] * sampleRate / 48000.0 * 4.0); // 4× headroom — supports plateSize up to 4.0
                 plateAPs[ch][s].buf.assign ((size_t)d, 0.f);
                 plateAPs[ch][s].ptr    = 0;
                 plateAPs[ch][s].effLen = 0;
@@ -394,9 +398,11 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     // ——————————————————————————————————————————————————————————————————
     if (apvts.getRawParameterValue (IDs::plateOn)->load() > 0.5f)
     {
-        const float density  = apvts.getRawParameterValue (IDs::plateDensity)->load();
-        const float colour   = apvts.getRawParameterValue (IDs::plateColour)->load();
-        const float plateSz  = juce::jlimit (0.5f, 2.0f, apvts.getRawParameterValue (IDs::plateSize)->load());
+        const float drywet    = apvts.getRawParameterValue (IDs::plateDryWet)->load();
+        const float diffusion = apvts.getRawParameterValue (IDs::plateDiffusion)->load();
+        const float colour    = apvts.getRawParameterValue (IDs::plateColour)->load();
+        const float plateSz   = juce::jlimit (0.5f, 4.0f, apvts.getRawParameterValue (IDs::plateSize)->load());
+        const float volume    = apvts.getRawParameterValue (IDs::plateVolume)->load();
 
         // colour → 1-pole lowpass cutoff: 0 → 2 kHz (warm/dark), 1 → 8 kHz (bright)
         const float cutHz    = 2000.f + colour * 6000.f;
@@ -407,6 +413,11 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         int stageLens[kNumPlateStages];
         for (int s = 0; s < kNumPlateStages; ++s)
             stageLens[s] = (int)std::round (platePrimes[s] * currentSampleRate / 48000.0 * (double)plateSz);
+
+        // Set g coefficient from diffusion parameter — applies to all stages, both channels
+        for (int ch = 0; ch < numChannels; ++ch)
+            for (int s = 0; s < kNumPlateStages; ++s)
+                plateAPs[ch][s].g = diffusion;
 
         for (int ch = 0; ch < numChannels; ++ch)
         {
@@ -423,7 +434,10 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
 
                 // 1-pole lowpass shapes colour: low cutoff = warm/dark, high cutoff = bright
                 plateShelfState[ch] = plateShelfState[ch] + shelfAlpha * (diff - plateShelfState[ch]);
-                data[i] = in * (1.f - density) + plateShelfState[ch] * density;
+
+                // Dry/wet blend, then output volume
+                float blend = in * (1.f - drywet) + plateShelfState[ch] * drywet;
+                data[i] = blend * volume;
             }
         }
     }
