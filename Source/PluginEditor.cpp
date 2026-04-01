@@ -242,8 +242,8 @@ PingEditor::PingEditor (PingProcessor& p)
         s.setColour (juce::Slider::thumbColourId, accent);
         s.setColour (juce::Slider::trackColourId, panelBorder);
     };
-    makeHorizontalSlider (erLevelSlider);
-    makeHorizontalSlider (tailLevelSlider);
+    makeSlider (erLevelSlider, "ER Level");
+    makeSlider (tailLevelSlider, "Tail Level");
 
     // Crossfeed row knobs (accent colour, same rotary style)
     for (auto* s : { &erCrossfeedDelaySlider, &erCrossfeedAttSlider,
@@ -635,7 +635,7 @@ void PingEditor::resized()
     const int gapV = (int) (0.01f * ch) + (int) (0.008f * ch);
     const int marginV = juce::jmin (12, ch / 38);
     const int availableForMainAndEq = ch - 2 * marginV - topRowH - gapV;
-    const int erTailRowH = 28;
+    const int erTailRowH = 0;  // ER/Tail are now rotary knobs in the DRY/WET column, not a separate row
     const int mainHClamped = juce::jmax (3 * sixRowH, availableForMainAndEq - eqHeight - erTailRowH);
     const int mainHeight = juce::jmin (mainHClamped, availableForMainAndEq - eqHeight - erTailRowH - 6);
 
@@ -707,13 +707,31 @@ void PingEditor::resized()
     const int irGap = 6;
     int irRowY = cy + 10 + dryWetKnobSize + 2 + readoutH + 6 + labelH;  // just below the DRY/WET readout
 
-    // Wet Output: centred to the right of irKnobsCenterX, shifted right by controlShift
-    const int controlShift = 50;
-    const int outputGainCenterX = irKnobsCenterX + smallKnobSize / 2 + controlShift;
-    const int outputGainY = dryWetCenterY - smallKnobSize - irKnobGap;
-    outputGainSlider.setBounds (outputGainCenterX - smallKnobSize / 2, outputGainY, smallKnobSize, smallKnobSize);
-    outputGainLabel.setBounds (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + 2, irLabelW, labelH);
-    outputGainReadout.setBounds (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
+    // True vertical centre of the DRY/WET knob (placed at cy+10, so centre is +10+size/2)
+    const int dryWetTrueCentreY = cy + 10 + dryWetKnobSize / 2;
+
+    // Wet Output: 50% larger than smallKnobSize, horizontally centred on the Save button,
+    // vertically centred on the DRY/WET knob.
+    const int outputGainKnobSize = (int)(smallKnobSize * 1.5f);
+    const int outputGainCenterX  = w / 2 + irComboW / 2 + 4 + saveButtonW / 2;
+    outputGainSlider.setBounds (outputGainCenterX - outputGainKnobSize / 2,
+                                dryWetTrueCentreY  - outputGainKnobSize / 2,
+                                outputGainKnobSize, outputGainKnobSize);
+    outputGainLabel.setBounds  (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + 2,  irLabelW, labelH);
+    outputGainReadout.setBounds(outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
+
+    // ER and Tail level knobs: same size as WET OUTPUT, mirrored to the left of the DRY/WET knob
+    // at the same horizontal distance.  ER is above, Tail below, pair centred on DRY/WET centre Y.
+    const int erTailCenterX = w / 2 - (irComboW / 2 + 4 + saveButtonW / 2);
+    const int erTailSlotH   = outputGainKnobSize + labelH + readoutH + 4;
+    const int erKnobY       = dryWetTrueCentreY - erTailSlotH - 2;
+    const int tailKnobY     = dryWetTrueCentreY + 2;
+    erLevelSlider.setBounds  (erTailCenterX - outputGainKnobSize / 2, erKnobY, outputGainKnobSize, outputGainKnobSize);
+    erLevelLabel.setBounds   (erTailCenterX - irLabelW / 2, erLevelSlider.getBottom() + 2,    irLabelW, labelH);
+    erLevelReadout.setBounds (erTailCenterX - irLabelW / 2, erLevelLabel.getBottom(),          irLabelW, readoutH);
+    tailLevelSlider.setBounds(erTailCenterX - outputGainKnobSize / 2, tailKnobY, outputGainKnobSize, outputGainKnobSize);
+    tailLevelLabel.setBounds (erTailCenterX - irLabelW / 2, tailLevelSlider.getBottom() + 2,  irLabelW, labelH);
+    tailLevelReadout.setBounds(erTailCenterX - irLabelW / 2, tailLevelLabel.getBottom(),       irLabelW, readoutH);
 
     if (! irSynthComponent.isVisible())
         dryWetSlider.toFront (false);
@@ -1019,28 +1037,6 @@ void PingEditor::resized()
     widthSlider.setBounds    (x2, y, sixKnobSize, sixKnobSize);
     widthLabel.setBounds     (x2, y + sixKnobSize + 2,          sixKnobSize, labelH);
     widthReadout.setBounds   (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
-
-    b.removeFromTop ((int) (0.008f * ch));
-
-    // —— ER/Tail sliders: between waveform and EQ, within waveform width, side by side ——
-    auto erTailRow = b.removeFromTop (erTailRowH);
-    int sliderAreaX = waveformComponent.getX();  // align left edge with waveform
-    int sliderAreaW = wavePanelW;
-    int sliderH = 18;
-    int labelW = 28;
-    int readoutW = 38;
-    int gap = 8;
-    int halfW = (sliderAreaW - gap) / 2;
-    int eachSliderW = halfW - labelW - readoutW - gap;
-
-    erLevelLabel.setBounds (sliderAreaX, erTailRow.getY(), labelW, sliderH);
-    erLevelSlider.setBounds (erLevelLabel.getRight() + gap, erTailRow.getY(), eachSliderW, sliderH);
-    erLevelReadout.setBounds (erLevelSlider.getRight() + gap, erTailRow.getY(), readoutW, sliderH);
-
-    int tailX = sliderAreaX + halfW + gap;
-    tailLevelLabel.setBounds (tailX, erTailRow.getY(), labelW, sliderH);
-    tailLevelSlider.setBounds (tailLevelLabel.getRight() + gap, erTailRow.getY(), eachSliderW, sliderH);
-    tailLevelReadout.setBounds (tailLevelSlider.getRight() + gap, erTailRow.getY(), readoutW, sliderH);
 
     // —— Bottom: EQ (right) — extends into the h/6 bottom margin strip ——
     int eqWidth = juce::jmax (315, (int) (0.465f * cw));  // 75% of original (420→315, 0.62→0.465)
