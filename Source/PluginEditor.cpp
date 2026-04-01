@@ -5,7 +5,7 @@
 namespace
 {
     constexpr int editorW = 1104;
-    constexpr int editorH = 816;
+    constexpr int editorH = 786;
     const juce::Colour bgDark      { 0xff141414 };
     const juce::Colour panelBg     { 0xff1e1e1e };
     const juce::Colour panelBorder { 0xff2a2a2a };
@@ -500,7 +500,7 @@ PingEditor::PingEditor (PingProcessor& p)
     licenceLabel.setFont (juce::FontOptions (11.0f));
 
     addAndMakeVisible (versionLabel);
-    versionLabel.setJustificationType (juce::Justification::centred);
+    versionLabel.setJustificationType (juce::Justification::centredRight);
     versionLabel.setColour (juce::Label::textColourId, textDim);
     versionLabel.setFont (juce::FontOptions (11.0f));
     versionLabel.setText (juce::String ("v") + ProjectInfo::versionString, juce::dontSendNotification);
@@ -824,13 +824,13 @@ void PingEditor::resized()
     // removeFromTop clamps to the remaining rect height, causing subsequent rows to be
     // placed far too high (they pile up inside row 2 / row 1).  Using absolute offsets
     // from topKnobRow.getBottom() guarantees correct spacing regardless of mainHeight.
-    const int row2AbsY = topKnobRow.getBottom();
-    const int row3AbsY = row2AbsY + row2TotalH_ + 14;  // groupLabelH worth of gap — separates IR+Crossfade from Plate+Bloom (left) and Cloud+Shimmer from Tail (right)
+    const int row2AbsY = topKnobRow.getBottom() + 4;    // +4 so Row1→Row2 knob spacing matches Row3→Row4 (Plate→Bloom reference)
+    const int row3AbsY = row2AbsY + row2TotalH_ + 39;  // 14 base + 25 extra down — separates IR+Crossfade from Plate+Bloom (left) and Cloud+Shimmer from Tail (right)
     const int row4AbsY = row3AbsY + row3TotalH_;
     const int row5AbsY = row4AbsY + row4TotalH_;
     const int row6AbsY = row5AbsY + row5TotalH_;
     const int rowStep    = rowKnobSize + rowGap;
-    const int rowStartX  = juce::jmax (8, w / 128) + 5;     // 5 px right of the window edge margin
+    const int rowStartX  = juce::jmax (8, w / 128) + 10;    // 10 px right of the window edge margin (5 px inset from edge)
 
     auto placeRowKnob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
     {
@@ -870,8 +870,7 @@ void PingEditor::resized()
     // Place IR combo + IR Synth button centred under the DRY/WET knob,
     // then waveform + reverse button centred below the combo.
     {
-        const int irTotalW  = irComboW + irGap + irSynthW;
-        const int irComboXu = dryWetSlider.getBounds().getCentreX() - irTotalW / 2;
+        const int irComboXu = dryWetSlider.getBounds().getCentreX() - irComboW / 2;
         const int irSynthXu = irComboXu + irComboW + irGap;
         irCombo.setBounds       (irComboXu, irRowY, irComboW, irComboH);
         irSynthButton.setBounds (irSynthXu, irRowY, irSynthW, irComboH);
@@ -879,18 +878,15 @@ void PingEditor::resized()
         const int irCLabelW = 52;
         irComboLabel.setBounds (irComboXu - irCLabelW - 4, irRowY, irCLabelW, irComboH);
 
-        // Waveform: aligned with level meters — same Y anchor, same size (300×153).
-        // Centred horizontally in the gap between the meter right edge and the EQ left edge.
+        // Waveform: centred under the IR preset combo (at w/2), reverse button 10 px below the combo.
         {
-            const int eqWidth_       = juce::jmax (315, (int)(0.465f * cw));  // same formula as EQ width
-            const int meterRightEdge = rowStartX + 300;                        // rowStartX + meterW
-            const int eqLeftEdge     = b.getRight() - eqWidth_;
-            const int waveformY      = row4AbsY + row4TotalH_ + 29 + kMeterBarOffset; // aligned with first bar
-            const int waveCentreX    = meterRightEdge + (eqLeftEdge - meterRightEdge) / 2;
-            const int revBtnW = juce::jmax (68, (int)(0.075f * cw));
-            const int revBtnH = 22;
+            const int revBtnW   = juce::jmax (68, (int)(0.075f * cw));
+            const int revBtnH   = 22;
+            const int revBtnY   = irCombo.getBottom() + 10;
+            const int waveformY = revBtnY + revBtnH + 2;
+            const int waveCentreX = dryWetSlider.getBounds().getCentreX();   // = w/2
             reverseButton.setBounds (waveCentreX + wavePanelW / 2 - revBtnW,
-                                     waveformY - revBtnH - 2, revBtnW, revBtnH);
+                                     revBtnY, revBtnW, revBtnH);
             waveformComponent.setBounds (waveCentreX - wavePanelW / 2, waveformY,
                                          wavePanelW, wavePanelH);
         }
@@ -964,8 +960,8 @@ void PingEditor::resized()
         plateIRFeedSlider.getRight() - plateDiffusionSlider.getX(),
         groupLabelH);
     {
-        const int ledH = groupLabelH - 4;
-        const int ledW = ledH * 2;
+        const int ledH = groupLabelH;   // full header height for power-button icon
+        const int ledW = ledH;           // square
         const int ledY = row3AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
         plateOnButton.setBounds (plateGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
@@ -997,8 +993,8 @@ void PingEditor::resized()
         bloomVolumeSlider.getRight() - bloomSizeSlider.getX(),
         groupLabelH);
     {
-        const int ledH = groupLabelH - 4;
-        const int ledW = ledH * 2;
+        const int ledH = groupLabelH;   // full header height for power-button icon
+        const int ledW = ledH;           // square
         const int ledY = row4AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
         bloomOnButton.setBounds (bloomGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
@@ -1014,11 +1010,12 @@ void PingEditor::resized()
     auto row6Area = mainArea.removeFromTop (row6TotalH);
     (void) row6Area;
 
-    // Shared lambda: idx 0 = leftmost, idx 4 = rightmost; right edge of idx 4 = b.getRight()
+    // Shared lambda: idx 0 = leftmost, idx 4 = rightmost; right edge of idx 4 = b.getRight() - 5 (5 px inset)
+    const int rightRowEdge = b.getRight() - 5;
     auto placeRightRowKnob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout,
                                   int idx, int knobY)
     {
-        const int cx = b.getRight() - (4 - idx) * rowStep - rowKnobSize / 2;
+        const int cx = rightRowEdge - (4 - idx) * rowStep - rowKnobSize / 2;
         s.setBounds    (cx - rowKnobSize / 2, knobY,                        rowKnobSize, rowKnobSize);
         lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,            rowLabelW,   labelH);
         rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,   rowLabelW,   readoutH);
@@ -1037,8 +1034,8 @@ void PingEditor::resized()
         cloudVolumeSlider.getRight() - cloudDepthSlider.getX(),
         groupLabelH);
     {
-        const int ledH = groupLabelH - 4;
-        const int ledW = ledH * 2;
+        const int ledH = groupLabelH;   // full header height for power-button icon
+        const int ledW = ledH;           // square
         const int ledY = cloudGroupBounds.getY() + (groupLabelH - ledH) / 2;
         cloudOnButton.setBounds (cloudGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
@@ -1056,8 +1053,8 @@ void PingEditor::resized()
         shimVolumeSlider.getRight() - shimPitchSlider.getX(),
         groupLabelH);
     {
-        const int ledH = groupLabelH - 4;
-        const int ledW = ledH * 2;
+        const int ledH = groupLabelH;   // full header height for power-button icon
+        const int ledW = ledH;           // square
         const int ledY = shimGroupBounds.getY() + (groupLabelH - ledH) / 2;
         shimOnButton.setBounds (shimGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
@@ -1070,7 +1067,7 @@ void PingEditor::resized()
         auto placeR3Knob = [&](juce::Slider& s, juce::Label& lbl, juce::Label& rdout, int idx)
         {
             const int extraGap = (idx < 2) ? 5 : 0;   // extra gap to the left of the AM pair
-            const int cx = b.getRight() - (4 - idx) * rowStep - rowKnobSize / 2 - extraGap;
+            const int cx = rightRowEdge - (4 - idx) * rowStep - rowKnobSize / 2 - extraGap;
             s.setBounds    (cx - rowKnobSize / 2, row3KnobY,                     rowKnobSize, rowKnobSize);
             lbl.setBounds  (cx - rowLabelW / 2,   s.getBottom() + 2,             rowLabelW,   labelH);
             rdout.setBounds(cx - rowLabelW / 2,   s.getBottom() + labelH + 2,    rowLabelW,   readoutH);
@@ -1095,27 +1092,28 @@ void PingEditor::resized()
     widthLabel.setBounds     (outputGainCenterX - irLabelW / 2,           widthSlider.getBottom() + 2,           irLabelW, labelH);
     widthReadout.setBounds   (outputGainCenterX - irLabelW / 2,           widthSlider.getBottom() + labelH + 2,  irLabelW, readoutH);
 
-    // —— Bottom-right: EQ — top aligned with the level meters and waveform, extends to window bottom ——
-    int eqWidth = juce::jmax (315, (int) (0.465f * cw));  // 75% of original (420→315, 0.62→0.465)
-    // EQ layout: knobs above, graph below (104 px, matching waveform height).
-    // Component height = 8 px padding + 113 px ctrl area + 104 px graph = 225 px.
-    // Graph top is at local y = compH - 108 = 117.  To align with meter bar top:
-    //   eqTopY = meterBarTop - 117.
-    static constexpr int kEQComponentH = 225;
-    const int meterBarTop = row4AbsY + row4TotalH_ + 29 + kMeterBarOffset;
-    const int eqTopY = meterBarTop - 117;
-    eqGraph.setBounds (b.getRight() - eqWidth, eqTopY, eqWidth, kEQComponentH);
+    // —— EQ: left edge at DRY/WET centre (w/2), right edge at b.getRight().
+    // Height = 225 × 1.5 = 337 px (50% taller).  Bottom aligned with the new meter bottom (h − 38).
+    // Graph (130 px) at the bottom of the component; ctrl knobs above, restricted to the
+    // column that sits under the Tail-mod knobs (ctrlAreaXOffset set before setBounds).
+    static constexpr int kEQComponentH = 337;
+    const int eqLeft   = w / 2;
+    const int eqWidth  = b.getRight() - eqLeft;
+    const int eqBottom = h - 34;                  // graph bottom at h−38 (EQGraph reduced(4) internally)
+    const int eqTopY   = eqBottom - kEQComponentH;
+    eqGraph.ctrlAreaXOffset = 0; // controls fill full EQ width
+    eqGraph.setBounds (eqLeft, eqTopY, eqWidth, kEQComponentH);
 
-    licenceLabel.setBounds (leftPad + 12, ch - 20, cw - 24, 16);
-    versionLabel.setBounds (tailRateSlider.getX(), ch - 20, tailRateSlider.getWidth(), 16);
+    licenceLabel.setBounds (12,       h - 18, w / 2 - 12, 16);
+    versionLabel.setBounds (w / 2,    h - 18, w / 2 - 12, 16);
 
     // —— Level meter panel — bottom-left ——
-    // Anchor below the last left-side row (row4), left-aligned with the knob rows.
+    // Bottom sits 20 px above the licence label (licence at h − 18, so meter bottom = h − 38).
     {
-        const int meterW = 300;   // 230 × 1.3
-        const int meterH = 153;   // 118 × 1.3
-        const int meterX = rowStartX; // left-aligned with the knob rows
-        const int meterY = row4AbsY + row4TotalH_ + 29;  // 14 + 15 px extra down
+        const int meterW = 300;
+        const int meterH = 153;
+        const int meterX = rowStartX;
+        const int meterY = h - 38 - meterH + 15;   // = h − 176
         outputLevelMeter.setBounds (meterX, meterY, meterW, meterH);
     }
 }

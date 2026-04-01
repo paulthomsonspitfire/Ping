@@ -94,43 +94,68 @@ void PingLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b
         || id == "BloomSwitch" || id == "CloudSwitch" || id == "ShimmerSwitch")
     {
         auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
-        bool on = button.getToggleState();
+        bool on      = button.getToggleState();
         bool hovered = shouldDrawButtonAsHighlighted;
-        float pillR = bounds.getHeight() * 0.5f;   // fully rounded ends
 
+        const float cx  = bounds.getCentreX();
+        const float cy  = bounds.getCentreY();
+        const float dim = juce::jmin (bounds.getWidth(), bounds.getHeight());
+        const float bgR = dim * 0.48f;
+
+        // ── Circular body ─────────────────────────────────────────────────
         // Soft drop-shadow
         g.setColour (juce::Colour (0x28000000));
-        g.fillRoundedRectangle (bounds.translated (0.0f, 1.2f).expanded (0.3f), pillR);
+        g.fillEllipse (cx - bgR + 1.0f, cy - bgR + 1.5f, bgR * 2.0f, bgR * 2.0f);
 
-        // Body — horizontal gradient matching knob body colours
-        juce::ColourGradient grad (knobBodyLight,
-                                   bounds.getX(),     bounds.getCentreY(),
-                                   knobBodyDark,
-                                   bounds.getRight(), bounds.getCentreY(), false);
-        g.setGradientFill (grad);
-        g.fillRoundedRectangle (bounds, pillR);
+        // Body — same radial gradient as knob face
+        juce::ColourGradient bodyGrad (knobBodyLight,
+                                       cx - bgR * 0.3f, cy - bgR * 0.3f,
+                                       knobBodyDark,
+                                       cx + bgR,        cy + bgR, true);
+        g.setGradientFill (bodyGrad);
+        g.fillEllipse (cx - bgR, cy - bgR, bgR * 2.0f, bgR * 2.0f);
 
-        // Subtle inner edge darkening
+        // Subtle inner-edge darkening
         g.setColour (juce::Colour (0x18000000));
-        g.drawRoundedRectangle (bounds, pillR, 0.8f);
+        g.drawEllipse (cx - bgR, cy - bgR, bgR * 2.0f, bgR * 2.0f, 1.0f);
 
-        // LED glow fill when on — radial gradient, bright amber centre fading to transparent
+        // LED radial glow when on
         if (on)
         {
-            const float glowR = bounds.getHeight() * 0.8f;
-            juce::ColourGradient ledGlow (accentLed.withAlpha (0.90f),
-                                          bounds.getCentreX(), bounds.getCentreY(),
+            juce::ColourGradient ledGlow (accentLed.withAlpha (0.85f), cx, cy,
                                           accentIce.withAlpha (0.0f),
-                                          bounds.getCentreX() + glowR, bounds.getCentreY(), true);
+                                          cx + bgR, cy, true);
             g.setGradientFill (ledGlow);
-            g.fillRoundedRectangle (bounds, pillR);
+            g.fillEllipse (cx - bgR, cy - bgR, bgR * 2.0f, bgR * 2.0f);
         }
 
-        // Border — accent orange when on, dim grey when off
+        // Border — ice-blue when on, dim grey when off
         juce::Colour borderCol = on ? (hovered ? accentIce.brighter (0.1f) : accentIce)
                                     : (hovered ? juce::Colour (0xff606060) : juce::Colour (0xff404040));
         g.setColour (borderCol);
-        g.drawRoundedRectangle (bounds, pillR, on ? 1.5f : 1.0f);
+        g.drawEllipse (cx - bgR, cy - bgR, bgR * 2.0f, bgR * 2.0f, on ? 1.5f : 1.0f);
+
+        // ── Power symbol ──────────────────────────────────────────────────
+        const float iconR   = bgR * 0.58f;   // ring radius
+        const float gapHalf = 0.60f;          // ~34° gap half-angle at 12 o'clock
+        const float strokeW = dim * 0.13f;    // stroke width scaled to button size
+        juce::Colour iconCol = on ? accentIce
+                                  : (hovered ? juce::Colour (0xff888888) : juce::Colour (0xff555555));
+        g.setColour (iconCol);
+
+        // Arc: clockwise from +gapHalf to 2π − gapHalf (gap left open at top)
+        juce::Path arc;
+        arc.addArc (cx - iconR, cy - iconR, iconR * 2.0f, iconR * 2.0f,
+                    gapHalf, juce::MathConstants<float>::twoPi - gapHalf, true);
+        g.strokePath (arc, juce::PathStrokeType (strokeW, juce::PathStrokeType::curved,
+                                                  juce::PathStrokeType::rounded));
+
+        // Vertical line: from just below centre up through the gap to past the ring top
+        juce::Path line;
+        line.startNewSubPath (cx, cy + iconR * 0.18f);
+        line.lineTo          (cx, cy - iconR - strokeW * 0.4f);
+        g.strokePath (line, juce::PathStrokeType (strokeW, juce::PathStrokeType::curved,
+                                                   juce::PathStrokeType::rounded));
         return;
     }
     juce::LookAndFeel_V4::drawToggleButton (g, button, shouldDrawButtonAsHighlighted, shouldDrawButtonAsDown);

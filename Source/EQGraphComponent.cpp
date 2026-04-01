@@ -148,10 +148,10 @@ void EQGraphComponent::resized()
 
     auto b = getLocalBounds().reduced (4);
 
-    // Graph at the bottom (104 px, matching waveform display height).
-    // Controls (knobs) occupy the area above.
-    graphBounds = b.removeFromBottom (104).toFloat();
-    auto ctrlArea = b;
+    // Graph at the bottom (130 px — 25% larger than the original 104 px).
+    // Controls (knobs) occupy the full remaining width above the graph.
+    graphBounds = b.removeFromBottom (130).toFloat();
+    auto ctrlArea = b.withLeft (b.getX() + ctrlAreaXOffset);
 
     const int totalW  = ctrlArea.getWidth();
     const int colW    = totalW / numBands;
@@ -170,11 +170,11 @@ void EQGraphComponent::resized()
     // Per-row fine-tuning offsets (applied on top of the row base positions above).
     // DX values scaled to 75%; DY values unchanged — they cancel the fixed -75 ctrlArea shift.
     static constexpr int freqDX = -8;   // Freq knobs: left offset  (was -10)
-    static constexpr int freqDY = -5;   // Freq knobs: +70 intended, -75 to cancel ctrlArea shift
+    static constexpr int freqDY = +58;  // 5px higher than the original +63 position
     static constexpr int gainDX = +15;  // Gain knobs: right offset  (was +20)
-    static constexpr int gainDY = -45;  // Gain knobs: +30 intended, -75 to cancel ctrlArea shift
+    static constexpr int gainDY = +23;  // Q label bottom lands 10px above graph top
     static constexpr int qDX    = -8;   // Q knobs: left offset  (was -10)
-    static constexpr int qDY    = -65;  // Q knobs: +10 intended, -75 to cancel ctrlArea shift
+    static constexpr int qDY    = +3;   // Q label bottom = graph top − 10px
 
     for (int i = 0; i < numBands; ++i)
     {
@@ -182,8 +182,8 @@ void EQGraphComponent::resized()
         const int cx   = colX + colW / 2;         // column centre (FREQ + Q)
         const int gcx  = cx + gainXOff;            // gain centre (shifted right)
 
-        // ── Band-name header ──────────────────────────────────────────────
-        bandNameLabel[i].setBounds (colX, ctrlArea.getY(), colW, bandLblH);
+        // ── Band-name header — sits 3 px above the FREQ knob top ─────────
+        bandNameLabel[i].setBounds (colX, freqRowY + freqDY - 3 - bandLblH, colW, bandLblH);
 
         // ── FREQ row (param 0) ────────────────────────────────────────────
         const int fY = freqRowY + freqDY;
@@ -322,12 +322,6 @@ void EQGraphComponent::paint (juce::Graphics& g)
         }
     }
 
-    // ── control-area separator line ─────────────────────────────────
-    float sepY = graphArea.getBottom() + 2.0f;
-    g.setColour (juce::Colour (0xff2a2a2a));
-    g.drawHorizontalLine ((int) sepY,
-                          (float) getLocalBounds().getX(),
-                          (float) getLocalBounds().getRight());
 }
 
 // ── mouse ─────────────────────────────────────────────────────────────────────

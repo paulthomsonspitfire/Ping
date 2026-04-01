@@ -27,6 +27,11 @@ public:
     void mouseDrag (const juce::MouseEvent& e) override;
     void mouseUp   (const juce::MouseEvent& e) override;
 
+    // X offset (px from left of component) at which the knob control panel begins.
+    // Set by PluginEditor before calling setBounds so the ctrl area sits under the
+    // Tail-mod knob column rather than spanning the full EQ component width.
+    int ctrlAreaXOffset = 0;
+
 private:
     // ── timer ──────────────────────────────────────────────────────────
     void timerCallback() override;

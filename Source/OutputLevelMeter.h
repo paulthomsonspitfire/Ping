@@ -37,16 +37,23 @@ public:
         auto b = getLocalBounds().toFloat();
         if (b.getWidth() < 4.f || b.getHeight() < 4.f) return;
 
-        // ── Palette: black background, grey bars ────────────────────────────
-        const juce::Colour bgColour    { 0xff0d0d0d };   // near-black panel
+        // ── Palette ────────────────────────────────────────────────────────
         const juce::Colour railColour  { 0xff242424 };   // dark grey rail
-        const juce::Colour fillNormal  { 0xff606060 };   // mid grey signal fill
-        const juce::Colour fillHot     { 0xffe8a628 };   // amber  (above −6 dB)
-        const juce::Colour fillClip    { 0xffdc2626 };   // red    (above  0 dB)
         const juce::Colour groupColour { 0xff505050 };   // group name text
         const juce::Colour labelColour { 0xff808080 };   // L / R tag text
         const juce::Colour scaleColour { 0xff404040 };   // dB scale text + ticks
         const juce::Colour gridColour  { 0xff1c1c1c };   // subtle vertical grid
+
+        // VU gradient colours — classic dB-keyed progression
+        const juce::Colour colGreen  { 0xff2db32d };   // 0 dB → −12 dB: solid green
+        const juce::Colour colYellow { 0xffe8dc28 };   // −6 dB threshold
+        const juce::Colour colOrange { 0xffe87828 };   // −3 dB threshold
+        const juce::Colour colRed    { 0xffdc2626 };   // top of range
+
+        // Normalised positions of the colour stops along the bar [0, 1]
+        const double n12 = (double) dbToNorm (-12.f);
+        const double n6  = (double) dbToNorm (  -6.f);
+        const double n3  = (double) dbToNorm (  -3.f);
 
         // ── Geometry ───────────────────────────────────────────────────────
         // Label area: [groupNameW] [lrSep] [lrW]  |  bar
@@ -98,17 +105,20 @@ public:
                     g.drawVerticalLine (juce::roundToInt (gx), barY, barY + barH);
                 }
 
-                // Signal fill
+                // Signal fill — smooth VU gradient clipped to current level
                 float fillWidth = barW * dbToNorm (levels[(size_t)ch]);
                 if (fillWidth > 0.5f)
                 {
-                    float db = levels[(size_t)ch];
-                    juce::Colour fillCol = (db >= 0.f)
-                                        ? fillClip
-                                        : (db >= -6.f)
-                                            ? fillNormal.interpolatedWith (fillHot, (db + 6.f) / 6.f)
-                                            : fillNormal;
-                    g.setColour (fillCol);
+                    // Gradient spans the full bar width; only fillWidth is painted.
+                    // Stays green from the start to −12 dB, then blends yellow (−6 dB),
+                    // orange (−3 dB), and red at the top — classic VU progression.
+                    juce::ColourGradient grad (colGreen, barX,          barY,
+                                               colRed,   barX + barW,  barY,
+                                               false);
+                    grad.addColour (n12, colGreen);   // hold green up to −12 dB
+                    grad.addColour (n6,  colYellow);  // yellow at −6 dB
+                    grad.addColour (n3,  colOrange);  // orange at −3 dB
+                    g.setGradientFill (grad);
                     g.fillRoundedRectangle (barX, barY, fillWidth, barH, cornerR);
                 }
 
