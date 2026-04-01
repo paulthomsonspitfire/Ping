@@ -5,7 +5,8 @@ static const juce::Colour reverseRedFill   { 0xffb83030 };
 static const juce::Colour reverseRedGlow   { 0xffe04040 };
 static const juce::Colour buttonBgDark     { 0xff1a1a1a };
 static const juce::Colour buttonBorder     { 0xff2a2a2a };
-static const juce::Colour accentOrange     { 0xffe8a84a };
+static const juce::Colour accentIce        { 0xff8cd6ef };   // icy blue-white
+static const juce::Colour accentLed        { 0xffc4ecf8 };   // near-white for pill LED centre
 
 PingLookAndFeel::PingLookAndFeel() {}
 
@@ -77,7 +78,7 @@ void PingLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& but
         if (isOver || isDown) fill = fill.brighter (isDown ? 0.1f : 0.05f);
         g.setColour (fill);
         g.fillRoundedRectangle (bounds, corner);
-        g.setColour ((isOver || isDown) ? accentOrange : buttonBorder);
+        g.setColour ((isOver || isDown) ? accentIce : buttonBorder);
         g.drawRoundedRectangle (bounds, corner, 1.2f);
         return;
     }
@@ -117,16 +118,16 @@ void PingLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b
         if (on)
         {
             const float glowR = bounds.getHeight() * 0.8f;
-            juce::ColourGradient ledGlow (accentOrange.brighter (0.25f).withAlpha (0.90f),
+            juce::ColourGradient ledGlow (accentLed.withAlpha (0.90f),
                                           bounds.getCentreX(), bounds.getCentreY(),
-                                          accentOrange.withAlpha (0.0f),
+                                          accentIce.withAlpha (0.0f),
                                           bounds.getCentreX() + glowR, bounds.getCentreY(), true);
             g.setGradientFill (ledGlow);
             g.fillRoundedRectangle (bounds, pillR);
         }
 
         // Border — accent orange when on, dim grey when off
-        juce::Colour borderCol = on ? (hovered ? accentOrange.brighter (0.15f) : accentOrange)
+        juce::Colour borderCol = on ? (hovered ? accentIce.brighter (0.1f) : accentIce)
                                     : (hovered ? juce::Colour (0xff606060) : juce::Colour (0xff404040));
         g.setColour (borderCol);
         g.drawRoundedRectangle (bounds, pillR, on ? 1.5f : 1.0f);

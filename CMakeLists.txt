@@ -83,6 +83,7 @@ juce_add_binary_data(PingData
         Resources/spitfire_logo.png
         Resources/reverse_button.png
         Resources/reverse_button_glow.png
+        Resources/texture_bg.jpg
 )
 
 target_sources(Ping

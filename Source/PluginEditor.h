@@ -130,6 +130,9 @@ private:
     OutputLevelMeter outputLevelMeter;
     juce::Label licenceLabel;
     juce::Label versionLabel;
+    juce::Image           bgTexture;
+    juce::Image           spitfireLogoImage;
+    juce::Image           pingLogoImage;
     juce::Rectangle<int> headerPanelRect;
     juce::Rectangle<int> spitfireBounds;
     juce::Rectangle<int> pingBounds;

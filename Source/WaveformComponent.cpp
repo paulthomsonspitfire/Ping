@@ -6,10 +6,10 @@ namespace
 {
     const juce::Colour panelBg     { 0xff1e1e1e };
     const juce::Colour panelBorder { 0xff2a2a2a };
-    const juce::Colour waveFill   { 0x28e8a84a };
-    const juce::Colour waveLine   { 0xffe8e8e8 };
+    const juce::Colour waveFill   { 0x288cd6ef };
+    const juce::Colour waveLine   { 0xffd8e8f4 };
     const juce::Colour textDim    { 0xff909090 };
-    const juce::Colour trimLineColour { 0xffe8a84a };
+    const juce::Colour trimLineColour { 0xff8cd6ef };
     constexpr float waveformMargin = 0.9f;  // fraction of half-height used (leaves a small border)
     constexpr float dBFloor        = -60.0f; // level that maps to zero height (one full RT60 of range)
 }

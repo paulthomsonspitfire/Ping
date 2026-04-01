@@ -71,7 +71,7 @@ EQGraphComponent::EQGraphComponent (juce::AudioProcessorValueTreeState& state,
         {
             addAndMakeVisible (knobReadouts[b][k]);
             knobReadouts[b][k].setJustificationType (juce::Justification::centred);
-            knobReadouts[b][k].setColour (juce::Label::textColourId, juce::Colour (0xffe8a84a));
+            knobReadouts[b][k].setColour (juce::Label::textColourId, juce::Colour (0xff8cd6ef));
             knobReadouts[b][k].setFont (juce::FontOptions (9.0f));
             knobReadouts[b][k].setInterceptsMouseClicks (false, false);  // pass through to sliders below
         }
@@ -277,7 +277,7 @@ void EQGraphComponent::paint (juce::Graphics& g)
             if (i == 0) path.startNewSubPath (x, y);
             else        path.lineTo (x, y);
         }
-        g.setColour (juce::Colour (0xffe8a84a).withAlpha (0.55f));
+        g.setColour (juce::Colour (0xff8cd6ef).withAlpha (0.55f));
         g.strokePath (path, juce::PathStrokeType (1.5f));
     }
 

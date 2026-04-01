@@ -42,7 +42,7 @@ public:
         addAndMakeVisible (activateButton);
         activateButton.setButtonText ("Activate");
         activateButton.onClick = [this] { attemptActivation(); };
-        activateButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xffe8a84a));
+        activateButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff8cd6ef));
         activateButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xff141414));
 
         addAndMakeVisible (statusLabel);
@@ -86,7 +86,7 @@ public:
 private:
     void attemptActivation()
     {
-        statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffe8a84a));
+        statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xff8cd6ef));
         statusLabel.setText ("Checking...", juce::dontSendNotification);
 
         LicenceVerifier verifier;
@@ -104,7 +104,7 @@ private:
         }
         else if (result.valid && result.expired)
         {
-            statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xffe8a84a));
+            statusLabel.setColour (juce::Label::textColourId, juce::Colour (0xff8cd6ef));
             statusLabel.setText (result.errorMessage, juce::dontSendNotification);
         }
         else

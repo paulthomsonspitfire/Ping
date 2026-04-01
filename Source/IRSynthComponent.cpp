@@ -4,7 +4,7 @@ namespace
 {
     const juce::Colour panelBg     { 0xff1e1e1e };
     const juce::Colour panelBorder { 0xff2a2a2a };
-    const juce::Colour accent      { 0xffe8a84a };
+    const juce::Colour accent      { 0xff8cd6ef };
     const juce::Colour textCol     { 0xffe8e8e8 };
     const juce::Colour textDim     { 0xff909090 };
 

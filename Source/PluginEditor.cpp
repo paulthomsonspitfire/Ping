@@ -9,12 +9,12 @@ namespace
     const juce::Colour bgDark      { 0xff141414 };
     const juce::Colour panelBg     { 0xff1e1e1e };
     const juce::Colour panelBorder { 0xff2a2a2a };
-    const juce::Colour accent     { 0xffe8a84a };
-    const juce::Colour accentDim   { 0xffc48938 };
+    const juce::Colour accent     { 0xff8cd6ef };
+    const juce::Colour accentDim   { 0xff5ab0cc };
     const juce::Colour textCol    { 0xffe8e8e8 };
     const juce::Colour textDim    { 0xff909090 };
-    const juce::Colour waveFill   { 0x28e8a84a };
-    const juce::Colour waveLine   { 0xffe8e8e8 };
+    const juce::Colour waveFill   { 0x288cd6ef };
+    const juce::Colour waveLine   { 0xffd8e8f4 };
 
     juce::String toTitleCase (const juce::String& s)
     {
@@ -49,6 +49,28 @@ PingEditor::PingEditor (PingProcessor& p)
     setSize (editorW, editorH);
     setResizable (false, false);
     setOpaque (true);
+
+    // Load brushed-steel background texture from embedded binary data.
+    bgTexture = juce::ImageCache::getFromMemory (BinaryData::texture_bg_jpg,
+                                                  BinaryData::texture_bg_jpgSize);
+
+    // Pre-process logos: convert to ARGB and zero any pixel whose alpha < 30
+    // so near-transparent edge artefacts from the PNG don't show on lighter backgrounds
+    {
+        auto prepLogo = [] (const void* data, int size) -> juce::Image
+        {
+            auto raw = juce::ImageCache::getFromMemory (data, size);
+            if (! raw.isValid()) return {};
+            auto img = raw.convertedToFormat (juce::Image::ARGB);
+            for (int y = 0; y < img.getHeight(); ++y)
+                for (int x = 0; x < img.getWidth(); ++x)
+                    if (img.getPixelAt (x, y).getAlpha() < 30)
+                        img.setPixelAt (x, y, juce::Colours::transparentBlack);
+            return img;
+        };
+        spitfireLogoImage = prepLogo (BinaryData::spitfire_logo_png,     BinaryData::spitfire_logo_pngSize);
+        pingLogoImage     = prepLogo (BinaryData::ping_logo_blue_png,    BinaryData::ping_logo_blue_pngSize);
+    }
 
     // IR list
     addAndMakeVisible (irCombo);
@@ -87,10 +109,10 @@ PingEditor::PingEditor (PingProcessor& p)
     savePresetButton.setColour (juce::TextButton::textColourOffId, textDim);
 
     addAndMakeVisible (presetLabel);
-    presetLabel.setText ("Preset", juce::dontSendNotification);
+    presetLabel.setText ("PRESET", juce::dontSendNotification);
     presetLabel.setJustificationType (juce::Justification::centredRight);
     presetLabel.setColour (juce::Label::textColourId, textDim);
-    presetLabel.setFont (juce::FontOptions (11.0f));
+    presetLabel.setFont (juce::FontOptions (14.0f));
 
     addAndMakeVisible (reverseButton);
     reverseButton.setComponentID ("Reverse");
@@ -524,36 +546,39 @@ void PingEditor::parameterChanged (const juce::String& parameterID, float)
 
 void PingEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (bgDark);
-    g.setGradientFill (juce::ColourGradient::vertical (bgDark.brighter (0.03f), 0, bgDark.darker (0.04f), (float) getHeight()));
-    g.fillRect (getLocalBounds());
+    // ── Full-UI background: real brushed-steel texture image ─────────────────
+    // Draw the texture scaled to fill the entire editor, then lay a dark
+    // semi-transparent overlay over the main body so controls remain readable,
+    // leaving the header bar showing the raw texture most prominently.
+    if (bgTexture.isValid())
+    {
+        g.drawImage (bgTexture, getLocalBounds().toFloat(),
+                     juce::RectanglePlacement::fillDestination);
+    }
+    else
+    {
+        g.fillAll (bgDark);
+    }
 
-    // ── Brushed-steel header panel ────────────────────────────────────────────
+    // Dark overlay on everything below the header bar
     if (headerPanelRect.getWidth() > 0)
     {
-        const float hh = (float) headerPanelRect.getHeight();
-        auto hr = headerPanelRect.toFloat();
+        const int bodyY = headerPanelRect.getBottom();
+        g.setColour (juce::Colour (0xd8141414));   // ~85% opaque dark — keeps texture hint
+        g.fillRect (0, bodyY, getWidth(), getHeight() - bodyY);
 
-        // Base gradient: dark cool-grey top, lighter highlight band at ~35%, darker bottom
-        juce::ColourGradient steel (juce::Colour (0xff1e2020), 0.f, 0.f,
-                                    juce::Colour (0xff191b1b), 0.f, hh, false);
-        steel.addColour (0.28, juce::Colour (0xff343737));
-        steel.addColour (0.44, juce::Colour (0xff2b2e2e));
-        g.setGradientFill (steel);
-        g.fillRect (hr);
+        // Subtle darkening on the header itself so logos/text stay legible
+        g.setColour (juce::Colour (0x60080a10));
+        g.fillRect (headerPanelRect);
 
-        // Light reflection sweep — semi-transparent white band
-        juce::ColourGradient refl (juce::Colours::transparentBlack, 0.f, 0.f,
-                                   juce::Colours::transparentBlack, 0.f, hh, false);
-        refl.addColour (0.20, juce::Colour (0x07ffffff));
-        refl.addColour (0.35, juce::Colour (0x13ffffff));
-        refl.addColour (0.52, juce::Colour (0x05ffffff));
-        g.setGradientFill (refl);
-        g.fillRect (hr);
-
-        // Bottom separator line
-        g.setColour (juce::Colour (0xff0c0e0e));
+        // Bottom separator
+        g.setColour (juce::Colour (0xff0a0c12));
         g.fillRect (0, headerPanelRect.getBottom() - 1, getWidth(), 1);
+    }
+    else
+    {
+        g.setColour (bgDark.withAlpha (static_cast<juce::uint8> (0xd8)));
+        g.fillRect (getLocalBounds());
     }
 
     auto wfBounds = waveformComponent.getBounds();
@@ -563,23 +588,16 @@ void PingEditor::paint (juce::Graphics& g)
     g.setColour (panelBorder);
     g.drawRoundedRectangle (wfBounds.toFloat().reduced (0.5f), corner, 0.8f);
 
-    if (spitfireBounds.getWidth() > 0 && spitfireBounds.getHeight() > 0)
-    {
-        auto spitfireImg = juce::ImageCache::getFromMemory (BinaryData::spitfire_logo_png, BinaryData::spitfire_logo_pngSize);
-        if (spitfireImg.isValid())
-            g.drawImageWithin (spitfireImg, spitfireBounds.getX(), spitfireBounds.getY(),
-                               spitfireBounds.getWidth(), spitfireBounds.getHeight(),
-                               juce::RectanglePlacement::centred);
-    }
-    if (pingBounds.getWidth() > 0 && pingBounds.getHeight() > 0)
-    {
-        // Use the new blue logo; draw at 1× filling pingBounds (aspect-ratio preserved)
-        auto pingImg = juce::ImageCache::getFromMemory (BinaryData::ping_logo_blue_png, BinaryData::ping_logo_blue_pngSize);
-        if (pingImg.isValid())
-            g.drawImageWithin (pingImg, pingBounds.getX(), pingBounds.getY(),
-                               pingBounds.getWidth(), pingBounds.getHeight(),
-                               juce::RectanglePlacement::centred);
-    }
+    if (spitfireBounds.getWidth() > 0 && spitfireLogoImage.isValid())
+        g.drawImageWithin (spitfireLogoImage,
+                           spitfireBounds.getX(), spitfireBounds.getY(),
+                           spitfireBounds.getWidth(), spitfireBounds.getHeight(),
+                           juce::RectanglePlacement::centred);
+    if (pingBounds.getWidth() > 0 && pingLogoImage.isValid())
+        g.drawImageWithin (pingLogoImage,
+                           pingBounds.getX(), pingBounds.getY(),
+                           pingBounds.getWidth(), pingBounds.getHeight(),
+                           juce::RectanglePlacement::centred);
 
     // Group headers: label text above a horizontal line; active sections glow orange
     g.setFont (juce::FontOptions (10.0f));
@@ -663,11 +681,11 @@ void PingEditor::resized()
     // Store the full-width header rect for paint() — spans x=0, full window width
     headerPanelRect = juce::Rectangle<int> (0, 0, w, topRow.getBottom());
 
-    // Spitfire logo: left-anchored in the header at a fixed margin
+    // Spitfire logo: derive height from header, compute correct width from 474:62 aspect ratio
     {
-        const int logoH = topRowH - 8;
-        const int logoW = juce::jmin (160, (int) (logoH * 474.f / 62.f));  // preserve aspect
-        spitfireBounds = juce::Rectangle<int> (14, topRow.getY() + (topRowH - logoH) / 2, logoW, logoH);
+        const int logoH = juce::jmax (18, (int) (topRowH * 0.48f));  // ~48% of header height
+        const int logoW = (int) (logoH * 474.f / 62.f);              // correct width, no arbitrary cap
+        spitfireBounds = juce::Rectangle<int> (14, topRow.getY() + (topRowH - logoH) / 2 - 4, logoW, logoH);
     }
 
     // P!NG logo: centred horizontally, fills the header height (578×182 → ratio 3.176:1)
@@ -675,7 +693,7 @@ void PingEditor::resized()
         const int logoH = topRowH - 6;
         const int logoW = (int) (logoH * 578.f / 182.f);
         pingBounds = juce::Rectangle<int> (w / 2 - logoW / 2,
-                                           topRow.getY() + (topRowH - logoH) / 2,
+                                           topRow.getY() + (topRowH - logoH) / 2 - 4,
                                            logoW, logoH);
     }
 
