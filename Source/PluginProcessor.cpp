@@ -462,11 +462,33 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     updatePredelay();
     updateEQ();
 
+    // Peak follower helper — used throughout processBlock for all meters
+    auto updatePeak = [this] (std::atomic<float>& peakStore, float newPeak)
+    {
+        float current = peakStore.load();
+        if (newPeak > current)
+            peakStore.store (newPeak);
+        else
+            peakStore.store (current * 0.95f);
+    };
+
     // Dry copy
     juce::AudioBuffer<float> dryBuffer (numChannels, numSamples);
     dryBuffer.copyFrom (0, 0, buffer, 0, 0, numSamples);
     if (numChannels > 1)
         dryBuffer.copyFrom (1, 0, buffer, 1, 0, numSamples);
+
+    // Input level metering — tap the raw input (pre-predelay, pre-processing)
+    {
+        float inPkL = 0.f, inPkR = 0.f;
+        for (int i = 0; i < numSamples; ++i)
+        {
+            if (numChannels > 0) inPkL = juce::jmax (inPkL, std::abs (dryBuffer.getSample (0, i)));
+            if (numChannels > 1) inPkR = juce::jmax (inPkR, std::abs (dryBuffer.getSample (1, i)));
+        }
+        updatePeak (inputLevelPeakL, inPkL);
+        updatePeak (inputLevelPeakR, inPkR);
+    }
 
     // Wet path: predelay -> convolution -> EQ -> width
     juce::dsp::AudioBlock<float> block (buffer);
@@ -781,13 +803,26 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         // True-stereo IRs (from IR Synth) are not peak-normalised; level follows 1/r.
         // Apply compensation so wet level is in a usable range at default ER/Tail settings.
         const float trueStereoWetGain = 2.0f;
+        float erPkL = 0.f, erPkR = 0.f, tailPkL = 0.f, tailPkR = 0.f;
         for (int i = 0; i < numSamples; ++i)
         {
             float erG = erLevelSmoothed.getNextValue();
             float tailG = tailLevelSmoothed.getNextValue();
-            buffer.setSample (0, i, (lEr.getSample (0, i) * erG + lTail.getSample (0, i) * tailG) * trueStereoWetGain);
-            buffer.setSample (1, i, (rEr.getSample (0, i) * erG + rTail.getSample (0, i) * tailG) * trueStereoWetGain);
+            float eL = lEr.getSample (0, i) * erG   * trueStereoWetGain;
+            float eR = rEr.getSample (0, i) * erG   * trueStereoWetGain;
+            float tL = lTail.getSample (0, i) * tailG * trueStereoWetGain;
+            float tR = rTail.getSample (0, i) * tailG * trueStereoWetGain;
+            erPkL   = juce::jmax (erPkL,   std::abs (eL));
+            erPkR   = juce::jmax (erPkR,   std::abs (eR));
+            tailPkL = juce::jmax (tailPkL, std::abs (tL));
+            tailPkR = juce::jmax (tailPkR, std::abs (tR));
+            buffer.setSample (0, i, eL + tL);
+            buffer.setSample (1, i, eR + tR);
         }
+        updatePeak (erLevelPeakL,   erPkL);
+        updatePeak (erLevelPeakR,   erPkR);
+        updatePeak (tailLevelPeakL, tailPkL);
+        updatePeak (tailLevelPeakR, tailPkR);
     }
     else
     {
@@ -843,15 +878,28 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             }
         }
 
+        float erPkL = 0.f, erPkR = 0.f, tailPkL = 0.f, tailPkR = 0.f;
         for (int i = 0; i < numSamples; ++i)
         {
             float erG = erLevelSmoothed.getNextValue();
             float tailG = tailLevelSmoothed.getNextValue();
-            for (int ch = 0; ch < numChannels; ++ch)
-                buffer.setSample (ch, i, buffer.getSample (ch, i) * erG + tailBuffer.getSample (ch, i) * tailG);
+            // Compute per-channel values for metering and mix
+            float eL = buffer.getSample (0, i) * erG * 0.5f;
+            float eR = (numChannels > 1) ? buffer.getSample (1, i) * erG * 0.5f : 0.f;
+            float tL = tailBuffer.getSample (0, i) * tailG * 0.5f;
+            float tR = (numChannels > 1) ? tailBuffer.getSample (1, i) * tailG * 0.5f : 0.f;
+            erPkL   = juce::jmax (erPkL,   std::abs (eL));
+            erPkR   = juce::jmax (erPkR,   std::abs (eR));
+            tailPkL = juce::jmax (tailPkL, std::abs (tL));
+            tailPkR = juce::jmax (tailPkR, std::abs (tR));
+            buffer.setSample (0, i, eL + tL);
+            if (numChannels > 1) buffer.setSample (1, i, eR + tR);
         }
-        // Trim stereo (2ch) wet path so loaded stereo IRs are not louder than expected.
-        buffer.applyGain (0.5f);
+        // Note: the 0.5f trim is now folded into eL/eR/tL/tR above; no separate applyGain needed.
+        updatePeak (erLevelPeakL,   erPkL);
+        updatePeak (erLevelPeakR,   erPkR);
+        updatePeak (tailLevelPeakL, tailPkL);
+        updatePeak (tailLevelPeakR, tailPkR);
     }
 
     // EQ: low shelf → peak 1 → peak 2 → peak 3 → high shelf
@@ -1144,15 +1192,7 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         }
     }
 
-    // Output level for meter (peak follower with decay), L/R separately
-    auto updatePeak = [] (std::atomic<float>& peakStore, float newPeak)
-    {
-        float current = peakStore.load();
-        if (newPeak > current)
-            peakStore.store (newPeak);
-        else
-            peakStore.store (current * 0.95f);
-    };
+    // Output level metering
     float peakL = 0.0f, peakR = 0.0f;
     for (int i = 0; i < numSamples; ++i)
     {
@@ -1166,6 +1206,30 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
 float PingProcessor::getOutputLevelDb (int channel) const
 {
     const std::atomic<float>* peakStore = (channel == 0) ? &outputLevelPeakL : &outputLevelPeakR;
+    float peak = peakStore->load();
+    if (peak < 1e-6f) return -60.0f;
+    return juce::Decibels::gainToDecibels (peak);
+}
+
+float PingProcessor::getInputLevelDb (int channel) const
+{
+    const std::atomic<float>* peakStore = (channel == 0) ? &inputLevelPeakL : &inputLevelPeakR;
+    float peak = peakStore->load();
+    if (peak < 1e-6f) return -60.0f;
+    return juce::Decibels::gainToDecibels (peak);
+}
+
+float PingProcessor::getErLevelDb (int channel) const
+{
+    const std::atomic<float>* peakStore = (channel == 0) ? &erLevelPeakL : &erLevelPeakR;
+    float peak = peakStore->load();
+    if (peak < 1e-6f) return -60.0f;
+    return juce::Decibels::gainToDecibels (peak);
+}
+
+float PingProcessor::getTailLevelDb (int channel) const
+{
+    const std::atomic<float>* peakStore = (channel == 0) ? &tailLevelPeakL : &tailLevelPeakR;
     float peak = peakStore->load();
     if (peak < 1e-6f) return -60.0f;
     return juce::Decibels::gainToDecibels (peak);

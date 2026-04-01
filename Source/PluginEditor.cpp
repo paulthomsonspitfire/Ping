@@ -668,7 +668,7 @@ void PingEditor::resized()
     const int meterGap = 6;
     const int meterH = 5;
     int meterX = spitfireBounds.getRight() + meterGap;
-    int meterW = juce::jmax (0, presetCombo.getX() - meterX - meterGap);
+    int meterW = juce::jmax (0, pingBounds.getX() - meterX - meterGap);
     int meterY = spitfireBounds.getY() + (spitfireBounds.getHeight() - meterH) / 2;
     outputLevelMeter.setBounds (meterX, meterY, meterW, meterH);
 
@@ -716,28 +716,36 @@ void PingEditor::resized()
     // True vertical centre of the DRY/WET knob (placed at cy+10, so centre is +10+size/2)
     const int dryWetTrueCentreY = cy + 10 + dryWetKnobSize / 2;
 
-    // Wet Output: same size as row knobs (rowKnobSize), horizontally centred on the Save button,
-    // vertically centred on the DRY/WET knob.
+    // Wet Output, ER, Tail, Width: all rowKnobSize.
+    // ER (left of DRY/WET) and Tail (left, below ER) are shifted down 5 px from the centred position.
+    // WET OUTPUT (right of DRY/WET) aligns its top with the ER knob top.
+    // WIDTH (right of DRY/WET, further right) aligns its top with the Tail knob top.
     const int outputGainKnobSize = (int)(sixKnobSize * 0.6f);  // = rowKnobSize
+    const int erTailCenterX  = w / 2 - (irComboW / 2 + 4 + saveButtonW / 2);
     const int outputGainCenterX  = w / 2 + irComboW / 2 + 4 + saveButtonW / 2;
+    const int erTailSlotH    = outputGainKnobSize + labelH + readoutH + 4;
+    const int erKnobY        = dryWetTrueCentreY - erTailSlotH - 2 + 5;
+    const int tailKnobY      = dryWetTrueCentreY + 2 + 5;
+
+    // ER level — left of DRY/WET, upper position
+    erLevelSlider.setBounds  (erTailCenterX - outputGainKnobSize / 2, erKnobY, outputGainKnobSize, outputGainKnobSize);
+    erLevelLabel.setBounds   (erTailCenterX - irLabelW / 2, erLevelSlider.getBottom() + 2,    irLabelW, labelH);
+    erLevelReadout.setBounds (erTailCenterX - irLabelW / 2, erLevelLabel.getBottom(),          irLabelW, readoutH);
+
+    // Tail level — left of DRY/WET, lower position
+    tailLevelSlider.setBounds(erTailCenterX - outputGainKnobSize / 2, tailKnobY, outputGainKnobSize, outputGainKnobSize);
+    tailLevelLabel.setBounds (erTailCenterX - irLabelW / 2, tailLevelSlider.getBottom() + 2,  irLabelW, labelH);
+    tailLevelReadout.setBounds(erTailCenterX - irLabelW / 2, tailLevelLabel.getBottom(),       irLabelW, readoutH);
+
+    // WET OUTPUT — right of DRY/WET, top aligned with ER knob
     outputGainSlider.setBounds (outputGainCenterX - outputGainKnobSize / 2,
-                                dryWetTrueCentreY  - outputGainKnobSize / 2,
+                                erKnobY,
                                 outputGainKnobSize, outputGainKnobSize);
     outputGainLabel.setBounds  (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + 2,  irLabelW, labelH);
     outputGainReadout.setBounds(outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
 
-    // ER and Tail level knobs: same size as WET OUTPUT, mirrored to the left of the DRY/WET knob
-    // at the same horizontal distance.  ER is above, Tail below, pair centred on DRY/WET centre Y.
-    const int erTailCenterX = w / 2 - (irComboW / 2 + 4 + saveButtonW / 2);
-    const int erTailSlotH   = outputGainKnobSize + labelH + readoutH + 4;
-    const int erKnobY       = dryWetTrueCentreY - erTailSlotH - 2;
-    const int tailKnobY     = dryWetTrueCentreY + 2;
-    erLevelSlider.setBounds  (erTailCenterX - outputGainKnobSize / 2, erKnobY, outputGainKnobSize, outputGainKnobSize);
-    erLevelLabel.setBounds   (erTailCenterX - irLabelW / 2, erLevelSlider.getBottom() + 2,    irLabelW, labelH);
-    erLevelReadout.setBounds (erTailCenterX - irLabelW / 2, erLevelLabel.getBottom(),          irLabelW, readoutH);
-    tailLevelSlider.setBounds(erTailCenterX - outputGainKnobSize / 2, tailKnobY, outputGainKnobSize, outputGainKnobSize);
-    tailLevelLabel.setBounds (erTailCenterX - irLabelW / 2, tailLevelSlider.getBottom() + 2,  irLabelW, labelH);
-    tailLevelReadout.setBounds(erTailCenterX - irLabelW / 2, tailLevelLabel.getBottom(),       irLabelW, readoutH);
+    // WIDTH — right of DRY/WET, to the right of WET OUTPUT, top aligned with Tail knob
+    const int widthCenterX = outputGainCenterX + outputGainKnobSize / 2 + 8 + outputGainKnobSize / 2;
 
     if (! irSynthComponent.isVisible())
         dryWetSlider.toFront (false);
@@ -1027,13 +1035,10 @@ void PingEditor::resized()
             tailRateSlider.getRight() - tailModSlider.getX(), groupLabelH);
     }
 
-    // —— Remaining large knob: Width ——
-    // LFO Depth/Rate and Tail Mod/Delay Depth/Rate have moved to the right-side Row R3 above.
-    int y = row6AbsY + row6TotalH_ + 70;
-
-    widthSlider.setBounds    (x2, y, sixKnobSize, sixKnobSize);
-    widthLabel.setBounds     (x2, y + sixKnobSize + 2,          sixKnobSize, labelH);
-    widthReadout.setBounds   (x2, y + sixKnobSize + labelH + 2, sixKnobSize, readoutH);
+    // —— Width knob: moved to right of DRY/WET, aligned with Tail knob Y, rowKnobSize ——
+    widthSlider.setBounds    (widthCenterX - outputGainKnobSize / 2, tailKnobY,                              outputGainKnobSize, outputGainKnobSize);
+    widthLabel.setBounds     (widthCenterX - irLabelW / 2,           widthSlider.getBottom() + 2,           irLabelW, labelH);
+    widthReadout.setBounds   (widthCenterX - irLabelW / 2,           widthSlider.getBottom() + labelH + 2,  irLabelW, readoutH);
 
     // —— Bottom: EQ (right) — extends into the h/6 bottom margin strip ——
     int eqWidth = juce::jmax (315, (int) (0.465f * cw));  // 75% of original (420→315, 0.62→0.465)
@@ -1046,6 +1051,16 @@ void PingEditor::resized()
 
     licenceLabel.setBounds (leftPad + 12, ch - 20, cw - 24, 16);
     versionLabel.setBounds (tailRateSlider.getX(), ch - 20, tailRateSlider.getWidth(), 16);
+
+    // —— Level meter panel — bottom-left ——
+    // Anchor below the last left-side row (row4), left-aligned with the knob rows.
+    {
+        const int meterW = 230;
+        const int meterH = 118;
+        const int meterX = x1;
+        const int meterY = row4AbsY + row4TotalH_ + 14;
+        outputLevelMeter.setBounds (meterX, meterY, meterW, meterH);
+    }
 }
 
 void PingEditor::comboBoxChanged (juce::ComboBox* combo)
@@ -1327,7 +1342,10 @@ void PingEditor::timerCallback()
         pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
     updateWaveform();
     updateAllReadouts();
-    outputLevelMeter.setLevelsDb (pingProcessor.getOutputLevelDb (0), pingProcessor.getOutputLevelDb (1));
+    outputLevelMeter.setInputLevels  (pingProcessor.getInputLevelDb  (0), pingProcessor.getInputLevelDb  (1));
+    outputLevelMeter.setOutputLevels (pingProcessor.getOutputLevelDb (0), pingProcessor.getOutputLevelDb (1));
+    outputLevelMeter.setErLevels     (pingProcessor.getErLevelDb     (0), pingProcessor.getErLevelDb     (1));
+    outputLevelMeter.setTailLevels   (pingProcessor.getTailLevelDb   (0), pingProcessor.getTailLevelDb   (1));
     // Minimal: payload only, like LicenceScreen - no toTitleCase, no file, no stored state
     juce::String name = pingProcessor.getLicenceNameFromPayload();
     licenceLabel.setText (name.isNotEmpty() ? ("Licensed to: " + name) : juce::String ("Licensed"), juce::dontSendNotification);
