@@ -60,6 +60,7 @@ EQGraphComponent::EQGraphComponent (juce::AudioProcessorValueTreeState& state,
             knobLabels[b][k].setJustificationType (juce::Justification::centred);
             knobLabels[b][k].setColour (juce::Label::textColourId, juce::Colour (0xff808080));
             knobLabels[b][k].setFont (juce::FontOptions (8.5f));
+            knobLabels[b][k].setInterceptsMouseClicks (false, false);  // pass through to sliders below
         }
         knobLabels[b][0].setText ("FREQ",                         juce::dontSendNotification);
         knobLabels[b][1].setText ("GAIN",                         juce::dontSendNotification);
@@ -72,6 +73,7 @@ EQGraphComponent::EQGraphComponent (juce::AudioProcessorValueTreeState& state,
             knobReadouts[b][k].setJustificationType (juce::Justification::centred);
             knobReadouts[b][k].setColour (juce::Label::textColourId, juce::Colour (0xffe8a84a));
             knobReadouts[b][k].setFont (juce::FontOptions (9.0f));
+            knobReadouts[b][k].setInterceptsMouseClicks (false, false);  // pass through to sliders below
         }
 
         // Band-name labels (column header)
@@ -80,6 +82,7 @@ EQGraphComponent::EQGraphComponent (juce::AudioProcessorValueTreeState& state,
         bandNameLabel[b].setJustificationType (juce::Justification::centred);
         bandNameLabel[b].setFont (juce::FontOptions (8.5f));
         bandNameLabel[b].setColour (juce::Label::textColourId, bandCols[b]);
+        bandNameLabel[b].setInterceptsMouseClicks (false, false);  // pass through to sliders below
     }
 
     // Spectrum analyser

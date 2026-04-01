@@ -423,8 +423,7 @@ PingEditor::PingEditor (PingProcessor& p)
     delayDepthLabel.setText ("DELAY DEPTH", juce::dontSendNotification);
     tailRateLabel.setText ("RATE", juce::dontSendNotification);
     irInputGainLabel.setText ("GAIN", juce::dontSendNotification);
-    outputGainLabel.setText ("WET OUTPUT", juce::dontSendNotification);
-    outputGainLabel.setFont (juce::FontOptions (9.0f));
+    outputGainLabel.setText ("Wet Out trim", juce::dontSendNotification);
     irInputDriveLabel.setText ("DRIVE", juce::dontSendNotification);
     erLevelLabel.setText ("ER", juce::dontSendNotification);
     tailLevelLabel.setText ("TAIL", juce::dontSendNotification);
@@ -564,7 +563,7 @@ void PingEditor::paint (juce::Graphics& g)
     }
 
     // Group headers: label text above a horizontal line; active sections glow orange
-    g.setFont (juce::FontOptions (9.0f));
+    g.setFont (juce::FontOptions (10.0f));
     auto drawGroupHeader = [&](const juce::Rectangle<int>& bounds, const juce::String& text, bool active)
     {
         if (bounds.getWidth() <= 0) return;
@@ -630,8 +629,8 @@ void PingEditor::resized()
     const int sixRowH = sixKnobSize + labelH + readoutH + (int) (0.01f * ch);
     const int bigKnobSize = juce::jmax (80, juce::jmin (128, (int) (0.15f * cw)));
     const int dryWetKnobSize = juce::roundToInt (bigKnobSize * 1.05f);  // 70% of original (3/2 × bigKnobSize)
-    const int eqMinH = 225;  // 75% of 300 — fits the 3-row strip with 32 px knobs (ctrlH ≈ 188)
-    const int eqHeight = juce::jmax (eqMinH, (int) (0.3375f * ch));  // 75% of 0.45
+    const int eqMinH = 153;  // matches the level meter height (meterH = 153)
+    const int eqHeight = 153;  // fixed to match level meter — eqTotalH = 153 + h/6 gives enough room for the 113 px knob strip
     const int gapV = (int) (0.01f * ch) + (int) (0.008f * ch);
     const int marginV = juce::jmin (12, ch / 38);
     const int availableForMainAndEq = ch - 2 * marginV - topRowH - gapV;
@@ -744,8 +743,7 @@ void PingEditor::resized()
     outputGainLabel.setBounds  (outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + 2,  irLabelW, labelH);
     outputGainReadout.setBounds(outputGainCenterX - irLabelW / 2, outputGainSlider.getBottom() + labelH + 2, irLabelW, readoutH);
 
-    // WIDTH — right of DRY/WET, to the right of WET OUTPUT, top aligned with Tail knob
-    const int widthCenterX = outputGainCenterX + outputGainKnobSize / 2 + 8 + outputGainKnobSize / 2;
+    // WIDTH — right of DRY/WET, same X centre as WET OUTPUT, stacked below it at Tail knob Y
 
     if (! irSynthComponent.isVisible())
         dryWetSlider.toFront (false);
@@ -762,7 +760,7 @@ void PingEditor::resized()
     const int row4TotalH_  = row2TotalH_;   // identical formula
     const int row5TotalH_  = row2TotalH_;   // identical formula
     const int row6TotalH_  = row2TotalH_;   // identical formula
-    auto topKnobRow = mainArea.removeFromTop (rowTotalH + 4 + groupLabelH);
+    auto topKnobRow = mainArea.removeFromTop (rowTotalH + groupLabelH);
     const int rowShiftUp = 30 - rowKnobSize;   // negative = rows shifted down by one knob height relative to original
     const int rowY       = topKnobRow.getY() + groupLabelH - 10 - rowShiftUp;
 
@@ -772,7 +770,7 @@ void PingEditor::resized()
     // placed far too high (they pile up inside row 2 / row 1).  Using absolute offsets
     // from topKnobRow.getBottom() guarantees correct spacing regardless of mainHeight.
     const int row2AbsY = topKnobRow.getBottom();
-    const int row3AbsY = row2AbsY + row2TotalH_;
+    const int row3AbsY = row2AbsY + row2TotalH_ + 4;
     const int row4AbsY = row3AbsY + row3TotalH_;
     const int row5AbsY = row4AbsY + row4TotalH_;
     const int row6AbsY = row5AbsY + row5TotalH_;
@@ -1036,9 +1034,9 @@ void PingEditor::resized()
     }
 
     // —— Width knob: moved to right of DRY/WET, aligned with Tail knob Y, rowKnobSize ——
-    widthSlider.setBounds    (widthCenterX - outputGainKnobSize / 2, tailKnobY,                              outputGainKnobSize, outputGainKnobSize);
-    widthLabel.setBounds     (widthCenterX - irLabelW / 2,           widthSlider.getBottom() + 2,           irLabelW, labelH);
-    widthReadout.setBounds   (widthCenterX - irLabelW / 2,           widthSlider.getBottom() + labelH + 2,  irLabelW, readoutH);
+    widthSlider.setBounds    (outputGainCenterX - outputGainKnobSize / 2, tailKnobY,                              outputGainKnobSize, outputGainKnobSize);
+    widthLabel.setBounds     (outputGainCenterX - irLabelW / 2,           widthSlider.getBottom() + 2,           irLabelW, labelH);
+    widthReadout.setBounds   (outputGainCenterX - irLabelW / 2,           widthSlider.getBottom() + labelH + 2,  irLabelW, readoutH);
 
     // —— Bottom: EQ (right) — extends into the h/6 bottom margin strip ——
     int eqWidth = juce::jmax (315, (int) (0.465f * cw));  // 75% of original (420→315, 0.62→0.465)
@@ -1055,10 +1053,10 @@ void PingEditor::resized()
     // —— Level meter panel — bottom-left ——
     // Anchor below the last left-side row (row4), left-aligned with the knob rows.
     {
-        const int meterW = 230;
-        const int meterH = 118;
-        const int meterX = x1;
-        const int meterY = row4AbsY + row4TotalH_ + 14;
+        const int meterW = 300;   // 230 × 1.3
+        const int meterH = 153;   // 118 × 1.3
+        const int meterX = rowStartX; // left-aligned with the knob rows
+        const int meterY = row4AbsY + row4TotalH_ + 29;  // 14 + 15 px extra down
         outputLevelMeter.setBounds (meterX, meterY, meterW, meterH);
     }
 }

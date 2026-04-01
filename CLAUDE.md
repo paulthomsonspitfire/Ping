@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 1.9.6 (see `CMakeLists.txt`)
+**Current version:** 1.9.7 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -188,7 +188,7 @@ The editor (`PluginEditor.cpp` `resized()`) uses a content-area offset: `leftPad
 All left-side rows use `rowKnobSize = (int)(sixKnobSize * 0.6f)`, `rowStep = rowKnobSize + rowGap`, and `rowStartX = max(8, w/128) + 5`. Row Y positions use absolute anchors (see Key Design Decisions) to avoid JUCE `removeFromTop` clamping.
 
 **Row 1 — IR Input + IR Controls (5 knobs)**
-`mainArea.removeFromTop(rowTotalH + 4 + groupLabelH)` reserves the strip. A 5 px extra gap before index 2 splits into two groups:
+`mainArea.removeFromTop(rowTotalH + groupLabelH)` reserves the strip (no extra +4 gap — the extra gap was moved to the Row 2→3 boundary). A 5 px extra gap before index 2 splits into two groups:
 - **IR Input**: knob 0 = GAIN (`irInputGainSlider`), knob 1 = DRIVE (`irInputDriveSlider`)
 - **IR Controls**: knob 2 = PREDELAY, knob 3 = DAMPING, knob 4 = STRETCH
 
@@ -200,6 +200,8 @@ Same 5 px gap before index 2 splits into two groups:
 - **Tail Crossfade**: knob 2 = DELAY, knob 3 = ATT, pill switch `tailCrossfeedOnButton`
 
 Group header bounds: `erCrossfadeGroupBounds`, `tailCrossfadeGroupBounds`. All controls are live/real-time — no IR recalculation.
+
+`row2AbsY = topKnobRow.getBottom()`. `row3AbsY = row2AbsY + row2TotalH_ + 4` — the **+4 extra gap sits between Rows 2 and 3** (not 1 and 2). This gives a visual breathing space between the Crossfade row and the Plate row, matching the equivalent gap on the right side between Cloud (R1) and Shimmer (R2).
 
 **Row 3 — Plate pre-diffuser (4 knobs + 1 switch)**
 No extra inter-group gap — single **"Plate pre-diffuser"** group: DIFFUSION, COLOUR, SIZE, IR FEED, pill switch `plateOnButton` right-aligned. Group header bounds: `plateGroupBounds`.
