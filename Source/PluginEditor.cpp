@@ -652,10 +652,16 @@ void PingEditor::resized()
                                        topRow.getHeight() - 4);
     auto presetArea = topRow.reduced (4);
     const int saveButtonW = 48;
-    int presetComboW = juce::jmin ((int) (0.38f * cw), presetArea.getWidth() - saveButtonW - 6);
-    presetCombo.setBounds (presetArea.getX() + (presetArea.getWidth() - (presetComboW + 6 + saveButtonW)) / 2,
-                          presetArea.getY() + 2, presetComboW, presetArea.getHeight() - 4);
-    savePresetButton.setBounds (presetCombo.getRight() + 6, presetArea.getY() + 2, saveButtonW, presetArea.getHeight() - 4);
+    int presetComboW = (int)(juce::jmin ((int) (0.38f * cw), presetArea.getWidth() - saveButtonW - 6) * 0.7f);
+    // Right-align preset combo + save button flush to the right edge of the window; irComboH tall.
+    {
+        const int pComboH = 24;   // same height as IR preset combo (irComboH)
+        const int pTopY   = topRow.getY() + (topRowH - pComboH) / 2;
+        savePresetButton.setBounds (w - 4 - saveButtonW,                         pTopY, saveButtonW,   pComboH);
+        presetCombo.setBounds      (savePresetButton.getX() - 6 - presetComboW,  pTopY, presetComboW,  pComboH);
+        const int pLabelW = 44;
+        presetLabel.setBounds      (presetCombo.getX() - pLabelW - 4,            pTopY, pLabelW,       pComboH);
+    }
 
     const int presetCenterX = presetCombo.getX() + presetCombo.getWidth() / 2;
 
@@ -710,9 +716,9 @@ void PingEditor::resized()
     // True vertical centre of the DRY/WET knob (placed at cy+10, so centre is +10+size/2)
     const int dryWetTrueCentreY = cy + 10 + dryWetKnobSize / 2;
 
-    // Wet Output: 50% larger than smallKnobSize, horizontally centred on the Save button,
+    // Wet Output: same size as row knobs (rowKnobSize), horizontally centred on the Save button,
     // vertically centred on the DRY/WET knob.
-    const int outputGainKnobSize = (int)(smallKnobSize * 1.5f);
+    const int outputGainKnobSize = (int)(sixKnobSize * 0.6f);  // = rowKnobSize
     const int outputGainCenterX  = w / 2 + irComboW / 2 + 4 + saveButtonW / 2;
     outputGainSlider.setBounds (outputGainCenterX - outputGainKnobSize / 2,
                                 dryWetTrueCentreY  - outputGainKnobSize / 2,
@@ -749,7 +755,7 @@ void PingEditor::resized()
     const int row5TotalH_  = row2TotalH_;   // identical formula
     const int row6TotalH_  = row2TotalH_;   // identical formula
     auto topKnobRow = mainArea.removeFromTop (rowTotalH + 4 + groupLabelH);
-    const int rowShiftUp = 30;   // px to move rows 1-6 upward (Spitfire logo moves up by the same visual amount)
+    const int rowShiftUp = 30 - rowKnobSize;   // negative = rows shifted down by one knob height relative to original
     const int rowY       = topKnobRow.getY() + groupLabelH - 10 - rowShiftUp;
 
     // Anchor rows 2 and 3 from topKnobRow.getBottom() rather than from mainArea.getY()
@@ -824,16 +830,7 @@ void PingEditor::resized()
                                      wavePanelW, wavePanelH);
     }
 
-    // Reposition preset combo centred above DRY/WET knob, same size as IR combo,
-    // with a "Preset" label to its left and the Save button to its right.
-    {
-        const int pComboY  = dryWetSlider.getY() - irComboH - 6;
-        const int pCenterX = dryWetSlider.getBounds().getCentreX();
-        presetCombo.setBounds     (pCenterX - irComboW / 2, pComboY, irComboW, irComboH);
-        savePresetButton.setBounds (presetCombo.getRight() + 4, pComboY, saveButtonW, irComboH);
-        const int pLabelW = 44;
-        presetLabel.setBounds     (presetCombo.getX() - pLabelW - 4, pComboY, pLabelW, irComboH);
-    }
+    // Preset combo and save button are positioned in the top row (right-aligned); no repositioning needed here.
 
     // Align Spitfire logo left edge with IR INPUT title
     spitfireBounds.setX (irInputGainSlider.getX());

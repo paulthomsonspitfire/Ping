@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 1.9.4 (see `CMakeLists.txt`)
+**Current version:** 1.9.5 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -192,7 +192,7 @@ All left-side rows use `rowKnobSize = (int)(sixKnobSize * 0.6f)`, `rowStep = row
 - **IR Input**: knob 0 = GAIN (`irInputGainSlider`), knob 1 = DRIVE (`irInputDriveSlider`)
 - **IR Controls**: knob 2 = PREDELAY, knob 3 = DAMPING, knob 4 = STRETCH
 
-`rowY = topKnobRow.getY() + groupLabelH - 10 - rowShiftUp` shifts the row 10 px up. Group header bounds: `irInputGroupBounds`, `irControlsGroupBounds`.
+`rowY = topKnobRow.getY() + groupLabelH - 10 - rowShiftUp`. With `rowShiftUp = 30 - rowKnobSize` (a negative value), the net effect is that all rows sit one `rowKnobSize` lower than the original 30 px upward shift. Group header bounds: `irInputGroupBounds`, `irControlsGroupBounds`.
 
 **Row 2 — ER Crossfade + Tail Crossfade (4 knobs + 2 pill switches)**
 Same 5 px gap before index 2 splits into two groups:
@@ -236,24 +236,25 @@ int cy = phantomWaveCentreY - (dryWetKnobSize + labelH + readoutH + 4 + irComboH
 
 From top to bottom, all items derive their X from `dryWetSlider.getBounds().getCentreX()` (= `w/2`) and their Y from `cy` or from the control above:
 
-1. **Preset combo** (`presetCombo`): centred at `w/2`, Y = `dryWetSlider.getY() - irComboH - 6`. "Preset" label to the left, Save button to the right.
-2. **DRY/WET knob** (`dryWetSlider`): `dryWetKnobSize = bigKnobSize * 1.05f` (70% of the old size), Y = `cy + 10`.
-3. **IR combo + IR Synth button** (`irCombo`, `irSynthButton`): centred at `w/2`, Y = `irRowY`. "IR preset" label (`irComboLabel`) to the left of the combo.
-4. **Reverse button** (`reverseButton`): right-aligned to the waveform's right edge, immediately below the IR combo.
-5. **Waveform display** (`waveformComponent`): centred at `w/2`, immediately below the reverse button. Size: `wavePanelW = max(165, 0.27f × cw)`, `wavePanelH = max(54, wavePanelW × 0.36f)` — 25% smaller than the old right-column dimensions.
+1. **DRY/WET knob** (`dryWetSlider`): `dryWetKnobSize = bigKnobSize * 1.05f` (70% of the old size), Y = `cy + 10`.
+2. **IR combo + IR Synth button** (`irCombo`, `irSynthButton`): centred at `w/2`, Y = `irRowY`. "IR preset" label (`irComboLabel`) to the left of the combo.
+3. **Reverse button** (`reverseButton`): right-aligned to the waveform's right edge, immediately below the IR combo.
+4. **Waveform display** (`waveformComponent`): centred at `w/2`, immediately below the reverse button. Size: `wavePanelW = max(165, 0.27f × cw)`, `wavePanelH = max(54, wavePanelW × 0.36f)` — 25% smaller than the old right-column dimensions.
 
-**Phantom waveform anchor:** `cy` is derived from `phantomWaveCentreY`, which uses the *old* right-column waveform dimensions (`0.36f × cw` wide) rather than the current smaller waveform. This preserves the DRY/WET knob's visual height even though the waveform has moved and shrunk. Do not replace `phantomWavePanelW/H` with the current `wavePanelW/H` — doing so would shift `cy` and misalign the DRY/WET knob.
+The preset combo (`presetCombo`), save button, and "Preset" label are **not** part of this centre-column stack — they live in the top bar (see P!NG logo section).
+
+**Phantom waveform anchor:** `cy` is derived from `phantomWaveCentreY`, which uses the *old* right-column waveform dimensions (`0.36f × cw` wide) rather than the current smaller waveform. This preserves the DRY/WET knob's visual height even though the waveform has moved and shrunk. Do not replace `phantomWavePanelW/H` with the current `wavePanelW/H` — doing so would shift `cy` and misalign the DRY/WET knob. Note: the preset combo is no longer anchored to `cy`; it lives in the top bar.
 
 ### Wet Output Gain position
 
-Wet Output Gain sits to the right of `irKnobsCenterX` at:
+Wet Output Gain (`outputGainKnobSize = smallKnobSize * 1.5f`) is positioned to the **right** of the DRY/WET knob, horizontally centred on the Save button X and vertically centred on the DRY/WET knob Y:
 
 ```cpp
-const int outputGainCenterX = irKnobsCenterX + smallKnobSize / 2 + controlShift;  // controlShift = 50
-const int outputGainY = dryWetCenterY - smallKnobSize - irKnobGap;
+const int outputGainCenterX = w / 2 + irComboW / 2 + 4 + saveButtonW / 2;
+// vertically centred on dryWetTrueCentreY = cy + 10 + dryWetKnobSize / 2
 ```
 
-`dryWetCenterY = cy + dryWetKnobSize / 2` moves with `cy`, so the output gain knob shifts down by 40 px in tandem with the DRY/WET knob.
+ER and Tail level knobs (same size as WET OUTPUT) mirror this to the **left** of DRY/WET at the same horizontal distance (`erTailCenterX = w/2 - (irComboW/2 + 4 + saveButtonW/2)`), stacked ER above and Tail below the DRY/WET centre Y.
 
 ### P!NG logo
 
@@ -263,7 +264,7 @@ Reduced to 75% of original size: `rightLogoW = min(68, 0.075f × cw)`. Placed ho
 pingBounds = juce::Rectangle<int> (w / 2 - rightLogoW / 2, topRow.getY() + 2, rightLogoW, topRow.getHeight() - 4);
 ```
 
-`topRow.removeFromRight(rightLogoW)` is still called (result discarded) to keep `presetArea`'s width — and therefore `presetCenterX` — unchanged. In `paint()`, the logo is drawn at 2× `pingBounds` size centred on `pingBounds.getCentre()`.
+`topRow.removeFromRight(rightLogoW)` is still called (result discarded) so that `presetArea` (= `topRow.reduced(4)`) ends at `w - rightLogoW - 4` — the right-aligned preset combo and save button sit flush against the P!NG logo slot. In `paint()`, the logo is drawn at 2× `pingBounds` size centred on `pingBounds.getCentre()`.
 
 ### EQ section (bottom of window)
 
@@ -963,6 +964,8 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **EQ has 5 bands: low shelf, 3 peaks, high shelf** — DSP order: `lowShelfBand → lowBand → midBand → highBand → highShelfBand` (all `ProcessorDuplicator`). IDs are `b3`/`b0`/`b1`/`b2`/`b4` (b3 and b4 are the shelves; b0–b2 are the original peaks preserved for preset backward-compat). Frequency response in `EQGraphComponent::getResponseAt()` uses a tanh-sigmoid approximation for shelves and a Gaussian for peaks — close enough for display, avoids needing DSP coefficient access at paint time.
 - **EQ control strip uses a row-per-parameter layout** — FREQ knobs all share the same Y (Row 1); GAIN knobs are shifted right by `colW/5 + gainDX` (Row 2, zig-zag); Q/SLOPE knobs return to the FREQ X column below GAIN (Row 3). Each row has independent `DX`/`DY` fine-tuning constants (`freqDX/DY`, `gainDX/DY`, `qDX/DY`) in `EQGraphComponent::resized()`. The control strip is reserved with `removeFromBottom(ctrlH - 75)` — the -75 shifts the entire strip 75 px lower and extends the chart bottom by 75 px; the `DY` constants counteract this shift, so net knob positions equal the intended row offsets. Knob size is **32 px** (reduced 25% from 42 px). The `DX` constants were scaled proportionally (`freqDX/qDX: −10→−8`, `gainDX: +20→+15`). The `DY` constants are intentionally NOT scaled — they cancel the structural `ctrlH - 75` offset which is independent of knob size. Do not scale DY when resizing knobs. The graph area top is trimmed 60 px downward. Each knob has an accent-orange live readout above its grey parameter label.
 - **Row Y positions in `PluginEditor` use absolute anchors to avoid JUCE `removeFromTop` clamping** — `removeFromTop(n)` silently clamps `n` to the rectangle's remaining height, so when `mainArea` has shrunk (due to large `eqMinH`) to less than the combined row heights, subsequent rows land in wrong positions. Row 2–6 Y positions are computed as `row2AbsY = topKnobRow.getBottom()`, `row3AbsY = row2AbsY + row2TotalH_`, etc. — independent of whatever height remains in `mainArea`. All group-header bounds, toggle LED Y positions, and knob Y positions for all rows use these absolute anchors. Right-side rows (R1/R2/R3) share the same Y anchors as their corresponding left-side rows (Rows 1/2/3).
+- **`rowShiftUp = 30 - rowKnobSize` — all knob rows are shifted down by one knob height** — `rowShiftUp` is subtracted from every row Y position, so making it smaller (by `rowKnobSize`) pushes all 9 rows (left-side 1–4 and right-side R1–R3) down by exactly `rowKnobSize` pixels simultaneously. The original `rowShiftUp = 30` provided a 30 px upward nudge; the current `30 - rowKnobSize` gives a net downward displacement from the natural `removeFromTop` position. Do not revert to a fixed positive value without updating all group-header Y positions accordingly.
+- **Preset combo + save button are right-aligned in the top bar, level with the Spitfire logo** — placed via `presetArea.getRight()` (= `w - rightLogoW - 4`): save button flush to the right edge, combo immediately to its left, "Preset" label further left. There is no second placement block lower in `resized()` — the top-bar placement is the only one. Do not add a repositioning block that moves the preset combo below the top bar.
 - **Only Width remains in the large-knob grid at `row6AbsY + row6TotalH_ + 70`** — LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3. The +70 px offset below the last small-knob row is unchanged. Do not revert the anchor back to any earlier row.
 - **Bloom has two independent output paths (`bloomIRFeed` and `bloomVolume`), both defaulting to 0** — consistent with `plateIRFeed = 0`. The main signal is not modified by the bloom cascade; only additive injection via `bloomIRFeed` into the convolver and `bloomVolume` into the final output. At both defaults = 0, Bloom has zero effect when switched on.
 - **`bloomBuffer` bridges Insertion 1 (pre-conv) and the post-dry/wet Volume injection within the same processBlock call** — it is not a feedback buffer. Populated at Insertion 1, read after the dry/wet blend. `bloomBuffer.clear()` at the top of Insertion 1 ensures no stale data. A reallocation guard (`if (numSamples > bloomBuffer.getNumSamples())`) handles hosts that exceed `maximumExpectedSamplesPerBlock`.
@@ -986,7 +989,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **`shimIRFeed` defaults to 0.5** — unlike every other IR-feed parameter (Plate, Bloom, Cloud all default to 0), Shimmer defaults to 0.5 so the effect is immediately audible when enabled. This matches expected shimmer plugin UX: you enable it and it shimmers.
 - **`shimColour` is a 1-pole LP on the grain shifter output** — cutoff = `2000 + shimColour × 18000` Hz. Applied per-sample inside Insertion 2 before storing to `shimBuffer`. `shimColourState[ch]` holds the per-channel filter state; reset to zero in `prepareToPlay`.
 - **EQ response curve is display-only** — `getResponseAt()` is an approximation. The actual audio uses JUCE biquad coefficients. The two will not match exactly at steep slopes or very high/low frequencies, but are visually representative for a mixing EQ.
-- **DRY/WET knob is centred at `w / 2` (full window centre, not `b` centre)** — `b` starts at `leftPad = w/6`, so `b.getCentreX() = 7w/12 ≠ w/2`. Using `w/2` ensures the knob, preset combo, IR combo, and waveform are visually centred in the window. The DRY/WET knob size is `bigKnobSize * 1.05f` (70% of the original `1.5f` multiplier). Do not revert to the old relative formula that positioned the knob between `stretchSlider` and `outputGainSlider`.
-- **`cy` uses a phantom waveform anchor — do not replace it with the current waveform dimensions** — `cy` is computed from `phantomWaveCentreY`, which uses the *old* waveform dimensions (`0.36f × cw` wide, not the current `0.27f × cw`). This keeps the DRY/WET knob at the correct visual height. The +40 px offset (`cy + 40`) shifts the entire centre-column stack (preset combo → DRY/WET → IR combo → waveform) downward by 40 px. If you change the +40 offset, all five items move together.
+- **DRY/WET knob is centred at `w / 2` (full window centre, not `b` centre)** — `b` starts at `leftPad = w/6`, so `b.getCentreX() = 7w/12 ≠ w/2`. Using `w/2` ensures the knob, IR combo, and waveform are visually centred in the window. The preset combo is **not** centred here — it lives right-aligned in the top bar. The DRY/WET knob size is `bigKnobSize * 1.05f` (70% of the original `1.5f` multiplier). Do not revert to the old relative formula that positioned the knob between `stretchSlider` and `outputGainSlider`.
+- **`cy` uses a phantom waveform anchor — do not replace it with the current waveform dimensions** — `cy` is computed from `phantomWaveCentreY`, which uses the *old* waveform dimensions (`0.36f × cw` wide, not the current `0.27f × cw`). This keeps the DRY/WET knob at the correct visual height. The +40 px offset (`cy + 40`) shifts the entire centre-column stack (DRY/WET → IR combo → waveform) downward by 40 px. If you change the +40 offset, all four items move together. The preset combo is no longer in this stack — it is right-aligned in the top bar, independent of `cy`.
 - **Right-side rows R1/R2/R3 share Y anchors with left-side Rows 1/2/3** — Cloud knobs (R1) use `rowY`; Shimmer knobs (R2) use `row2KnobY`; Tail AM/Frq mod knobs (R3) use `row3KnobY`. Their group header Y positions match their left-side counterparts exactly. The `mainArea.removeFromTop()` calls for Rows 5 and 6 (Cloud/Shimmer) are kept to preserve `mainArea` state even though the actual knob Y values come from the absolute anchors.
 - **Row R3 (Tail AM/Frq mod) uses an extra-gap split identical to Row 1** — `extraGap = (idx < 2) ? 5 : 0` places the gap between the AM pair (idx 0,1) and the Frq triple (idx 2,3,4). The formula `cx = b.getRight() - (4-idx)*rowStep - rowKnobSize/2 - extraGap` keeps the rightmost knob flush with `b.getRight()`. `tailAMModGroupBounds` and `tailFrqModGroupBounds` are stored as member variables and drawn in `paint()` with `drawGroupHeader`. No toggle pills — these are always-active controls.
