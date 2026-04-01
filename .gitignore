@@ -1,5 +1,7 @@
 # Build
 build/
+# Standalone test binary when built at repo root (see CLAUDE.md amalgamated build)
+PingTests
 Installer/output/
 cmake-build-*/
 out/
