@@ -130,6 +130,7 @@ private:
     OutputLevelMeter outputLevelMeter;
     juce::Label licenceLabel;
     juce::Label versionLabel;
+    juce::Rectangle<int> headerPanelRect;
     juce::Rectangle<int> spitfireBounds;
     juce::Rectangle<int> pingBounds;
     juce::Rectangle<int> irInputGroupBounds;    // area above the "IR Input" knob pair (text + line)

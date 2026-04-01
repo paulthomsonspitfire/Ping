@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 1.9.7 (see `CMakeLists.txt`)
+**Current version:** 2.0.0 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -155,7 +155,7 @@ Source/
   LicenceVerifier.h        — Ed25519 serial decode + verify (libsodium)
   OutputLevelMeter.h       — L/R peak meter widget
 Resources/
-  ping_logo.png, spitfire_logo.png, reverse_button.png, reverse_button_glow.png
+  ping_logo.png, ping_logo_blue.png, spitfire_logo.png, reverse_button.png, reverse_button_glow.png
 Tools/
   keygen.cpp               — Serial number generator (developer only, never shipped)
 ```
@@ -188,7 +188,7 @@ The editor (`PluginEditor.cpp` `resized()`) uses a content-area offset: `leftPad
 All left-side rows use `rowKnobSize = (int)(sixKnobSize * 0.6f)`, `rowStep = rowKnobSize + rowGap`, and `rowStartX = max(8, w/128) + 5`. Row Y positions use absolute anchors (see Key Design Decisions) to avoid JUCE `removeFromTop` clamping.
 
 **Row 1 — IR Input + IR Controls (5 knobs)**
-`mainArea.removeFromTop(rowTotalH + groupLabelH)` reserves the strip (no extra +4 gap — the extra gap was moved to the Row 2→3 boundary). A 5 px extra gap before index 2 splits into two groups:
+`mainArea.removeFromTop(rowTotalH)` reserves the strip — **note: `groupLabelH` is NOT added here**. Removing it brings Rows 1 and 2 (and R1 and R2) closer together, giving tight within-group spacing. A 5 px extra gap before index 2 splits into two groups:
 - **IR Input**: knob 0 = GAIN (`irInputGainSlider`), knob 1 = DRIVE (`irInputDriveSlider`)
 - **IR Controls**: knob 2 = PREDELAY, knob 3 = DAMPING, knob 4 = STRETCH
 
@@ -201,7 +201,7 @@ Same 5 px gap before index 2 splits into two groups:
 
 Group header bounds: `erCrossfadeGroupBounds`, `tailCrossfadeGroupBounds`. All controls are live/real-time — no IR recalculation.
 
-`row2AbsY = topKnobRow.getBottom()`. `row3AbsY = row2AbsY + row2TotalH_ + 4` — the **+4 extra gap sits between Rows 2 and 3** (not 1 and 2). This gives a visual breathing space between the Crossfade row and the Plate row, matching the equivalent gap on the right side between Cloud (R1) and Shimmer (R2).
+`row2AbsY = topKnobRow.getBottom()`. `row3AbsY = row2AbsY + row2TotalH_ + 14` — the **+14 extra gap (= one `groupLabelH`) sits between Rows 2 and 3**. This creates a clear visual separation between two groups on each side: **IR Input + ER/Tail Crossfade** (Rows 1–2, tight) vs **Plate + Bloom** (Rows 3–4, tight) on the left, and **Clouds + Shimmer** (R1–R2, tight) vs **Tail AM/Frq mod** (R3, separate) on the right. Because R3 shares the row3AbsY anchor, the same gap automatically appears between Shimmer and Tail on the right side.
 
 **Row 3 — Plate pre-diffuser (4 knobs + 1 switch)**
 No extra inter-group gap — single **"Plate pre-diffuser"** group: DIFFUSION, COLOUR, SIZE, IR FEED, pill switch `plateOnButton` right-aligned. Group header bounds: `plateGroupBounds`.
@@ -241,57 +241,80 @@ From top to bottom, all items derive their X from `dryWetSlider.getBounds().getC
 1. **DRY/WET knob** (`dryWetSlider`): `dryWetKnobSize = bigKnobSize * 1.05f` (70% of the old size), Y = `cy + 10`.
 2. **IR combo + IR Synth button** (`irCombo`, `irSynthButton`): centred at `w/2`, Y = `irRowY`. "IR preset" label (`irComboLabel`) to the left of the combo.
 3. **Reverse button** (`reverseButton`): right-aligned to the waveform's right edge, immediately below the IR combo.
-4. **Waveform display** (`waveformComponent`): centred at `w/2`, immediately below the reverse button. Size: `wavePanelW = max(165, 0.27f × cw)`, `wavePanelH = max(54, wavePanelW × 0.36f)` — 25% smaller than the old right-column dimensions.
+4. **Waveform display** (`waveformComponent`): 300×153 px (matching the level meter). Y-aligned with the level meter top (`row4AbsY + row4TotalH_ + 29`). Horizontally centred in the gap between the meter right edge and the EQ left edge: `waveCentreX = (rowStartX + 300) + (b.getRight() - eqWidth - (rowStartX + 300)) / 2`. The reverse button sits 2 px above the waveform top edge, right-aligned to the waveform's right edge.
+
+The waveform component size is **300×`kMeterBarsH` (104 px)**, not the full 153 px meter panel height. It aligns with the *bar region* of the meter, not the full panel:
+- `kMeterBarsH = 104` — `totalBarsH = 4*(2*9+2)+3*8`, spanning INPUT L top to TAIL R bottom
+- `kMeterBarOffset = 15` — `(153-122)/2`, the centring gap from panel top to first bar
+- Waveform Y = `row4AbsY + row4TotalH_ + 29 + kMeterBarOffset` (= meterY + 15)
+- EQ top Y = same anchor, so all three elements (meter bars, waveform, EQ graph area) share the same top edge
 
 The preset combo (`presetCombo`), save button, and "Preset" label are **not** part of this centre-column stack — they live in the top bar (see P!NG logo section).
 
-**Phantom waveform anchor:** `cy` is derived from `phantomWaveCentreY`, which uses the *old* right-column waveform dimensions (`0.36f × cw` wide) rather than the current smaller waveform. This preserves the DRY/WET knob's visual height even though the waveform has moved and shrunk. Do not replace `phantomWavePanelW/H` with the current `wavePanelW/H` — doing so would shift `cy` and misalign the DRY/WET knob. Note: the preset combo is no longer anchored to `cy`; it lives in the top bar.
+**Phantom waveform anchor:** `cy` is derived from `phantomWaveCentreY`, which uses the *old* right-column waveform dimensions (`0.36f × cw` wide) rather than the current waveform (now a fixed 300×153 at the bottom of the UI). This preserves the DRY/WET knob's visual position. Do not replace `phantomWavePanelW/H` with the current `wavePanelW/H` (300/153) — doing so would shift `cy` and misalign the DRY/WET knob. Note: the preset combo is no longer anchored to `cy`; it lives in the top bar.
 
 ### Wet Output Gain position
 
-Wet Output Gain (`outputGainKnobSize = smallKnobSize * 1.5f`) is positioned to the **right** of the DRY/WET knob, horizontally centred on the Save button X and vertically centred on the DRY/WET knob Y:
+All four level knobs (ER, Tail, Wet Out trim, Width) share the same size: `outputGainKnobSize = (int)(sixKnobSize * 0.6f)`.
+
+**Wet Out trim** (`outputGainKnobSize`) is positioned to the **right** of the DRY/WET knob, horizontally centred on the Save button X and vertically centred on the DRY/WET knob Y:
 
 ```cpp
 const int outputGainCenterX = w / 2 + irComboW / 2 + 4 + saveButtonW / 2;
 // vertically centred on dryWetTrueCentreY = cy + 10 + dryWetKnobSize / 2
 ```
 
-ER and Tail level knobs (same size as WET OUTPUT) mirror this to the **left** of DRY/WET at the same horizontal distance (`erTailCenterX = w/2 - (irComboW/2 + 4 + saveButtonW/2)`), stacked ER above and Tail below the DRY/WET centre Y.
+ER and Tail level knobs (same size) mirror this to the **left** of DRY/WET at the same horizontal distance (`erTailCenterX = w/2 - (irComboW/2 + 4 + saveButtonW/2)`), stacked ER above and Tail below the DRY/WET centre Y.
 
-### P!NG logo
+**Width** knob (same `outputGainKnobSize`) is stacked directly **below** Wet Out trim at the same X (`outputGainCenterX`), at `tailKnobY` (the same Y as the Tail knob). Width no longer lives in any separate large-knob grid — it has been moved to align horizontally with Wet Out trim.
 
-Reduced to 75% of original size: `rightLogoW = min(68, 0.075f × cw)`. Placed horizontally centred in the window top bar:
+Label text: `outputGainLabel` reads "Wet Out trim" at 12.0f (the shared default font — no per-knob override). Do not revert to "WET OUTPUT" or set an explicit 9.0f override.
 
-```cpp
-pingBounds = juce::Rectangle<int> (w / 2 - rightLogoW / 2, topRow.getY() + 2, rightLogoW, topRow.getHeight() - 4);
-```
+### Header panel
 
-`topRow.removeFromRight(rightLogoW)` is still called (result discarded) so that `presetArea` (= `topRow.reduced(4)`) ends at `w - rightLogoW - 4` — the right-aligned preset combo and save button sit flush against the P!NG logo slot. In `paint()`, the logo is drawn at 2× `pingBounds` size centred on `pingBounds.getCentre()`.
+The top bar is a **full-width brushed-steel panel** spanning `(0, 0, w, topRow.getBottom())`, stored as `headerPanelRect` (member variable, set in `resized()`, drawn in `paint()` before everything else). The panel uses a two-pass vertical gradient:
+
+1. **Steel gradient** — dark cool-grey (`0xff1e2020`) at top, lighter highlight band at ~28% (`0xff343737`), settling back to dark (`0xff191b1b`) at the bottom.
+2. **Reflection sweep** — a second pass with a semi-transparent white gradient (peak alpha `0x13` at ~35%) creates a subtle light-reflection band without hard edges.
+
+A 1 px separator line (`0xff0c0e0e`) runs across the very bottom of the panel.
+
+Three elements sit inside the header, all vertically centred on `topRowH`:
+
+- **Spitfire Audio logo** — left-anchored at x=14, width sized by aspect ratio (474:62) to fill `topRowH - 8` px height. No longer re-aligned to `irInputGainSlider.getX()`.
+- **P!NG logo** — uses `ping_logo_blue.png` (cyan glow, RGBA, 578×182 px). `pingBounds` is sized by aspect ratio to fill `topRowH - 6` px height, centred at `w/2`. Drawn at 1× directly into `pingBounds` — the old 2× scaling hack is removed.
+- **Preset combo + Save button** — right-aligned at `w - 12` margin; preset combo fixed at 200 px wide. See Preset section below.
 
 ### EQ section (bottom of window)
 
-The `EQGraphComponent` occupies the **bottom-right** of the editor, pinned to the full window bottom edge. Its bounds extend into the `h/6` bottom margin so the knob strip sits flush with the window bottom:
+The `EQGraphComponent` occupies the **bottom-right** of the editor. It is a **fixed 225 px tall** component positioned so its graph area aligns with the meter bar top. The layout (knobs **above** graph) is:
 
+- **Control strip** (top 113 px of component) — knobs sit above the graph display.
+- **Graph area** (bottom 104 px of component) — same height as the waveform display.
+
+Positioning in `PluginEditor::resized()`:
 ```cpp
-const int eqTotalH = eqHeight + (h - ch);
-eqGraph.setBounds (eqRect.getX(), eqRect.getY(), eqRect.getWidth(), eqTotalH);
+static constexpr int kEQComponentH = 225;
+const int meterBarTop = row4AbsY + row4TotalH_ + 29 + kMeterBarOffset;
+const int eqTopY = meterBarTop - 117;  // graph local top (117) maps to meterBarTop
+eqGraph.setBounds(b.getRight() - eqWidth, eqTopY, eqWidth, kEQComponentH);
 ```
 
-`eqHeight = max(225, 0.3375 × ch)` and `eqWidth = max(315, 0.465 × cw)` — both 75% of the former values. The minimum `eqMinH = 225` is sized to fit the 32 px knob strip (estimated `ctrlH ≈ 188`).
+`kMeterBarOffset = 15` px. `eqWidth = max(315, 0.465 × cw)`. The component bottom (`eqTopY + 225`) sits above the window bottom — it no longer extends to the window edge.
 
 #### EQGraphComponent layout
 
-**Graph area** — upper portion; displays spectrum analyser, grid lines, frequency-response curve, and draggable band handles. Top edge trimmed 60 px downward (`b.withTrimmedTop(60)`).
+**Graph area** — bottom 104 px of the component (`b.removeFromBottom(104)`); displays spectrum analyser, grid lines, frequency-response curve, and draggable band handles.
 
-**Control strip** — reserved via `b.removeFromBottom(ctrlH - 75)`. Three rows × five bands:
+**Control strip** — the remaining area above the graph (`ctrlArea = b` after removeFromBottom). Three rows × five bands:
 
 | Row | Parameter | DX / DY fine-tune | Notes |
 |-----|-----------|-------------------|-------|
-| Row 1 | FREQ | `freqDX = −8`, `freqDY = −5` | DX scaled to 75%; DY unchanged (cancels the −75 ctrlArea shift) |
-| Row 2 | GAIN | `gainDX = +15`, `gainDY = −45` | DX scaled to 75%; DY unchanged |
-| Row 3 | Q / SLOPE | `qDX = −8`, `qDY = −65` | DX scaled to 75%; DY unchanged |
+| Row 1 | FREQ | `freqDX = −8`, `freqDY = −5` | DX scaled to 75%; DY relative to ctrlArea.getY() |
+| Row 2 | GAIN | `gainDX = +15`, `gainDY = −45` | DX scaled to 75%; DY relative to ctrlArea.getY() |
+| Row 3 | Q / SLOPE | `qDX = −8`, `qDY = −65` | DX scaled to 75%; DY relative to ctrlArea.getY() |
 
-Knob size is **32 px** (was 42 px). All DY constants are intentionally NOT scaled — they cancel the structural `ctrlH - 75` offset, which is independent of knob size. Do not scale DY when changing knob size.
+Knob size is **32 px** (was 42 px). The DY constants are defined relative to `ctrlArea.getY()` — they position the three rows in a compact staggered layout within the 113 px control area regardless of where ctrlArea sits in the component. Do not scale DY when changing knob size.
 
 Band order (left→right): LOW (low shelf, purple) · MID 1 (peak, blue) · MID 2 (peak, amber) · MID 3 (peak, green) · HIGH (high shelf, red).
 
@@ -304,9 +327,22 @@ Five `ProcessorDuplicator` instances in series: `lowShelfBand → lowBand → mi
 
 **Backward compatibility:** b0–b2 keep their original IDs. b3/b4 default to 0 dB gain so existing presets missing these keys are unaffected.
 
+### Level meter
+
+`OutputLevelMeter` is positioned at:
+```cpp
+const int meterW = 300;   // 230 × 1.3
+const int meterH = 153;   // 118 × 1.3
+const int meterX = rowStartX; // left-aligned with the knob rows
+const int meterY = row4AbsY + row4TotalH_ + 29;  // 14 px base + 15 px extra down
+outputLevelMeter.setBounds(meterX, meterY, meterW, meterH);
+```
+
+The meter background is **transparent** (no filled rounded rectangle). The meter size (153 px tall) matches the EQ graph height intentionally so both occupy the same vertical extent in the lower portion of the UI.
+
 ### Large-knob grid (bottom of left column)
 
-Only **Width** (`widthSlider`) remains in the large-knob grid at `row6AbsY + row6TotalH_ + 70`. LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to Row R3 on the right side.
+Width (`widthSlider`) has been removed from any large-knob grid. It now sits directly below Wet Out trim at `outputGainCenterX, tailKnobY`. LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to Row R3 on the right side.
 
 ### Version label
 
@@ -961,14 +997,14 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Plate `plateColour` is a 1-pole lowpass, not a high-shelf** — A simple 1-pole lowpass applied to the diffused signal before feeding to the convolver. At `colour = 0` the cutoff is 2 kHz (warm, dark — EMT 140 character); at `colour = 1` it is 8 kHz (bright — AMS RMX16 character). Do not replace it with a true biquad shelf — the 1-pole is intentional.
 - **Plate signal path: pre-diffuser into convolver only** — The sample loop processes the input through the allpass cascade + colour LP, stores the result in `plateBuffer`, and adds `plate[i] * irFeed` to the main buffer. The convolver receives the main signal plus the diffused plate signal. There is no direct output path. `plateOn = false` skips the block entirely — zero overhead.
 - **`plateDiffusion` sets g on all 6 stages simultaneously** — The g coefficient is written to all `plateAPs[ch][s].g` once per block before the sample loop. Range 0.30–0.88 keeps the filter stable and well below the unit-circle limit. Lower g = gentle, transparent scatter; higher g = very dense, metallic diffusion. Default 0.40 gives a gentle, transparent scatter suitable for a pre-diffuser.
-- **Default editor height is now 816 px** — bumped from 528 → 600 (Row 3 Plate) → 672 (Row 4 Bloom) → 744 (Row 5 Cloud) → 816 (Row 6 Shimmer). The resize minimum (`minH`) remains 528 so users can still shrink the window. Both constants are at the top of the `PingEditor` constructor in `PluginEditor.cpp`.
+- **Editor size is fixed at 1104×816 px — user drag-resize is disabled** — `setResizable(false, false)` in the `PingEditor` constructor. The `minW/minH/maxW/maxH` constants have been removed. Because the window size is now a known constant, all proportional layout calculations (`cw`, `0.465f × cw`, etc.) resolve to exact integers, making pixel-precise layout straightforward. A % scaling option (e.g. 75 / 100 / 125 %) can be re-introduced later by calling `setSize(editorW * scale, editorH * scale)` — all proportional formulas will scale correctly.
 - **EQ is pinned to the window bottom** — `eqGraph.setBounds(x, y, w, eqHeight + (h−ch))` extends the component into the `h/6` bottom margin, so the knob strip sits flush with the window bottom edge. Do not revert to `eqGraph.setBounds(eqRect)` — that clips the control strip at `ch` and leaves a dead strip below.
 - **EQ has 5 bands: low shelf, 3 peaks, high shelf** — DSP order: `lowShelfBand → lowBand → midBand → highBand → highShelfBand` (all `ProcessorDuplicator`). IDs are `b3`/`b0`/`b1`/`b2`/`b4` (b3 and b4 are the shelves; b0–b2 are the original peaks preserved for preset backward-compat). Frequency response in `EQGraphComponent::getResponseAt()` uses a tanh-sigmoid approximation for shelves and a Gaussian for peaks — close enough for display, avoids needing DSP coefficient access at paint time.
 - **EQ control strip uses a row-per-parameter layout** — FREQ knobs all share the same Y (Row 1); GAIN knobs are shifted right by `colW/5 + gainDX` (Row 2, zig-zag); Q/SLOPE knobs return to the FREQ X column below GAIN (Row 3). Each row has independent `DX`/`DY` fine-tuning constants (`freqDX/DY`, `gainDX/DY`, `qDX/DY`) in `EQGraphComponent::resized()`. The control strip is reserved with `removeFromBottom(ctrlH - 75)` — the -75 shifts the entire strip 75 px lower and extends the chart bottom by 75 px; the `DY` constants counteract this shift, so net knob positions equal the intended row offsets. Knob size is **32 px** (reduced 25% from 42 px). The `DX` constants were scaled proportionally (`freqDX/qDX: −10→−8`, `gainDX: +20→+15`). The `DY` constants are intentionally NOT scaled — they cancel the structural `ctrlH - 75` offset which is independent of knob size. Do not scale DY when resizing knobs. The graph area top is trimmed 60 px downward. Each knob has an accent-orange live readout above its grey parameter label.
 - **Row Y positions in `PluginEditor` use absolute anchors to avoid JUCE `removeFromTop` clamping** — `removeFromTop(n)` silently clamps `n` to the rectangle's remaining height, so when `mainArea` has shrunk (due to large `eqMinH`) to less than the combined row heights, subsequent rows land in wrong positions. Row 2–6 Y positions are computed as `row2AbsY = topKnobRow.getBottom()`, `row3AbsY = row2AbsY + row2TotalH_`, etc. — independent of whatever height remains in `mainArea`. All group-header bounds, toggle LED Y positions, and knob Y positions for all rows use these absolute anchors. Right-side rows (R1/R2/R3) share the same Y anchors as their corresponding left-side rows (Rows 1/2/3).
 - **`rowShiftUp = 30 - rowKnobSize` — all knob rows are shifted down by one knob height** — `rowShiftUp` is subtracted from every row Y position, so making it smaller (by `rowKnobSize`) pushes all 9 rows (left-side 1–4 and right-side R1–R3) down by exactly `rowKnobSize` pixels simultaneously. The original `rowShiftUp = 30` provided a 30 px upward nudge; the current `30 - rowKnobSize` gives a net downward displacement from the natural `removeFromTop` position. Do not revert to a fixed positive value without updating all group-header Y positions accordingly.
 - **Preset combo + save button are right-aligned in the top bar, level with the Spitfire logo** — placed via `presetArea.getRight()` (= `w - rightLogoW - 4`): save button flush to the right edge, combo immediately to its left, "Preset" label further left. There is no second placement block lower in `resized()` — the top-bar placement is the only one. Do not add a repositioning block that moves the preset combo below the top bar.
-- **Only Width remains in the large-knob grid at `row6AbsY + row6TotalH_ + 70`** — LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3. The +70 px offset below the last small-knob row is unchanged. Do not revert the anchor back to any earlier row.
+- **Width is positioned below Wet Out trim at `outputGainCenterX, tailKnobY`** — Width (`outputGainKnobSize`) was removed from any large-knob grid. It now stacks directly below "Wet Out trim" at the same X (`outputGainCenterX`), sharing the same Y as the Tail knob (`tailKnobY`). LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3. Do not place Width at `row6AbsY + row6TotalH_ + 70` — that position is now unused.
 - **Bloom has two independent output paths (`bloomIRFeed` and `bloomVolume`), both defaulting to 0** — consistent with `plateIRFeed = 0`. The main signal is not modified by the bloom cascade; only additive injection via `bloomIRFeed` into the convolver and `bloomVolume` into the final output. At both defaults = 0, Bloom has zero effect when switched on.
 - **`bloomBuffer` bridges Insertion 1 (pre-conv) and the post-dry/wet Volume injection within the same processBlock call** — it is not a feedback buffer. Populated at Insertion 1, read after the dry/wet blend. `bloomBuffer.clear()` at the top of Insertion 1 ensures no stale data. A reallocation guard (`if (numSamples > bloomBuffer.getNumSamples())`) handles hosts that exceed `maximumExpectedSamplesPerBlock`.
 - **Bloom feedback tap is written inside Insertion 1's per-sample loop** — immediately after computing `diff` (the cascade output), `bloomFbBufs[ch][wp] = diff` is written and the pointer advanced. The convolved wet signal is **never** written to `bloomFbBufs`. This makes the feedback loop entirely self-contained: Bloom → `bloomFbBufs` → Bloom. The old architecture wrote the post-EQ wet signal to `bloomFbBufs` (old Insertion 3), which put the convolver inside the loop and caused feedback explosions with stereo IRs where the LL convolver path had significantly higher gain than the RL/LR paths.
@@ -991,6 +1027,10 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **`shimIRFeed` defaults to 0.5** — unlike every other IR-feed parameter (Plate, Bloom, Cloud all default to 0), Shimmer defaults to 0.5 so the effect is immediately audible when enabled. This matches expected shimmer plugin UX: you enable it and it shimmers.
 - **`shimColour` is a 1-pole LP on the grain shifter output** — cutoff = `2000 + shimColour × 18000` Hz. Applied per-sample inside Insertion 2 before storing to `shimBuffer`. `shimColourState[ch]` holds the per-channel filter state; reset to zero in `prepareToPlay`.
 - **EQ response curve is display-only** — `getResponseAt()` is an approximation. The actual audio uses JUCE biquad coefficients. The two will not match exactly at steep slopes or very high/low frequencies, but are visually representative for a mixing EQ.
+- **EQ knob labels must have `setInterceptsMouseClicks(false, false)`** — JUCE `Label` components default to intercepting mouse events (`setInterceptsMouseClicks(true, true)`). In `EQGraphComponent`, labels are added after sliders and therefore sit in front (higher Z-order). Without the click-through flag, labels silently swallow mouse-down events and the knob beneath never receives them. This applied to all three label types: `knobLabels[b][k]`, `knobReadouts[b][k]`, and `bandNameLabel[b]`. The FREQ readout overlapped the upper portion of the GAIN knob; GAIN readout/label overlapped the Q knob area. Fix: call `setInterceptsMouseClicks(false, false)` on all three label arrays in the `EQGraphComponent` constructor.
+- **Group header title font is 10.0f** — `drawGroupHeader` in `PluginEditor.cpp paint()` uses `g.setFont(juce::FontOptions(10.0f))` (increased from 9.0f). This applies to all group title labels: IR Input, IR Controls, ER Crossfade, Tail Crossfade, Plate pre-diffuser, Bloom hybrid, Clouds post convolution, Shimmer, Tail AM mod, Tail Frq mod, and the IR Preset label. Do not revert to 9.0f.
+- **Row grouping gaps** — `row3AbsY = row2AbsY + row2TotalH_ + 14`. The +14 px extra gap (one full `groupLabelH`) between Rows 2 and 3 creates two distinct visual groups on each side: left has IR+Crossfade (Rows 1–2, 0 extra gap) and Plate+Bloom (Rows 3–4, 0 extra gap), right has Cloud+Shimmer (R1–R2, 0 extra gap) and Tail mod (R3). Row 1→2 and Row 3→4 have 0 extra gap (tight within-group spacing). Because R3 uses the `row3AbsY` anchor, the same 14 px gap appears between Shimmer and Tail on the right automatically.
+- **Level meter: 300×153 px, transparent background, left-aligned at `rowStartX`** — `OutputLevelMeter` background fill was removed (transparent). Bounds: `meterX = rowStartX`, `meterY = row4AbsY + row4TotalH_ + 29`, `meterW = 300`, `meterH = 153`. The height matches `eqHeight = 153`. Do not use `b.getX()` (= `leftPad ≈ 204 px`) for `meterX` — that positions the meter far from the knob rows; use `rowStartX` (≈ 13 px) to left-align with the knobs.
 - **DRY/WET knob is centred at `w / 2` (full window centre, not `b` centre)** — `b` starts at `leftPad = w/6`, so `b.getCentreX() = 7w/12 ≠ w/2`. Using `w/2` ensures the knob, IR combo, and waveform are visually centred in the window. The preset combo is **not** centred here — it lives right-aligned in the top bar. The DRY/WET knob size is `bigKnobSize * 1.05f` (70% of the original `1.5f` multiplier). Do not revert to the old relative formula that positioned the knob between `stretchSlider` and `outputGainSlider`.
 - **`cy` uses a phantom waveform anchor — do not replace it with the current waveform dimensions** — `cy` is computed from `phantomWaveCentreY`, which uses the *old* waveform dimensions (`0.36f × cw` wide, not the current `0.27f × cw`). This keeps the DRY/WET knob at the correct visual height. The +40 px offset (`cy + 40`) shifts the entire centre-column stack (DRY/WET → IR combo → waveform) downward by 40 px. If you change the +40 offset, all four items move together. The preset combo is no longer in this stack — it is right-aligned in the top bar, independent of `cy`.
 - **Right-side rows R1/R2/R3 share Y anchors with left-side Rows 1/2/3** — Cloud knobs (R1) use `rowY`; Shimmer knobs (R2) use `row2KnobY`; Tail AM/Frq mod knobs (R3) use `row3KnobY`. Their group header Y positions match their left-side counterparts exactly. The `mainArea.removeFromTop()` calls for Rows 5 and 6 (Cloud/Shimmer) are kept to preserve `mainArea` state even though the actual knob Y values come from the absolute anchors.

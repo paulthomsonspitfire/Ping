@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>P!NG — Dark Chrome UI Mockup</title>
+<style>
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #06070a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* ─── Palette ─────────────────────────────────────────────────────────── */
+:root {
+  --bg-deep:        #08090d;
+  --bg-base:        #0d0f14;
+  --panel-high:     #181c24;    /* raised panel fill top */
+  --panel-low:      #111318;    /* raised panel fill bottom */
+  --panel-edge-hi:  #272d3c;    /* top bevel catch light */
+  --panel-edge-lo:  #060709;    /* bottom bevel shadow */
+  --panel-inner:    rgba(255,255,255,0.025); /* inner surface highlight */
+
+  --knob-hi:        #232730;
+  --knob-lo:        #0f1115;
+  --track:          #1e2230;
+
+  --accent:         #4ecce8;    /* steel cyan */
+  --accent-dim:     rgba(78,204,232,0.45);
+  --accent-glow:    rgba(78,204,232,0.18);
+
+  --text-primary:   #b8c4d4;
+  --text-secondary: #5a6478;
+  --text-accent:    #4ecce8;
+  --text-value:     #d4dde8;
+}
+
+/* ─── Plugin Window ───────────────────────────────────────────────────── */
+.plugin {
+  width: 1060px;
+  background: var(--bg-deep);
+  border-radius: 8px;
+  overflow: hidden;
+  /* Smoked mirror: very subtle vertical gradient, slightly lighter mid-window */
+  background-image:
+    radial-gradient(ellipse 90% 60% at 50% 30%, rgba(40,50,70,0.18) 0%, transparent 70%),
+    linear-gradient(180deg, #0f1118 0%, #08090d 100%);
+  box-shadow:
+    0 0 0 1px #1c2030,
+    0 8px 40px rgba(0,0,0,0.8),
+    0 2px 8px rgba(0,0,0,0.6);
+  position: relative;
+}
+
+/* Subtle full-width reflection streak at very top — the "chrome" catch */
+.plugin::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    rgba(120,150,200,0.12) 20%,
+    rgba(180,210,255,0.35) 50%,
+    rgba(120,150,200,0.12) 80%,
+    transparent 100%);
+  border-radius: 8px 8px 0 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* ─── Top Bar ─────────────────────────────────────────────────────────── */
+.topbar {
+  height: 36px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(180deg, #131820 0%, #0d0f14 100%);
+  border-bottom: 1px solid #1a1f2c;
+  position: relative;
+}
+
+.topbar::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(78,204,232,0.08), transparent);
+}
+
+.logo {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #c8d4e4;
+  text-shadow: 0 0 12px rgba(78,204,232,0.3);
+}
+
+.logo span { color: var(--accent); }
+
+.preset-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preset-label {
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.preset-combo {
+  background: #0f1219;
+  border: 1px solid #1e2535;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 3px 20px 3px 8px;
+  width: 160px;
+  appearance: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='%235a6478'%3E%3Cpath d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+.save-btn {
+  background: #0f1219;
+  border: 1px solid #1e2535;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 3px 10px;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.save-btn:hover { border-color: var(--accent-dim); color: var(--text-accent); }
+
+/* ─── Main Content ────────────────────────────────────────────────────── */
+.main {
+  display: grid;
+  grid-template-columns: 1fr 120px 1fr;
+  padding: 12px 14px 0;
+  gap: 0;
+}
+
+/* ─── Panel (sectional box) ───────────────────────────────────────────── */
+.panel {
+  border-radius: 5px;
+  margin: 4px 4px 4px 4px;
+  padding: 18px 12px 12px;
+  position: relative;
+  background: linear-gradient(175deg, var(--panel-high) 0%, var(--panel-low) 100%);
+  box-shadow:
+    /* top-left catch light */
+    inset 0  1px 0 var(--panel-edge-hi),
+    inset  1px 0 0 rgba(255,255,255,0.04),
+    /* bottom-right shadow */
+    inset 0 -1px 0 var(--panel-edge-lo),
+    inset -1px 0 0 rgba(0,0,0,0.3),
+    /* outer drop shadow */
+    0 2px 8px rgba(0,0,0,0.5),
+    0 1px 2px rgba(0,0,0,0.4);
+}
+
+/* Panel title */
+.panel-title {
+  position: absolute;
+  top: -1px;
+  left: 12px;
+  font-size: 9px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  background: var(--panel-high);
+  padding: 0 6px;
+  border-radius: 0 0 3px 3px;
+}
+
+.panel-title.accent { color: var(--text-accent); }
+
+/* Two-group panel (IR Input | IR Controls style) */
+.panel-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+}
+
+.group-divider {
+  width: 1px;
+  background: linear-gradient(180deg, transparent, #252b3a 40%, #252b3a 60%, transparent);
+  margin: 0 8px;
+  align-self: stretch;
+}
+
+/* ─── Knob ────────────────────────────────────────────────────────────── */
+.knob-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 54px;
+}
+
+.knob-wrap.small { width: 44px; }
+.knob-wrap.large { width: 72px; }
+
+.knob {
+  width: 38px;
+  height: 38px;
+  position: relative;
+}
+.knob.small { width: 30px; height: 30px; }
+.knob.large { width: 56px; height: 56px; }
+
+.knob-svg { width: 100%; height: 100%; }
+
+.knob-label {
+  font-size: 8.5px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1;
+}
+
+.knob-value {
+  font-size: 9px;
+  color: var(--text-value);
+  text-align: center;
+}
+
+/* ─── Pill Switch ─────────────────────────────────────────────────────── */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 14px;
+  border-radius: 7px;
+  border: 1px solid #252b3a;
+  background: linear-gradient(90deg, #1a1c24, #111318);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.pill.on {
+  border-color: var(--accent);
+  background: linear-gradient(90deg, #151d26, #0d1820);
+  box-shadow: 0 0 8px rgba(78,204,232,0.25), inset 0 0 6px rgba(78,204,232,0.1);
+}
+
+.pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #252b3a;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.pill.on .pill-dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+/* ─── Row with group headers ──────────────────────────────────────────── */
+.row-group {
+  margin-bottom: 2px;
+}
+
+.group-header {
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.group-header .gh-title { color: var(--text-secondary); }
+.group-header .gh-title.accent { color: var(--accent-dim); }
+
+/* ─── Left column rows ────────────────────────────────────────────────── */
+.left-col { display: flex; flex-direction: column; gap: 3px; }
+.right-col { display: flex; flex-direction: column; gap: 3px; }
+
+/* Small row panel */
+.row-panel {
+  border-radius: 4px;
+  padding: 6px 8px 8px;
+  background: linear-gradient(175deg, var(--panel-high) 0%, var(--panel-low) 100%);
+  box-shadow:
+    inset 0  1px 0 var(--panel-edge-hi),
+    inset  1px 0 0 rgba(255,255,255,0.03),
+    inset 0 -1px 0 var(--panel-edge-lo),
+    inset -1px 0 0 rgba(0,0,0,0.25),
+    0 2px 6px rgba(0,0,0,0.4);
+  position: relative;
+}
+
+.row-panel-header {
+  font-size: 8px;
+  letter-spacing: 1.8px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.knob-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+/* ─── Centre column ───────────────────────────────────────────────────── */
+.centre-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+/* ─── Bottom strip ────────────────────────────────────────────────────── */
+.bottom-strip {
+  display: grid;
+  grid-template-columns: 300px 1fr 300px;
+  gap: 4px;
+  padding: 4px 18px 14px;
+  align-items: stretch;
+}
+
+.bottom-panel {
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: linear-gradient(175deg, var(--panel-high) 0%, var(--panel-low) 100%);
+  box-shadow:
+    inset 0  1px 0 var(--panel-edge-hi),
+    inset 0 -1px 0 var(--panel-edge-lo),
+    0 2px 6px rgba(0,0,0,0.4);
+  min-height: 100px;
+}
+
+.bottom-panel-title {
+  font-size: 8px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+/* Meter placeholder */
+.meter-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+.meter-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.meter-label-sm { font-size: 8px; color: var(--text-secondary); width: 40px; }
+.meter-bar-bg {
+  flex: 1;
+  height: 5px;
+  border-radius: 2px;
+  background: #0f1219;
+  border: 1px solid #1a1f2c;
+  overflow: hidden;
+}
+.meter-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #1e8060, #28b888, #4ecce8 85%, #ff6060 100%);
+}
+
+/* Waveform placeholder */
+.waveform-area {
+  height: 70px;
+  background: #0a0c10;
+  border-radius: 3px;
+  border: 1px solid #1a1f2c;
+  position: relative;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.waveform-curve {
+  position: absolute;
+  bottom: 0; left: 0; right: 0; top: 0;
+}
+
+/* EQ area placeholder */
+.eq-area {
+  height: 70px;
+  background: #0a0c10;
+  border-radius: 3px;
+  border: 1px solid #1a1f2c;
+  position: relative;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+/* ─── IR combo ────────────────────────────────────────────────────────── */
+.ir-combo {
+  background: #0f1219;
+  border: 1px solid #1e2535;
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 4px 20px 4px 10px;
+  width: 180px;
+  appearance: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='%235a6478'%3E%3Cpath d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+.ir-btn {
+  background: #0f1219;
+  border: 1px solid var(--accent-dim);
+  border-radius: 4px;
+  color: var(--text-accent);
+  font-size: 10px;
+  padding: 4px 10px;
+  cursor: pointer;
+  letter-spacing: 0.5px;
+}
+
+/* ─── Scale selector info (bottom right) ─────────────────────────────── */
+.scale-info {
+  position: absolute;
+  bottom: 8px;
+  right: 14px;
+  font-size: 8px;
+  letter-spacing: 1px;
+  color: var(--text-secondary);
+  display: flex;
+  gap: 8px;
+}
+
+.scale-info span { cursor: pointer; }
+.scale-info span.active { color: var(--text-accent); }
+.scale-info span:hover { color: var(--text-primary); }
+
+</style>
+</head>
+<body>
+
+<div class="plugin">
+
+  <!-- TOP BAR -->
+  <div class="topbar">
+    <div class="logo">P<span>!</span>NG</div>
+    <div class="preset-area">
+      <span class="preset-label">Preset</span>
+      <select class="preset-combo"><option>Cathedral Bloom</option></select>
+      <button class="save-btn">SAVE</button>
+    </div>
+  </div>
+
+  <!-- MAIN CONTENT AREA -->
+  <div style="display:grid; grid-template-columns:1fr 130px 1fr; padding:10px 14px 4px; gap:8px;">
+
+    <!-- LEFT COLUMN -->
+    <div class="left-col">
+
+      <!-- Row 1: IR Input + IR Controls -->
+      <div class="row-panel">
+        <div class="row-panel-header">
+          <span style="color:var(--text-secondary)">IR INPUT</span>
+          <span style="width:1px; background:#252b3a; align-self:stretch; margin: 0 10px;"></span>
+          <span style="color:var(--text-secondary)">IR CONTROLS</span>
+        </div>
+        <div class="knob-row">
+          <?php /* GAIN */ ?>
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30">
+              <!-- shadow -->
+              <ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/>
+              <!-- body gradient -->
+              <defs>
+                <radialGradient id="kb1" cx="38%" cy="35%" r="65%">
+                  <stop offset="0%" stop-color="#232730"/>
+                  <stop offset="100%" stop-color="#0f1115"/>
+                </radialGradient>
+              </defs>
+              <circle cx="15" cy="15" r="11" fill="url(#kb1)"/>
+              <!-- dot ring -->
+              <g opacity="0.5">
+                <circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/>
+                <circle cx="20.5" cy="6.2" r="1.1" fill="#1e2230"/>
+                <circle cx="24.5" cy="10.5" r="1.1" fill="#1e2230"/>
+                <circle cx="25.5" cy="15.5" r="1.1" fill="#1e2230"/>
+              </g>
+              <g>
+                <circle cx="9.5" cy="6.2" r="1.1" fill="#4ecce8"/>
+                <circle cx="5.5" cy="10.5" r="1.1" fill="#4ecce8"/>
+                <circle cx="4.5" cy="15.5" r="1.1" fill="#4ecce8"/>
+              </g>
+              <!-- pointer line -->
+              <line x1="15" y1="15" x2="9.5" y2="6.2" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <div class="knob-label">GAIN</div>
+            <div class="knob-value">0 dB</div>
+          </div>
+
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30">
+              <ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/>
+              <circle cx="15" cy="15" r="11" fill="url(#kb1)"/>
+              <g opacity="0.4">
+                <circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/>
+                <circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/>
+                <circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/>
+              </g>
+              <line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <div class="knob-label">DRIVE</div>
+            <div class="knob-value">0.00</div>
+          </div>
+
+          <div style="width:5px;"></div>
+
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30">
+              <ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/>
+              <circle cx="15" cy="15" r="11" fill="url(#kb1)"/>
+              <g>
+                <circle cx="15" cy="4.5" r="1.1" fill="#4ecce8"/>
+                <circle cx="20.5" cy="6.2" r="1.1" fill="#4ecce8"/>
+                <circle cx="24.5" cy="10.5" r="1.1" fill="#4ecce8"/>
+              </g>
+              <g opacity="0.4">
+                <circle cx="25.5" cy="15.5" r="1.1" fill="#1e2230"/>
+                <circle cx="24.5" cy="20.5" r="1.1" fill="#1e2230"/>
+                <circle cx="20.5" cy="24.5" r="1.1" fill="#1e2230"/>
+                <circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/>
+                <circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/>
+                <circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/>
+              </g>
+              <line x1="15" y1="15" x2="20.5" y2="6.2" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <div class="knob-label">PREDELAY</div>
+            <div class="knob-value">0 ms</div>
+          </div>
+
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30">
+              <ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/>
+              <circle cx="15" cy="15" r="11" fill="url(#kb1)"/>
+              <g opacity="0.4">
+                <circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/>
+                <circle cx="20.5" cy="6.2" r="1.1" fill="#1e2230"/>
+                <circle cx="24.5" cy="10.5" r="1.1" fill="#1e2230"/>
+                <circle cx="25.5" cy="15.5" r="1.1" fill="#1e2230"/>
+                <circle cx="24.5" cy="20.5" r="1.1" fill="#1e2230"/>
+                <circle cx="20.5" cy="24.5" r="1.1" fill="#1e2230"/>
+                <circle cx="15" cy="25.5" r="1.1" fill="#1e2230"/>
+                <circle cx="9.5" cy="24.5" r="1.1" fill="#1e2230"/>
+                <circle cx="5.5" cy="20.5" r="1.1" fill="#1e2230"/>
+                <circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/>
+                <circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/>
+                <circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/>
+              </g>
+              <line x1="15" y1="15" x2="15" y2="25.5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <div class="knob-label">DAMPING</div>
+            <div class="knob-value">1.00</div>
+          </div>
+
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30">
+              <ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/>
+              <circle cx="15" cy="15" r="11" fill="url(#kb1)"/>
+              <g opacity="0.4">
+                <circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/>
+                <circle cx="20.5" cy="6.2" r="1.1" fill="#1e2230"/>
+                <circle cx="24.5" cy="10.5" r="1.1" fill="#1e2230"/>
+                <circle cx="25.5" cy="15.5" r="1.1" fill="#1e2230"/>
+                <circle cx="24.5" cy="20.5" r="1.1" fill="#1e2230"/>
+                <circle cx="20.5" cy="24.5" r="1.1" fill="#1e2230"/>
+                <circle cx="15" cy="25.5" r="1.1" fill="#1e2230"/>
+              </g>
+              <g>
+                <circle cx="9.5" cy="24.5" r="1.1" fill="#4ecce8"/>
+                <circle cx="5.5" cy="20.5" r="1.1" fill="#4ecce8"/>
+                <circle cx="4.5" cy="15.5" r="1.1" fill="#4ecce8"/>
+                <circle cx="5.5" cy="10.5" r="1.1" fill="#4ecce8"/>
+                <circle cx="9.5" cy="6.2" r="1.1" fill="#4ecce8"/>
+                <circle cx="15" cy="4.5" r="1.1" fill="#4ecce8"/>
+              </g>
+              <line x1="15" y1="15" x2="9.5" y2="24.5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <div class="knob-label">STRETCH</div>
+            <div class="knob-value">1.00×</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Row 2: ER Crossfade + Tail Crossfade -->
+      <div class="row-panel">
+        <div class="row-panel-header">
+          <span>ER CROSSFADE</span>
+          <div class="pill"><div class="pill-dot"></div></div>
+          <span style="flex:1;"></span>
+          <span>TAIL CROSSFADE</span>
+          <div class="pill on"><div class="pill-dot"></div></div>
+        </div>
+        <div class="knob-row">
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30">
+              <ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/>
+              <circle cx="15" cy="15" r="11" fill="url(#kb1)"/>
+              <g opacity="0.35"><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g>
+              <line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <div class="knob-label">DELAY</div>
+            <div class="knob-value">10 ms</div>
+          </div>
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30">
+              <ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/>
+              <circle cx="15" cy="15" r="11" fill="url(#kb1)"/>
+              <g opacity="0.35"><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/></g>
+              <line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <div class="knob-label">ATT</div>
+            <div class="knob-value">−6 dB</div>
+          </div>
+          <div style="flex:1;"></div>
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30">
+              <ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/>
+              <circle cx="15" cy="15" r="11" fill="url(#kb1)"/>
+              <g><circle cx="15" cy="4.5" r="1.1" fill="#4ecce8"/><circle cx="20.5" cy="6.2" r="1.1" fill="#4ecce8"/><circle cx="24.5" cy="10.5" r="1.1" fill="#4ecce8"/></g>
+              <g opacity="0.35"><circle cx="25.5" cy="15.5" r="1.1" fill="#1e2230"/><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g>
+              <line x1="15" y1="15" x2="20.5" y2="6.2" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <div class="knob-label">DELAY</div>
+            <div class="knob-value">12 ms</div>
+          </div>
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30">
+              <ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/>
+              <circle cx="15" cy="15" r="11" fill="url(#kb1)"/>
+              <g><circle cx="9.5" cy="6.2" r="1.1" fill="#4ecce8"/><circle cx="5.5" cy="10.5" r="1.1" fill="#4ecce8"/></g>
+              <g opacity="0.35"><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/><circle cx="20.5" cy="6.2" r="1.1" fill="#1e2230"/></g>
+              <line x1="15" y1="15" x2="9.5" y2="6.2" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <div class="knob-label">ATT</div>
+            <div class="knob-value">−9 dB</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Row 3: Plate -->
+      <div class="row-panel">
+        <div class="row-panel-header">
+          <span class="gh-title accent">PLATE PRE-DIFFUSER</span>
+          <div class="pill on"><div class="pill-dot"></div></div>
+        </div>
+        <div class="knob-row" style="gap:4px;">
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g><circle cx="15" cy="4.5" r="1.1" fill="#4ecce8"/><circle cx="20.5" cy="6.2" r="1.1" fill="#4ecce8"/><circle cx="24.5" cy="10.5" r="1.1" fill="#4ecce8"/><circle cx="25.5" cy="15.5" r="1.1" fill="#4ecce8"/><circle cx="24.5" cy="20.5" r="1.1" fill="#4ecce8"/></g><g opacity="0.35"><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="24.5" y2="10.5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <div class="knob-label">DIFFUSION</div><div class="knob-value">0.60</div>
+          </div>
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <div class="knob-label">COLOUR</div><div class="knob-value">5.0 kHz</div>
+          </div>
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <div class="knob-label">SIZE</div><div class="knob-value">1.00×</div>
+          </div>
+          <div class="knob-wrap small">
+            <svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <div class="knob-label">IR FEED</div><div class="knob-value">0.00</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Row 4: Bloom -->
+      <div class="row-panel">
+        <div class="row-panel-header">
+          <span class="gh-title accent">BLOOM HYBRID</span>
+          <div class="pill"><div class="pill-dot"></div></div>
+        </div>
+        <div class="knob-row" style="gap:2px;">
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">SIZE</div><div class="knob-value">1.00×</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">FEEDBACK</div><div class="knob-value">0.25</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">TIME</div><div class="knob-value">200 ms</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">IR FEED</div><div class="knob-value">0.00</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">VOLUME</div><div class="knob-value">0.00</div></div>
+        </div>
+      </div>
+
+    </div> <!-- /left-col -->
+
+    <!-- CENTRE COLUMN -->
+    <div class="centre-col">
+      <div style="font-size:8px;letter-spacing:1.5px;color:var(--text-secondary);text-transform:uppercase;margin-top:4px;">IR PRESET</div>
+      <select class="ir-combo"><option>Amethyst Hall</option></select>
+      <button class="ir-btn">IR SYNTH ▸</button>
+
+      <!-- DRY/WET large knob -->
+      <div style="margin-top:4px;">
+        <svg width="72" height="72" viewBox="0 0 72 72">
+          <defs>
+            <radialGradient id="dw" cx="38%" cy="35%" r="65%">
+              <stop offset="0%" stop-color="#232730"/>
+              <stop offset="100%" stop-color="#0b0c10"/>
+            </radialGradient>
+          </defs>
+          <ellipse cx="38" cy="38" rx="30" ry="30" fill="rgba(0,0,0,0.5)"/>
+          <circle cx="36" cy="36" r="28" fill="url(#dw)"/>
+          <!-- dot ring — majority active in cyan -->
+          <g>
+            <circle cx="36" cy="8"  r="2" fill="#4ecce8"/>
+            <circle cx="48" cy="11" r="2" fill="#4ecce8"/>
+            <circle cx="57" cy="20" r="2" fill="#4ecce8"/>
+            <circle cx="62" cy="32" r="2" fill="#4ecce8"/>
+            <circle cx="60" cy="45" r="2" fill="#4ecce8"/>
+            <circle cx="52" cy="56" r="2" fill="#4ecce8"/>
+            <circle cx="40" cy="62" r="2" fill="#4ecce8"/>
+          </g>
+          <g opacity="0.4">
+            <circle cx="26" cy="11" r="2" fill="#1e2230"/>
+            <circle cx="15" cy="20" r="2" fill="#1e2230"/>
+            <circle cx="10" cy="32" r="2" fill="#1e2230"/>
+            <circle cx="12" cy="45" r="2" fill="#1e2230"/>
+            <circle cx="20" cy="56" r="2" fill="#1e2230"/>
+            <circle cx="32" cy="62" r="2" fill="#1e2230"/>
+          </g>
+          <line x1="36" y1="36" x2="52" y2="56" stroke="#d0dce8" stroke-width="2.5" stroke-linecap="round"/>
+          <text x="36" y="39" text-anchor="middle" font-size="8" letter-spacing="1" fill="#7890a8" font-family="Helvetica Neue, Arial, sans-serif">DRY/WET</text>
+        </svg>
+      </div>
+
+      <!-- ER / Tail / Wet / Width mini knobs -->
+      <div style="display:flex;flex-direction:column;gap:6px;align-items:center;margin-top:2px;">
+        <div style="display:flex;gap:6px;align-items:center;">
+          <div class="knob-wrap small" style="width:36px;">
+            <svg width="28" height="28" viewBox="0 0 28 28"><defs><radialGradient id="mink" cx="38%" cy="35%" r="65%"><stop offset="0%" stop-color="#1e2028"/><stop offset="100%" stop-color="#0c0d10"/></radialGradient></defs><circle cx="14" cy="14" r="11" fill="url(#mink)"/><g><circle cx="14" cy="3.5" r="1" fill="#4ecce8"/><circle cx="19.5" cy="5.5" r="1" fill="#4ecce8"/><circle cx="23.5" cy="10" r="1" fill="#4ecce8"/></g><g opacity="0.4"><circle cx="24.5" cy="15" r="1" fill="#1e2230"/><circle cx="9.5" cy="5.5" r="1" fill="#1e2230"/><circle cx="5.5" cy="10" r="1" fill="#1e2230"/><circle cx="4.5" cy="15" r="1" fill="#1e2230"/></g><line x1="14" y1="14" x2="19.5" y2="5.5" stroke="#c8d4e4" stroke-width="1.3" stroke-linecap="round"/></svg>
+            <div class="knob-label" style="font-size:7px;">ER</div>
+          </div>
+          <div class="knob-wrap small" style="width:36px;">
+            <svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="11" fill="url(#mink)"/><g opacity="0.4"><circle cx="14" cy="3.5" r="1" fill="#1e2230"/><circle cx="19.5" cy="5.5" r="1" fill="#1e2230"/><circle cx="9.5" cy="5.5" r="1" fill="#1e2230"/><circle cx="5.5" cy="10" r="1" fill="#1e2230"/><circle cx="4.5" cy="15" r="1" fill="#1e2230"/></g><line x1="14" y1="14" x2="14" y2="4" stroke="#c8d4e4" stroke-width="1.3" stroke-linecap="round"/></svg>
+            <div class="knob-label" style="font-size:7px;">TAIL</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:2px;">
+          <div class="knob-wrap small" style="width:36px;">
+            <svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="11" fill="url(#mink)"/><g opacity="0.4"><circle cx="14" cy="3.5" r="1" fill="#1e2230"/><circle cx="19.5" cy="5.5" r="1" fill="#1e2230"/><circle cx="9.5" cy="5.5" r="1" fill="#1e2230"/><circle cx="5.5" cy="10" r="1" fill="#1e2230"/><circle cx="4.5" cy="15" r="1" fill="#1e2230"/></g><line x1="14" y1="14" x2="14" y2="4" stroke="#c8d4e4" stroke-width="1.3" stroke-linecap="round"/></svg>
+            <div class="knob-label" style="font-size:7px;">WET OUT</div>
+          </div>
+          <div class="knob-wrap small" style="width:36px;">
+            <svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="11" fill="url(#mink)"/><g><circle cx="14" cy="3.5" r="1" fill="#4ecce8"/><circle cx="19.5" cy="5.5" r="1" fill="#4ecce8"/><circle cx="23.5" cy="10" r="1" fill="#4ecce8"/><circle cx="24.5" cy="15" r="1" fill="#4ecce8"/></g><g opacity="0.4"><circle cx="9.5" cy="5.5" r="1" fill="#1e2230"/><circle cx="5.5" cy="10" r="1" fill="#1e2230"/><circle cx="4.5" cy="15" r="1" fill="#1e2230"/></g><line x1="14" y1="14" x2="23.5" y2="10" stroke="#c8d4e4" stroke-width="1.3" stroke-linecap="round"/></svg>
+            <div class="knob-label" style="font-size:7px;">WIDTH</div>
+          </div>
+        </div>
+      </div>
+    </div> <!-- /centre-col -->
+
+    <!-- RIGHT COLUMN -->
+    <div class="right-col">
+
+      <!-- Row R1: Cloud -->
+      <div class="row-panel">
+        <div class="row-panel-header">
+          <span class="gh-title accent">CLOUDS POST CONVOLUTION</span>
+          <div class="pill"><div class="pill-dot"></div></div>
+        </div>
+        <div class="knob-row" style="gap:2px; justify-content:flex-end;">
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">DEPTH</div><div class="knob-value">0.30</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">RATE</div><div class="knob-value">1.00×</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">SIZE</div><div class="knob-value">5.0 ms</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">IR FEED</div><div class="knob-value">0.00</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">VOLUME</div><div class="knob-value">0.00</div></div>
+        </div>
+      </div>
+
+      <!-- Row R2: Shimmer -->
+      <div class="row-panel">
+        <div class="row-panel-header">
+          <span class="gh-title accent">SHIMMER</span>
+          <div class="pill on"><div class="pill-dot"></div></div>
+        </div>
+        <div class="knob-row" style="gap:2px; justify-content:flex-end;">
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g><circle cx="15" cy="4.5" r="1.1" fill="#4ecce8"/><circle cx="20.5" cy="6.2" r="1.1" fill="#4ecce8"/><circle cx="24.5" cy="10.5" r="1.1" fill="#4ecce8"/><circle cx="25.5" cy="15.5" r="1.1" fill="#4ecce8"/></g><g opacity="0.35"><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="24.5" y2="10.5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">PITCH</div><div class="knob-value">+12 st</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">SIZE</div><div class="knob-value">1.00×</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g><circle cx="15" cy="4.5" r="1.1" fill="#4ecce8"/><circle cx="20.5" cy="6.2" r="1.1" fill="#4ecce8"/><circle cx="24.5" cy="10.5" r="1.1" fill="#4ecce8"/><circle cx="25.5" cy="15.5" r="1.1" fill="#4ecce8"/><circle cx="24.5" cy="20.5" r="1.1" fill="#4ecce8"/><circle cx="20.5" cy="24.5" r="1.1" fill="#4ecce8"/></g><g opacity="0.35"><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="20.5" y2="24.5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">COLOUR</div><div class="knob-value">9.4 kHz</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g><circle cx="15" cy="4.5" r="1.1" fill="#4ecce8"/><circle cx="20.5" cy="6.2" r="1.1" fill="#4ecce8"/><circle cx="24.5" cy="10.5" r="1.1" fill="#4ecce8"/><circle cx="25.5" cy="15.5" r="1.1" fill="#4ecce8"/><circle cx="24.5" cy="20.5" r="1.1" fill="#4ecce8"/><circle cx="20.5" cy="24.5" r="1.1" fill="#4ecce8"/></g><g opacity="0.35"><circle cx="9.5" cy="6.2" r="1.1" fill="#1e2230"/><circle cx="5.5" cy="10.5" r="1.1" fill="#1e2230"/><circle cx="4.5" cy="15.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="24.5" y2="20.5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">IR FEED</div><div class="knob-value">0.50</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">VOLUME</div><div class="knob-value">0.00</div></div>
+        </div>
+      </div>
+
+      <!-- Row R3: Tail AM + Frq mod -->
+      <div class="row-panel">
+        <div class="row-panel-header">
+          <span>TAIL AM MOD</span>
+          <span style="flex:1;"></span>
+          <span>TAIL FRQ MOD</span>
+        </div>
+        <div class="knob-row" style="gap:2px; justify-content:flex-end;">
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">LFO DEPTH</div><div class="knob-value">0.00</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">LFO RATE</div><div class="knob-value">0.50</div></div>
+          <div style="width:5px;"></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">TAIL MOD</div><div class="knob-value">0.00</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">DELAY DEPTH</div><div class="knob-value">2.0 ms</div></div>
+          <div class="knob-wrap small"><svg class="knob-svg knob small" viewBox="0 0 30 30"><ellipse cx="16" cy="16" rx="12" ry="12" fill="rgba(0,0,0,0.4)"/><circle cx="15" cy="15" r="11" fill="url(#kb1)"/><g opacity="0.35"><circle cx="15" cy="4.5" r="1.1" fill="#1e2230"/></g><line x1="15" y1="15" x2="15" y2="5" stroke="#c8d4e4" stroke-width="1.5" stroke-linecap="round"/></svg><div class="knob-label">RATE</div><div class="knob-value">0.50</div></div>
+        </div>
+      </div>
+
+      <!-- Spacer to match left column Row 4 -->
+      <div style="height:4px;"></div>
+
+    </div> <!-- /right-col -->
+  </div><!-- /main grid -->
+
+  <!-- BOTTOM STRIP -->
+  <div class="bottom-strip">
+
+    <!-- Level meter panel -->
+    <div class="bottom-panel">
+      <div class="bottom-panel-title">OUTPUT LEVELS</div>
+      <div class="meter-lines">
+        <div class="meter-line"><span class="meter-label-sm">L OUT</span><div class="meter-bar-bg"><div class="meter-bar-fill" style="width:68%;"></div></div></div>
+        <div class="meter-line"><span class="meter-label-sm">R OUT</span><div class="meter-bar-bg"><div class="meter-bar-fill" style="width:72%;"></div></div></div>
+      </div>
+      <div style="font-size:7px;color:var(--text-secondary);margin-top:4px;display:flex;justify-content:space-between;">
+        <span>−60</span><span>−48</span><span>−24</span><span>−12</span><span>−6</span><span>0</span><span>+6</span>
+      </div>
+    </div>
+
+    <!-- Waveform panel -->
+    <div class="bottom-panel">
+      <div class="bottom-panel-title">IR WAVEFORM</div>
+      <div class="waveform-area">
+        <!-- SVG ski-slope waveform placeholder -->
+        <svg width="100%" height="100%" viewBox="0 0 300 70" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="wf" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="rgba(78,204,232,0.5)"/>
+              <stop offset="100%" stop-color="rgba(78,204,232,0.05)"/>
+            </linearGradient>
+          </defs>
+          <!-- top edge of waveform -->
+          <path d="M0,35 L2,5 L6,8 L12,12 L20,16 L35,20 L55,24 L80,27 L110,29 L150,31 L200,33 L260,34.5 L300,35" stroke="rgba(78,204,232,0.7)" stroke-width="1" fill="none"/>
+          <!-- filled area top half -->
+          <path d="M0,35 L2,5 L6,8 L12,12 L20,16 L35,20 L55,24 L80,27 L110,29 L150,31 L200,33 L260,34.5 L300,35 Z" fill="url(#wf)"/>
+          <!-- mirror bottom -->
+          <path d="M0,35 L2,65 L6,62 L12,58 L20,54 L35,50 L55,46 L80,43 L110,41 L150,39 L200,37 L260,35.5 L300,35 Z" fill="url(#wf)" transform="scale(1,-1) translate(0,-70)"/>
+          <path d="M0,35 L2,65 L6,62 L12,58 L20,54 L35,50 L55,46 L80,43 L110,41 L150,39 L200,37 L260,35.5 L300,35" stroke="rgba(78,204,232,0.7)" stroke-width="1" fill="none"/>
+          <!-- centre line -->
+          <line x1="0" y1="35" x2="300" y2="35" stroke="rgba(78,204,232,0.15)" stroke-width="0.5"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- EQ panel -->
+    <div class="bottom-panel">
+      <div class="bottom-panel-title">EQUALISER</div>
+      <div class="eq-area">
+        <svg width="100%" height="100%" viewBox="0 0 300 70" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="eqfill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="rgba(78,204,232,0.25)"/>
+              <stop offset="100%" stop-color="rgba(78,204,232,0.02)"/>
+            </linearGradient>
+          </defs>
+          <!-- grid lines -->
+          <line x1="0" y1="35" x2="300" y2="35" stroke="rgba(255,255,255,0.05)" stroke-width="0.5"/>
+          <line x1="0" y1="17" x2="300" y2="17" stroke="rgba(255,255,255,0.03)" stroke-width="0.5" stroke-dasharray="3,4"/>
+          <line x1="0" y1="53" x2="300" y2="53" stroke="rgba(255,255,255,0.03)" stroke-width="0.5" stroke-dasharray="3,4"/>
+          <!-- EQ curve — subtle low shelf up, slight mid peak, gentle high shelf -->
+          <path d="M0,30 C20,28 40,27 70,27 C100,27 110,35 140,34 C170,33 190,32 220,33 C250,34 275,36 300,36"
+                stroke="#4ecce8" stroke-width="1.5" fill="none"/>
+          <path d="M0,30 C20,28 40,27 70,27 C100,27 110,35 140,34 C170,33 190,32 220,33 C250,34 275,36 300,36 L300,70 L0,70 Z"
+                fill="url(#eqfill)"/>
+          <!-- Band handle dots -->
+          <circle cx="50" cy="27" r="3.5" fill="#4ecce8" opacity="0.9"/>
+          <circle cx="140" cy="34" r="3.5" fill="#4ecce8" opacity="0.7"/>
+          <circle cx="220" cy="33" r="3.5" fill="#4ecce8" opacity="0.7"/>
+          <circle cx="275" cy="36" r="3.5" fill="#4ecce8" opacity="0.7"/>
+        </svg>
+      </div>
+    </div>
+
+  </div><!-- /bottom-strip -->
+
+  <!-- Scale selector -->
+  <div class="scale-info">
+    <span>75%</span>
+    <span class="active">100%</span>
+    <span>125%</span>
+    <span>150%</span>
+  </div>
+
+</div><!-- /plugin -->
+
+</body>
+</html>

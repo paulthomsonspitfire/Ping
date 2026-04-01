@@ -14,7 +14,7 @@ if(APPLE)
     endif()
 endif()
 
-project(Ping VERSION 1.9.7)
+project(Ping VERSION 2.0.0)
 
 # Minimum macOS 13.0 (Ventura) for plugin compatibility
 if(APPLE)
@@ -79,6 +79,7 @@ juce_add_binary_data(PingData
     HEADER_NAME PingBinaryData.h
     SOURCES
         Resources/ping_logo.png
+        Resources/ping_logo_blue.png
         Resources/spitfire_logo.png
         Resources/reverse_button.png
         Resources/reverse_button_glow.png

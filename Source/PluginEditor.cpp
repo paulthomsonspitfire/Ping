@@ -6,10 +6,6 @@ namespace
 {
     constexpr int editorW = 1104;
     constexpr int editorH = 816;
-    constexpr int minW = 864;
-    constexpr int minH = 528;
-    constexpr int maxW = 1920;
-    constexpr int maxH = 1080;
     const juce::Colour bgDark      { 0xff141414 };
     const juce::Colour panelBg     { 0xff1e1e1e };
     const juce::Colour panelBorder { 0xff2a2a2a };
@@ -51,8 +47,7 @@ PingEditor::PingEditor (PingProcessor& p)
       waveformComponent (p)
 {
     setSize (editorW, editorH);
-    setResizable (true, true);
-    setResizeLimits (minW, minH, maxW, maxH);
+    setResizable (false, false);
     setOpaque (true);
 
     // IR list
@@ -533,6 +528,34 @@ void PingEditor::paint (juce::Graphics& g)
     g.setGradientFill (juce::ColourGradient::vertical (bgDark.brighter (0.03f), 0, bgDark.darker (0.04f), (float) getHeight()));
     g.fillRect (getLocalBounds());
 
+    // ── Brushed-steel header panel ────────────────────────────────────────────
+    if (headerPanelRect.getWidth() > 0)
+    {
+        const float hh = (float) headerPanelRect.getHeight();
+        auto hr = headerPanelRect.toFloat();
+
+        // Base gradient: dark cool-grey top, lighter highlight band at ~35%, darker bottom
+        juce::ColourGradient steel (juce::Colour (0xff1e2020), 0.f, 0.f,
+                                    juce::Colour (0xff191b1b), 0.f, hh, false);
+        steel.addColour (0.28, juce::Colour (0xff343737));
+        steel.addColour (0.44, juce::Colour (0xff2b2e2e));
+        g.setGradientFill (steel);
+        g.fillRect (hr);
+
+        // Light reflection sweep — semi-transparent white band
+        juce::ColourGradient refl (juce::Colours::transparentBlack, 0.f, 0.f,
+                                   juce::Colours::transparentBlack, 0.f, hh, false);
+        refl.addColour (0.20, juce::Colour (0x07ffffff));
+        refl.addColour (0.35, juce::Colour (0x13ffffff));
+        refl.addColour (0.52, juce::Colour (0x05ffffff));
+        g.setGradientFill (refl);
+        g.fillRect (hr);
+
+        // Bottom separator line
+        g.setColour (juce::Colour (0xff0c0e0e));
+        g.fillRect (0, headerPanelRect.getBottom() - 1, getWidth(), 1);
+    }
+
     auto wfBounds = waveformComponent.getBounds();
     const float corner = 6.0f;
     g.setColour (panelBg);
@@ -544,22 +567,18 @@ void PingEditor::paint (juce::Graphics& g)
     {
         auto spitfireImg = juce::ImageCache::getFromMemory (BinaryData::spitfire_logo_png, BinaryData::spitfire_logo_pngSize);
         if (spitfireImg.isValid())
-            g.drawImageWithin (spitfireImg, spitfireBounds.getX(), spitfireBounds.getY(), spitfireBounds.getWidth(), spitfireBounds.getHeight(),
-                              juce::RectanglePlacement (juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yTop));
+            g.drawImageWithin (spitfireImg, spitfireBounds.getX(), spitfireBounds.getY(),
+                               spitfireBounds.getWidth(), spitfireBounds.getHeight(),
+                               juce::RectanglePlacement::centred);
     }
     if (pingBounds.getWidth() > 0 && pingBounds.getHeight() > 0)
     {
-        auto pingImg = juce::ImageCache::getFromMemory (BinaryData::ping_logo_png, BinaryData::ping_logo_pngSize);
+        // Use the new blue logo; draw at 1× filling pingBounds (aspect-ratio preserved)
+        auto pingImg = juce::ImageCache::getFromMemory (BinaryData::ping_logo_blue_png, BinaryData::ping_logo_blue_pngSize);
         if (pingImg.isValid())
-        {
-            // Draw at 2× pingBounds size, centred on pingBounds
-            const int pw = pingBounds.getWidth() * 2;
-            const int ph = pingBounds.getHeight() * 2;
-            auto drawRect = juce::Rectangle<int> (pingBounds.getCentreX() - pw / 2,
-                                                   pingBounds.getCentreY() - ph / 2, pw, ph);
-            g.drawImageWithin (pingImg, drawRect.getX(), drawRect.getY(), drawRect.getWidth(), drawRect.getHeight(),
-                              juce::RectanglePlacement::centred);
-        }
+            g.drawImageWithin (pingImg, pingBounds.getX(), pingBounds.getY(),
+                               pingBounds.getWidth(), pingBounds.getHeight(),
+                               juce::RectanglePlacement::centred);
     }
 
     // Group headers: label text above a horizontal line; active sections glow orange
@@ -638,32 +657,44 @@ void PingEditor::resized()
     const int mainHClamped = juce::jmax (3 * sixRowH, availableForMainAndEq - eqHeight - erTailRowH);
     const int mainHeight = juce::jmin (mainHClamped, availableForMainAndEq - eqHeight - erTailRowH - 6);
 
-    // —— Top row: Spitfire (left) | Preset menu (center, greyed - key menu) | P!NG (right) ——
+    // —— Header row: full-width brushed steel panel ——————————————————————————
     auto topRow = b.removeFromTop (topRowH);
-    const int leftLogoW  = juce::jmin (150, (int) (0.17f * cw));
-    const int rightLogoW = juce::jmin (68,  (int) (0.075f * cw));  // 75% of original (25% smaller)
-    spitfireBounds = topRow.removeFromLeft (leftLogoW).reduced (2);
-    topRow.removeFromRight (rightLogoW);   // consume right slot so presetArea width is unchanged
-    // Place pingBounds horizontally centred in the window top bar
-    pingBounds = juce::Rectangle<int> (w / 2 - rightLogoW / 2,
-                                       topRow.getY() + 2,
-                                       rightLogoW,
-                                       topRow.getHeight() - 4);
-    auto presetArea = topRow.reduced (4);
-    const int saveButtonW = 48;
-    int presetComboW = (int)(juce::jmin ((int) (0.38f * cw), presetArea.getWidth() - saveButtonW - 6) * 0.7f);
-    // Right-align preset combo + save button flush to the right edge of the window; irComboH tall.
+
+    // Store the full-width header rect for paint() — spans x=0, full window width
+    headerPanelRect = juce::Rectangle<int> (0, 0, w, topRow.getBottom());
+
+    // Spitfire logo: left-anchored in the header at a fixed margin
     {
-        const int pComboH = 24;   // same height as IR preset combo (irComboH)
+        const int logoH = topRowH - 8;
+        const int logoW = juce::jmin (160, (int) (logoH * 474.f / 62.f));  // preserve aspect
+        spitfireBounds = juce::Rectangle<int> (14, topRow.getY() + (topRowH - logoH) / 2, logoW, logoH);
+    }
+
+    // P!NG logo: centred horizontally, fills the header height (578×182 → ratio 3.176:1)
+    {
+        const int logoH = topRowH - 6;
+        const int logoW = (int) (logoH * 578.f / 182.f);
+        pingBounds = juce::Rectangle<int> (w / 2 - logoW / 2,
+                                           topRow.getY() + (topRowH - logoH) / 2,
+                                           logoW, logoH);
+    }
+
+    // Preset combo + Save button: right-aligned in header
+    const int saveButtonW = 48;
+    const int presetComboW = 200;
+    {
+        const int pComboH = 24;
         const int pTopY   = topRow.getY() + (topRowH - pComboH) / 2;
-        savePresetButton.setBounds (w - 4 - saveButtonW,                         pTopY, saveButtonW,   pComboH);
-        presetCombo.setBounds      (savePresetButton.getX() - 6 - presetComboW,  pTopY, presetComboW,  pComboH);
+        savePresetButton.setBounds (w - 12 - saveButtonW,                        pTopY, saveButtonW,  pComboH);
+        presetCombo.setBounds      (savePresetButton.getX() - 6 - presetComboW,  pTopY, presetComboW, pComboH);
         const int pLabelW = 44;
-        presetLabel.setBounds      (presetCombo.getX() - pLabelW - 4,            pTopY, pLabelW,       pComboH);
+        presetLabel.setBounds      (presetCombo.getX() - pLabelW - 4,            pTopY, pLabelW,      pComboH);
     }
 
     const int presetCenterX = presetCombo.getX() + presetCombo.getWidth() / 2;
+    juce::ignoreUnused (presetCenterX);
 
+    // Top-bar meter strip (thin horizontal, between spitfire and ping logo)
     const int meterGap = 6;
     const int meterH = 5;
     int meterX = spitfireBounds.getRight() + meterGap;
@@ -682,9 +713,15 @@ void PingEditor::resized()
     const int phantomWavePanelH = juce::jmax (72,  (int) (phantomWavePanelW * 0.36f));
     const int phantomReverseH   = juce::jmin (26,  mainHeight / 4);
 
-    // Actual waveform: 25 % smaller than the phantom dimensions.
-    int wavePanelW = juce::jmax (165, (int) (0.27f * cw));
-    int wavePanelH = juce::jmax (54,  (int) (wavePanelW * 0.36f));
+    // Waveform panel: width = 300 (matches meter), height = meter bar region only.
+    // Bar geometry from OutputLevelMeter.h:
+    //   totalBarsH  = 4*(2*barH+rowGap)+3*groupGap = 4*(18+2)+3*8 = 104 px
+    //   contentH    = totalBarsH + 4 + scaleH = 122 px
+    //   barOffset   = (153 - 122) / 2 = 15 px  ← gap from meter panel top to first bar
+    static const int kMeterBarsH     = 104;  // INPUT L top → TAIL R bottom
+    static const int kMeterBarOffset =  15;  // px from meter panel top to first bar top
+    const int wavePanelW = 300;
+    const int wavePanelH = kMeterBarsH;
 
     int irComboH = 24;
     int irComboW = juce::jmin ((int) (0.24f * cw), bigKnobSize + 40);
@@ -760,7 +797,7 @@ void PingEditor::resized()
     const int row4TotalH_  = row2TotalH_;   // identical formula
     const int row5TotalH_  = row2TotalH_;   // identical formula
     const int row6TotalH_  = row2TotalH_;   // identical formula
-    auto topKnobRow = mainArea.removeFromTop (rowTotalH + groupLabelH);
+    auto topKnobRow = mainArea.removeFromTop (rowTotalH);
     const int rowShiftUp = 30 - rowKnobSize;   // negative = rows shifted down by one knob height relative to original
     const int rowY       = topKnobRow.getY() + groupLabelH - 10 - rowShiftUp;
 
@@ -770,7 +807,7 @@ void PingEditor::resized()
     // placed far too high (they pile up inside row 2 / row 1).  Using absolute offsets
     // from topKnobRow.getBottom() guarantees correct spacing regardless of mainHeight.
     const int row2AbsY = topKnobRow.getBottom();
-    const int row3AbsY = row2AbsY + row2TotalH_ + 4;
+    const int row3AbsY = row2AbsY + row2TotalH_ + 14;  // groupLabelH worth of gap — separates IR+Crossfade from Plate+Bloom (left) and Cloud+Shimmer from Tail (right)
     const int row4AbsY = row3AbsY + row3TotalH_;
     const int row5AbsY = row4AbsY + row4TotalH_;
     const int row6AbsY = row5AbsY + row5TotalH_;
@@ -824,22 +861,24 @@ void PingEditor::resized()
         const int irCLabelW = 52;
         irComboLabel.setBounds (irComboXu - irCLabelW - 4, irRowY, irCLabelW, irComboH);
 
-        // Waveform + reverse button: centred horizontally under the IR combo
-        const int waveCentreX  = irCombo.getBounds().getCentreX();
-        const int waveGroupTopY = irRowY + irComboH + 8;
-        const int revBtnW = juce::jmax (68, (int)(0.075f * cw));
-        const int revBtnH = 22;
-        reverseButton.setBounds (waveCentreX + wavePanelW / 2 - revBtnW,
-                                 waveGroupTopY, revBtnW, revBtnH);
-        waveformComponent.setBounds (waveCentreX - wavePanelW / 2,
-                                     waveGroupTopY + revBtnH + 2,
-                                     wavePanelW, wavePanelH);
+        // Waveform: aligned with level meters — same Y anchor, same size (300×153).
+        // Centred horizontally in the gap between the meter right edge and the EQ left edge.
+        {
+            const int eqWidth_       = juce::jmax (315, (int)(0.465f * cw));  // same formula as EQ width
+            const int meterRightEdge = rowStartX + 300;                        // rowStartX + meterW
+            const int eqLeftEdge     = b.getRight() - eqWidth_;
+            const int waveformY      = row4AbsY + row4TotalH_ + 29 + kMeterBarOffset; // aligned with first bar
+            const int waveCentreX    = meterRightEdge + (eqLeftEdge - meterRightEdge) / 2;
+            const int revBtnW = juce::jmax (68, (int)(0.075f * cw));
+            const int revBtnH = 22;
+            reverseButton.setBounds (waveCentreX + wavePanelW / 2 - revBtnW,
+                                     waveformY - revBtnH - 2, revBtnW, revBtnH);
+            waveformComponent.setBounds (waveCentreX - wavePanelW / 2, waveformY,
+                                         wavePanelW, wavePanelH);
+        }
     }
 
     // Preset combo and save button are positioned in the top row (right-aligned); no repositioning needed here.
-
-    // Align Spitfire logo left edge with IR INPUT title
-    spitfireBounds.setX (irInputGainSlider.getX());
 
     // —— Row 2: ER Crossfade (delay, att) | Tail Crossfade (delay, att) ——
     // Toggles live in the group header line (LED-style, right-aligned); no extra height needed.
@@ -1038,14 +1077,16 @@ void PingEditor::resized()
     widthLabel.setBounds     (outputGainCenterX - irLabelW / 2,           widthSlider.getBottom() + 2,           irLabelW, labelH);
     widthReadout.setBounds   (outputGainCenterX - irLabelW / 2,           widthSlider.getBottom() + labelH + 2,  irLabelW, readoutH);
 
-    // —— Bottom: EQ (right) — extends into the h/6 bottom margin strip ——
+    // —— Bottom-right: EQ — top aligned with the level meters and waveform, extends to window bottom ——
     int eqWidth = juce::jmax (315, (int) (0.465f * cw));  // 75% of original (420→315, 0.62→0.465)
-    auto bottomRow = b.removeFromBottom (eqHeight);
-    auto eqRect = bottomRow.removeFromRight (eqWidth);
-    // Expand the EQ component downward to fill the unused h/6 window margin,
-    // pinning the control knobs all the way to the window bottom edge.
-    const int eqTotalH = eqHeight + (h - ch);
-    eqGraph.setBounds (eqRect.getX(), eqRect.getY(), eqRect.getWidth(), eqTotalH);
+    // EQ layout: knobs above, graph below (104 px, matching waveform height).
+    // Component height = 8 px padding + 113 px ctrl area + 104 px graph = 225 px.
+    // Graph top is at local y = compH - 108 = 117.  To align with meter bar top:
+    //   eqTopY = meterBarTop - 117.
+    static constexpr int kEQComponentH = 225;
+    const int meterBarTop = row4AbsY + row4TotalH_ + 29 + kMeterBarOffset;
+    const int eqTopY = meterBarTop - 117;
+    eqGraph.setBounds (b.getRight() - eqWidth, eqTopY, eqWidth, kEQComponentH);
 
     licenceLabel.setBounds (leftPad + 12, ch - 20, cw - 24, 16);
     versionLabel.setBounds (tailRateSlider.getX(), ch - 20, tailRateSlider.getWidth(), 16);

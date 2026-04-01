@@ -220,3 +220,35 @@ void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wid
         g.drawText ("DRY/WET", bounds.toNearestInt(), juce::Justification::centred, true);
     }
 }
+
+void PingLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bool /*isButtonDown*/,
+                                    int buttonX, int /*buttonY*/, int buttonW, int /*buttonH*/,
+                                    juce::ComboBox& /*box*/)
+{
+    auto bounds = juce::Rectangle<float> (0.f, 0.f, (float) width, (float) height);
+
+    // Transparent fill — just a very subtle white tint so text is readable
+    g.setColour (juce::Colour (0x18ffffff));
+    g.fillRoundedRectangle (bounds, 4.f);
+
+    // Soft border — low-alpha, no hard edge
+    g.setColour (juce::Colour (0x38ffffff));
+    g.drawRoundedRectangle (bounds.reduced (0.5f), 4.f, 0.8f);
+
+    // Dropdown arrow — centred in button area, subtle
+    const float arrowCX = (float) buttonX + (float) buttonW * 0.5f;
+    const float arrowCY = (float) height * 0.5f;
+    juce::Path arrow;
+    arrow.addTriangle (arrowCX - 4.f, arrowCY - 2.f,
+                       arrowCX + 4.f, arrowCY - 2.f,
+                       arrowCX,       arrowCY + 3.f);
+    g.setColour (juce::Colour (0x99ffffff));
+    g.fillPath (arrow);
+}
+
+void PingLookAndFeel::positionComboBoxText (juce::ComboBox& box, juce::Label& label)
+{
+    // Leave room for the arrow on the right; slight left inset for readability
+    label.setBounds (6, 1, box.getWidth() - 28, box.getHeight() - 2);
+    label.setFont (juce::FontOptions (12.f));
+}

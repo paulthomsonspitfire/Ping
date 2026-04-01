@@ -16,6 +16,10 @@ public:
                            bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
     void drawButtonText (juce::Graphics& g, juce::TextButton& button,
                         bool isMouseOver, bool isButtonDown) override;
+    void drawComboBox (juce::Graphics& g, int width, int height, bool isButtonDown,
+                       int buttonX, int buttonY, int buttonW, int buttonH,
+                       juce::ComboBox& box) override;
+    void positionComboBoxText (juce::ComboBox& box, juce::Label& label) override;
 
 private:
     juce::Colour trackColour    { 0xff3a3a3a };

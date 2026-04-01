@@ -148,10 +148,10 @@ void EQGraphComponent::resized()
 
     auto b = getLocalBounds().reduced (4);
 
-    // Reserve control strip from the bottom; remainder becomes the graph area.
-    // Trim 20 px from the top of the graph to push the visible display down.
-    auto ctrlArea = b.removeFromBottom (ctrlH - 75);  // -75: extends chart bottom by 75 px, shifts all controls down 75 px
-    graphBounds   = b.withTrimmedTop (60).toFloat();
+    // Graph at the bottom (104 px, matching waveform display height).
+    // Controls (knobs) occupy the area above.
+    graphBounds = b.removeFromBottom (104).toFloat();
+    auto ctrlArea = b;
 
     const int totalW  = ctrlArea.getWidth();
     const int colW    = totalW / numBands;

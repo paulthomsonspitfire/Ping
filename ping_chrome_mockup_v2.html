@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>P!NG — Chrome Mockup v2 (layout-faithful)</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #04050a;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 20px;
+  min-height: 100vh;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* ─── Colour tokens ─────────────────────────────────────── */
+:root {
+  /* Background layers */
+  --bg:          #070910;
+  --bg-mid:      #0a0c14;
+
+  /* Panel face */
+  --pf-top:      #181d28;
+  --pf-bot:      #0e1018;
+
+  /* Bevel edges — much more pronounced than v1 */
+  --bev-hi:      #3e4a62;   /* top-left catch — bright chrome */
+  --bev-lo:      #03040a;   /* bottom-right shadow — near-black */
+  --bev-hi2:     #28304a;   /* secondary highlight for inset lines */
+
+  /* Knob body */
+  --knob-hi:     #1e2330;
+  --knob-lo:     #0c0e14;
+
+  /* Inactive dots / track */
+  --track:       #1c2236;
+
+  /* ACCENT — icy blue-white (colder than v1 teal) */
+  --accent:      #8cd6ef;
+  --accent-dim:  rgba(140,214,239,0.38);
+  --accent-glow: rgba(140,214,239,0.15);
+  --accent-led:  #c4ecf8;   /* LED centre — almost white */
+
+  /* Text */
+  --t1: #aab8cc;   /* primary */
+  --t2: #424e62;   /* secondary / dim labels */
+  --t3: #8cd6ef;   /* accent text */
+  --tv: #ccd8e4;   /* value readouts */
+}
+
+/* ─── Plugin shell ───────────────────────────────────────── */
+.plugin {
+  width: 1060px;
+  border-radius: 7px;
+  overflow: hidden;
+  position: relative;
+  background: var(--bg);
+  /* Subtle vertical smoked-glass gradient */
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% 25%, rgba(50,65,100,0.12) 0%, transparent 65%),
+    linear-gradient(180deg, #0e1018 0%, #070910 100%);
+  box-shadow:
+    0 0 0 1px #1c2438,
+    0 0 0 2px #08090f,
+    0 12px 60px rgba(0,0,0,0.9),
+    0 2px 8px rgba(0,0,0,0.7);
+}
+
+/* Chrome catch at top edge */
+.plugin::before {
+  content:'';
+  position:absolute; top:0; left:0; right:0; height:1px;
+  background: linear-gradient(90deg,
+    transparent 5%,
+    rgba(100,130,180,0.15) 20%,
+    rgba(180,220,255,0.55) 50%,
+    rgba(100,130,180,0.15) 80%,
+    transparent 95%);
+  z-index:20; pointer-events:none;
+}
+/* Second subtle streak */
+.plugin::after {
+  content:'';
+  position:absolute; top:1px; left:0; right:0; height:1px;
+  background: linear-gradient(90deg,
+    transparent 10%,
+    rgba(80,110,160,0.08) 30%,
+    rgba(140,180,230,0.18) 50%,
+    rgba(80,110,160,0.08) 70%,
+    transparent 90%);
+  z-index:20; pointer-events:none;
+}
+
+/* ─── Top bar ────────────────────────────────────────────── */
+.topbar {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  background: linear-gradient(180deg, #12161f 0%, #0a0c14 100%);
+  border-bottom: 1px solid #1a2030;
+  position: relative;
+}
+.topbar::after {
+  content:'';
+  position:absolute; bottom:-1px; left:0; right:0; height:1px;
+  background: linear-gradient(90deg, transparent, rgba(140,214,239,0.06), transparent);
+}
+
+.logo {
+  font-size: 15px; font-weight: 700; letter-spacing: 4px;
+  color: #a8bccc;
+  text-shadow: 0 0 16px rgba(140,214,239,0.25), 0 1px 0 rgba(0,0,0,0.6);
+}
+.logo em { font-style:normal; color: var(--accent); }
+
+.preset-row {
+  display: flex; align-items: center; gap: 7px;
+}
+.lbl { font-size:8px; letter-spacing:1.5px; text-transform:uppercase; color:var(--t2); }
+.combo {
+  background:#0c0f18; border:1px solid #1c2438; border-radius:3px;
+  color:var(--t1); font-size:10.5px; padding:3px 22px 3px 8px; width:155px;
+  appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' fill='%23424e62'%3E%3Cpath d='M0 0l4 5 4-5z'/%3E%3C/svg%3E");
+  background-repeat:no-repeat; background-position:right 7px center;
+}
+.btn-save {
+  background:#0c0f18; border:1px solid #1c2438; border-radius:3px;
+  color:var(--t2); font-size:9.5px; padding:3px 9px; cursor:pointer;
+  letter-spacing:0.5px;
+}
+
+/* ─── Body layout ────────────────────────────────────────── */
+.body {
+  display: grid;
+  grid-template-columns: 1fr 118px 1fr;
+  padding: 8px 12px 0;
+  gap: 6px;
+  align-items: start;
+}
+
+/* ─── Panel — the core visual element ───────────────────── */
+.panel {
+  border-radius: 5px;
+  background: linear-gradient(170deg, var(--pf-top) 0%, var(--pf-bot) 100%);
+  box-shadow:
+    /* catch light — bright top-left bevel */
+    inset 0   1px 0 var(--bev-hi),
+    inset 1px 0   0 rgba(62,74,98,0.5),
+    /* deep shadow — bottom-right bevel */
+    inset 0  -1px 0 var(--bev-lo),
+    inset -1px 0  0 rgba(3,4,10,0.7),
+    /* outer drop */
+    0 3px 12px rgba(0,0,0,0.65),
+    0 1px 3px  rgba(0,0,0,0.5);
+  margin-bottom: 5px;
+  position: relative;
+}
+
+/* ─── Single-row panel ───────────────────────────────────── */
+.row-panel {
+  padding: 5px 9px 9px;
+}
+
+/* ─── Grouped panel (two rows sharing one panel) ─────────── */
+.group-panel {
+  padding: 5px 9px 9px;
+}
+
+/* Inner divider between sub-rows inside a group panel */
+.inner-divider {
+  height: 1px;
+  margin: 8px 0;
+  background: linear-gradient(90deg,
+    transparent,
+    var(--bev-lo) 15%,
+    var(--bev-lo) 50%,
+    var(--bev-hi2) 51%,
+    var(--bev-hi2) 85%,
+    transparent);
+  /* Creates the effect of an engraved groove */
+}
+
+/* ─── Panel header row ───────────────────────────────────── */
+.ph {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.ph-title {
+  font-size: 8px; letter-spacing: 2px; text-transform: uppercase; color: var(--t2);
+}
+.ph-title.on { color: var(--t3); }
+
+/* ─── Knob + label block ─────────────────────────────────── */
+.kw {
+  display: flex; flex-direction: column;
+  align-items: center; gap: 2px;
+  flex-shrink: 0;
+}
+.kl { font-size: 7.5px; letter-spacing:0.8px; text-transform:uppercase; color:var(--t2); text-align:center; line-height:1.1; }
+.kv { font-size: 8px; color:var(--tv); text-align:center; }
+
+/* knob SVG sizes */
+.k-sm  { width:28px; height:28px; }
+.k-med { width:36px; height:36px; }
+.k-lg  { width:54px; height:54px; }
+.k-xl  { width:66px; height:66px; }
+
+/* Knob row */
+.kr { display:flex; align-items:flex-end; gap:3px; }
+.kr.right { justify-content:flex-end; }
+
+/* Gap between sub-groups in a row */
+.sg-gap { width:6px; flex-shrink:0; }
+
+/* ─── Pill switch ────────────────────────────────────────── */
+.pill {
+  display:inline-flex; align-items:center; justify-content:center;
+  width:30px; height:12px; border-radius:6px;
+  border:1px solid #1c2438;
+  background: linear-gradient(90deg, #14182400, #0c101800);
+  background-color: #0e1220;
+  flex-shrink:0;
+}
+.pill.on {
+  border-color: var(--accent);
+  background-color: #0e1a24;
+  box-shadow: 0 0 7px rgba(140,214,239,0.22), inset 0 0 5px rgba(140,214,239,0.08);
+}
+.pdot {
+  width:7px; height:7px; border-radius:50%;
+  background:#1c2438;
+}
+.pill.on .pdot {
+  background: var(--accent-led);
+  box-shadow: 0 0 5px var(--accent), 0 0 10px rgba(140,214,239,0.4);
+}
+
+/* ─── Centre column ──────────────────────────────────────── */
+.centre {
+  display:flex; flex-direction:column; align-items:center;
+  gap:6px; padding-top:4px;
+}
+.ir-lbl { font-size:7.5px; letter-spacing:1.5px; text-transform:uppercase; color:var(--t2); }
+.ir-combo {
+  background:#0c0f18; border:1px solid #1c2438; border-radius:3px;
+  color:var(--t1); font-size:10px; padding:4px 18px 4px 8px;
+  width:108px; appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' fill='%23424e62'%3E%3Cpath d='M0 0l4 5 4-5z'/%3E%3C/svg%3E");
+  background-repeat:no-repeat; background-position:right 6px center;
+}
+.ir-btn {
+  background:#0c0f18; border:1px solid var(--accent-dim); border-radius:3px;
+  color:var(--t3); font-size:9px; padding:3px 8px; cursor:pointer;
+  letter-spacing:0.5px;
+}
+
+/* ─── Bottom strip ───────────────────────────────────────── */
+.bstrip {
+  display:grid;
+  grid-template-columns: 300px 1fr 315px;
+  gap:5px;
+  padding: 0 12px 12px;
+  align-items: stretch;
+}
+
+.bpanel {
+  border-radius:4px;
+  background: linear-gradient(170deg, var(--pf-top) 0%, var(--pf-bot) 100%);
+  box-shadow:
+    inset 0  1px 0 var(--bev-hi),
+    inset 1px 0   0 rgba(62,74,98,0.5),
+    inset 0 -1px 0 var(--bev-lo),
+    inset -1px 0  0 rgba(3,4,10,0.7),
+    0 3px 10px rgba(0,0,0,0.6);
+  padding:7px 8px 8px;
+}
+
+.bpanel-title {
+  font-size:7.5px; letter-spacing:2px; text-transform:uppercase;
+  color:var(--t2); text-align:center; margin-bottom:6px;
+}
+
+/* Meter */
+.mtr { display:flex; flex-direction:column; gap:4px; margin-top:2px; }
+.mtr-row { display:flex; align-items:center; gap:5px; }
+.mtr-lbl { font-size:7.5px; color:var(--t2); width:36px; text-align:right; flex-shrink:0; }
+.mtr-bg {
+  flex:1; height:5px; border-radius:2px;
+  background:#08090f; border:1px solid #161c2c; overflow:hidden;
+}
+.mtr-fill {
+  height:100%; border-radius:2px;
+  background:linear-gradient(90deg, #186050, #22a878, #4ecce8 82%, #dd5050 100%);
+}
+.mtr-scale {
+  display:flex; justify-content:space-between;
+  font-size:6.5px; color:var(--t2); margin-top:3px; padding:0 0 0 41px;
+}
+
+/* Waveform */
+.wf-area {
+  height:72px; background:#07080e; border-radius:3px;
+  border:1px solid #141c2a; overflow:hidden; margin-top:4px;
+}
+
+/* EQ */
+.eq-area {
+  height:72px; background:#07080e; border-radius:3px;
+  border:1px solid #141c2a; overflow:hidden; margin-top:4px;
+}
+
+/* ─── Scale selector ─────────────────────────────────────── */
+.scale {
+  position:absolute; bottom:9px; right:13px;
+  display:flex; gap:10px; font-size:7.5px; letter-spacing:1px;
+}
+.scale span { color:var(--t2); cursor:pointer; }
+.scale span.cur { color:var(--t3); }
+
+/* version label */
+.ver {
+  position:absolute; bottom:9px; left:13px;
+  font-size:7px; letter-spacing:1px; color:#2a3040;
+}
+
+/* ─── SVG knob helper — reusable via <use> isn't ideal in     */
+/*     multi-instance, so we use inline paths per size          */
+
+</style>
+</head>
+<body>
+<div class="plugin">
+
+<!-- TOP BAR ─────────────────────────────────────────────── -->
+<div class="topbar">
+  <div class="logo">P<em>!</em>NG</div>
+  <div class="preset-row">
+    <span class="lbl">Preset</span>
+    <select class="combo"><option>Cathedral Bloom</option></select>
+    <button class="btn-save">SAVE</button>
+  </div>
+</div>
+
+<!-- MAIN BODY ────────────────────────────────────────────── -->
+<div class="body">
+
+  <!-- LEFT COLUMN ──────────────────────────────────────── -->
+  <div>
+
+    <!-- Row 1: IR Input + IR Controls — single panel, two sub-groups -->
+    <div class="panel row-panel">
+      <div class="ph">
+        <span class="ph-title">IR INPUT</span>
+        <span style="flex:1; height:1px; background:linear-gradient(90deg,transparent,#1c2438,transparent); margin:0 8px; align-self:center;"></span>
+        <span class="ph-title">IR CONTROLS</span>
+      </div>
+      <div class="kr">
+        <!-- GAIN -->
+        <div class="kw">
+          <svg class="k-sm" viewBox="0 0 28 28">
+            <defs><radialGradient id="rg" cx="36%" cy="32%" r="68%"><stop offset="0%" stop-color="#1e2330"/><stop offset="100%" stop-color="#0c0e14"/></radialGradient></defs>
+            <ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/>
+            <circle cx="14" cy="14" r="11" fill="url(#rg)"/>
+            <circle cx="14" cy="14" r="10.5" fill="none" stroke="rgba(62,74,98,0.3)" stroke-width="0.5"/>
+            <!-- inactive dots -->
+            <circle cx="14"   cy="3.5"  r="1" fill="#1c2236" opacity="0.7"/>
+            <circle cx="19.5" cy="5.2"  r="1" fill="#1c2236" opacity="0.7"/>
+            <circle cx="23.2" cy="9.5"  r="1" fill="#1c2236" opacity="0.7"/>
+            <circle cx="24.5" cy="15"   r="1" fill="#1c2236" opacity="0.7"/>
+            <!-- active dots (cyan) -->
+            <circle cx="8.5"  cy="5.2"  r="1" fill="#8cd6ef"/>
+            <circle cx="4.8"  cy="9.5"  r="1" fill="#8cd6ef"/>
+            <circle cx="3.5"  cy="15"   r="1" fill="#8cd6ef"/>
+            <!-- pointer -->
+            <line x1="14" y1="14" x2="8.5" y2="5.2" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+          <div class="kl">GAIN</div><div class="kv">0 dB</div>
+        </div>
+        <!-- DRIVE -->
+        <div class="kw">
+          <svg class="k-sm" viewBox="0 0 28 28">
+            <ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/>
+            <circle cx="14" cy="14" r="11" fill="url(#rg)"/>
+            <circle cx="14" cy="3.5"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="24.5" cy="15"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="8.5"  cy="5.2" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="4.8"  cy="9.5" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="3.5"  cy="15"  r="1" fill="#1c2236" opacity="0.6"/>
+            <line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+          <div class="kl">DRIVE</div><div class="kv">0.00</div>
+        </div>
+
+        <div class="sg-gap"></div>
+
+        <!-- PREDELAY -->
+        <div class="kw">
+          <svg class="k-sm" viewBox="0 0 28 28">
+            <ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/>
+            <circle cx="14" cy="14" r="11" fill="url(#rg)"/>
+            <circle cx="14"   cy="3.5"  r="1" fill="#8cd6ef"/>
+            <circle cx="19.5" cy="5.2"  r="1" fill="#8cd6ef"/>
+            <circle cx="23.2" cy="9.5"  r="1" fill="#8cd6ef"/>
+            <circle cx="24.5" cy="15"   r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="8.5"  cy="5.2"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="4.8"  cy="9.5"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="3.5"  cy="15"   r="1" fill="#1c2236" opacity="0.6"/>
+            <line x1="14" y1="14" x2="19.5" y2="5.2" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+          <div class="kl">PREDELAY</div><div class="kv">0 ms</div>
+        </div>
+        <!-- DAMPING -->
+        <div class="kw">
+          <svg class="k-sm" viewBox="0 0 28 28">
+            <ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/>
+            <circle cx="14" cy="14" r="11" fill="url(#rg)"/>
+            <circle cx="14"   cy="24.5" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="19.5" cy="22.8" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="23.2" cy="18.5" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="24.5" cy="15"   r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="23.2" cy="9.5"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="14"   cy="3.5"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="19.5" cy="5.2"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="8.5"  cy="5.2"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="4.8"  cy="9.5"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="3.5"  cy="15"   r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="4.8"  cy="18.5" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="8.5"  cy="22.8" r="1" fill="#1c2236" opacity="0.6"/>
+            <line x1="14" y1="14" x2="14" y2="24.5" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+          <div class="kl">DAMPING</div><div class="kv">1.00</div>
+        </div>
+        <!-- STRETCH -->
+        <div class="kw">
+          <svg class="k-sm" viewBox="0 0 28 28">
+            <ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/>
+            <circle cx="14" cy="14" r="11" fill="url(#rg)"/>
+            <circle cx="14"   cy="3.5"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="19.5" cy="5.2"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="23.2" cy="9.5"  r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="24.5" cy="15"   r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="23.2" cy="18.5" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="19.5" cy="22.8" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="14"   cy="24.5" r="1" fill="#1c2236" opacity="0.6"/>
+            <circle cx="8.5"  cy="22.8" r="1" fill="#8cd6ef"/>
+            <circle cx="4.8"  cy="18.5" r="1" fill="#8cd6ef"/>
+            <circle cx="3.5"  cy="15"   r="1" fill="#8cd6ef"/>
+            <circle cx="4.8"  cy="9.5"  r="1" fill="#8cd6ef"/>
+            <circle cx="8.5"  cy="5.2"  r="1" fill="#8cd6ef"/>
+            <line x1="14" y1="14" x2="8.5" y2="22.8" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+          <div class="kl">STRETCH</div><div class="kv">1.00×</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 2: ER Crossfade + Tail Crossfade — single panel -->
+    <div class="panel row-panel">
+      <div class="ph">
+        <span class="ph-title">ER CROSSFADE</span>
+        <div class="pill"><div class="pdot"></div></div>
+        <span style="flex:1;"></span>
+        <span class="ph-title">TAIL CROSSFADE</span>
+        <div class="pill on"><div class="pdot"></div></div>
+      </div>
+      <div class="kr">
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">DELAY</div><div class="kv">10 ms</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">ATT</div><div class="kv">−6 dB</div></div>
+        <div style="flex:1;"></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#8cd6ef"/><circle cx="19.5" cy="5.2" r="1" fill="#8cd6ef"/><circle cx="23.2" cy="9.5" r="1" fill="#8cd6ef"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="19.5" y2="5.2" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">DELAY</div><div class="kv">12 ms</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#8cd6ef"/><circle cx="19.5" cy="5.2" r="1" fill="#8cd6ef"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">ATT</div><div class="kv">−9 dB</div></div>
+      </div>
+    </div>
+
+    <!-- Rows 3+4: PLATE + BLOOM — ONE grouped panel ────── -->
+    <div class="panel group-panel">
+
+      <!-- Plate sub-header -->
+      <div class="ph">
+        <span class="ph-title on">PLATE PRE-DIFFUSER</span>
+        <div class="pill on"><div class="pdot"></div></div>
+      </div>
+      <div class="kr">
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#8cd6ef"/><circle cx="19.5" cy="5.2" r="1" fill="#8cd6ef"/><circle cx="23.2" cy="9.5" r="1" fill="#8cd6ef"/><circle cx="24.5" cy="15" r="1" fill="#8cd6ef"/><circle cx="23.2" cy="18.5" r="1" fill="#8cd6ef"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="23.2" y2="9.5" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">DIFFUSION</div><div class="kv">0.60</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">COLOUR</div><div class="kv">5.0 kHz</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">SIZE</div><div class="kv">1.00×</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">IR FEED</div><div class="kv">0.00</div></div>
+      </div>
+
+      <!-- Engraved groove divider -->
+      <div class="inner-divider"></div>
+
+      <!-- Bloom sub-header -->
+      <div class="ph">
+        <span class="ph-title">BLOOM HYBRID</span>
+        <div class="pill"><div class="pdot"></div></div>
+      </div>
+      <div class="kr">
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">SIZE</div><div class="kv">1.00×</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">FEEDBACK</div><div class="kv">0.25</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">TIME</div><div class="kv">200 ms</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">IR FEED</div><div class="kv">0.00</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">VOLUME</div><div class="kv">0.00</div></div>
+      </div>
+    </div><!-- /Plate+Bloom panel -->
+
+  </div><!-- /left column -->
+
+  <!-- CENTRE COLUMN ────────────────────────────────────── -->
+  <div class="centre">
+    <div class="ir-lbl">IR PRESET</div>
+    <select class="ir-combo"><option>Amethyst Hall</option></select>
+    <button class="ir-btn">IR SYNTH ▸</button>
+
+    <!-- DRY/WET large knob -->
+    <div style="margin-top:2px;">
+      <svg class="k-xl" viewBox="0 0 66 66">
+        <defs>
+          <radialGradient id="rgxl" cx="36%" cy="32%" r="68%">
+            <stop offset="0%" stop-color="#1a1e2a"/>
+            <stop offset="100%" stop-color="#09090e"/>
+          </radialGradient>
+        </defs>
+        <ellipse cx="34" cy="35" rx="30" ry="30" fill="rgba(0,0,0,0.55)"/>
+        <circle cx="33" cy="33" r="29" fill="url(#rgxl)"/>
+        <circle cx="33" cy="33" r="28.5" fill="none" stroke="rgba(62,74,98,0.35)" stroke-width="0.7"/>
+        <!-- active arc dots (cyan) -->
+        <circle cx="33"   cy="4.5"  r="1.8" fill="#8cd6ef"/>
+        <circle cx="43"   cy="7"    r="1.8" fill="#8cd6ef"/>
+        <circle cx="51"   cy="14"   r="1.8" fill="#8cd6ef"/>
+        <circle cx="56"   cy="24"   r="1.8" fill="#8cd6ef"/>
+        <circle cx="57"   cy="35"   r="1.8" fill="#8cd6ef"/>
+        <circle cx="54"   cy="45.5" r="1.8" fill="#8cd6ef"/>
+        <circle cx="47"   cy="54"   r="1.8" fill="#8cd6ef"/>
+        <!-- inactive -->
+        <circle cx="33"   cy="61.5" r="1.8" fill="#1c2236" opacity="0.6"/>
+        <circle cx="19"   cy="54"   r="1.8" fill="#1c2236" opacity="0.6"/>
+        <circle cx="12"   cy="45.5" r="1.8" fill="#1c2236" opacity="0.6"/>
+        <circle cx="9"    cy="35"   r="1.8" fill="#1c2236" opacity="0.6"/>
+        <circle cx="10"   cy="24"   r="1.8" fill="#1c2236" opacity="0.6"/>
+        <circle cx="15"   cy="14"   r="1.8" fill="#1c2236" opacity="0.6"/>
+        <circle cx="23"   cy="7"    r="1.8" fill="#1c2236" opacity="0.6"/>
+        <!-- pointer -->
+        <line x1="33" y1="33" x2="47" y2="54" stroke="#d8e4f0" stroke-width="2.2" stroke-linecap="round"/>
+        <!-- centre label -->
+        <text x="33" y="36" text-anchor="middle" font-size="7" letter-spacing="1.5"
+              fill="#4a5870" font-family="Helvetica Neue,Arial,sans-serif">DRY/WET</text>
+      </svg>
+    </div>
+    <div class="kv" style="font-size:9px;margin-top:-2px;">0.30</div>
+
+    <!-- ER / TAIL knobs + WetOut / Width -->
+    <div style="display:flex;flex-direction:column;gap:5px;align-items:center;margin-top:4px;">
+      <div style="display:flex;gap:8px;align-items:flex-end;">
+        <div class="kw" style="width:38px;">
+          <svg width="26" height="26" viewBox="0 0 26 26"><defs><radialGradient id="rgmn" cx="36%" cy="32%" r="68%"><stop offset="0%" stop-color="#1a1e2a"/><stop offset="100%" stop-color="#09090e"/></radialGradient></defs><circle cx="13" cy="13" r="10" fill="url(#rgmn)"/><circle cx="13" cy="3" r="0.9" fill="#8cd6ef"/><circle cx="18" cy="4.7" r="0.9" fill="#8cd6ef"/><circle cx="21.7" cy="8.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="23" cy="13" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="8" cy="4.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="4.3" cy="8.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="3" cy="13" r="0.9" fill="#1c2236" opacity="0.6"/><line x1="13" y1="13" x2="18" y2="4.7" stroke="#ccd8e4" stroke-width="1.2" stroke-linecap="round"/></svg>
+          <div class="kl" style="font-size:7px;">ER</div>
+        </div>
+        <div class="kw" style="width:38px;">
+          <svg width="26" height="26" viewBox="0 0 26 26"><circle cx="13" cy="13" r="10" fill="url(#rgmn)"/><circle cx="13" cy="3" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="18" cy="4.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="21.7" cy="8.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="23" cy="13" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="8" cy="4.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="4.3" cy="8.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="3" cy="13" r="0.9" fill="#1c2236" opacity="0.6"/><line x1="13" y1="13" x2="13" y2="3" stroke="#ccd8e4" stroke-width="1.2" stroke-linecap="round"/></svg>
+          <div class="kl" style="font-size:7px;">TAIL</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:flex-end;">
+        <div class="kw" style="width:38px;">
+          <svg width="26" height="26" viewBox="0 0 26 26"><circle cx="13" cy="13" r="10" fill="url(#rgmn)"/><circle cx="13" cy="3" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="18" cy="4.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="8" cy="4.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="4.3" cy="8.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="3" cy="13" r="0.9" fill="#1c2236" opacity="0.6"/><line x1="13" y1="13" x2="13" y2="3" stroke="#ccd8e4" stroke-width="1.2" stroke-linecap="round"/></svg>
+          <div class="kl" style="font-size:6.5px;">WET OUT</div>
+        </div>
+        <div class="kw" style="width:38px;">
+          <svg width="26" height="26" viewBox="0 0 26 26"><circle cx="13" cy="13" r="10" fill="url(#rgmn)"/><circle cx="13" cy="3" r="0.9" fill="#8cd6ef"/><circle cx="18" cy="4.7" r="0.9" fill="#8cd6ef"/><circle cx="21.7" cy="8.7" r="0.9" fill="#8cd6ef"/><circle cx="23" cy="13" r="0.9" fill="#8cd6ef"/><circle cx="8" cy="4.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="4.3" cy="8.7" r="0.9" fill="#1c2236" opacity="0.6"/><circle cx="3" cy="13" r="0.9" fill="#1c2236" opacity="0.6"/><line x1="13" y1="13" x2="21.7" y2="8.7" stroke="#ccd8e4" stroke-width="1.2" stroke-linecap="round"/></svg>
+          <div class="kl" style="font-size:7px;">WIDTH</div>
+        </div>
+      </div>
+    </div>
+  </div><!-- /centre -->
+
+  <!-- RIGHT COLUMN ─────────────────────────────────────── -->
+  <div>
+
+    <!-- Rows R1+R2: CLOUDS + SHIMMER — ONE grouped panel ── -->
+    <div class="panel group-panel">
+
+      <!-- Cloud sub-header -->
+      <div class="ph">
+        <span class="ph-title">CLOUDS POST CONVOLUTION</span>
+        <div class="pill"><div class="pdot"></div></div>
+      </div>
+      <div class="kr right">
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">DEPTH</div><div class="kv">0.30</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">RATE</div><div class="kv">1.00×</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">SIZE</div><div class="kv">5.0 ms</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">IR FEED</div><div class="kv">0.00</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">VOLUME</div><div class="kv">0.00</div></div>
+      </div>
+
+      <!-- Engraved groove divider -->
+      <div class="inner-divider"></div>
+
+      <!-- Shimmer sub-header -->
+      <div class="ph">
+        <span class="ph-title on">SHIMMER</span>
+        <div class="pill on"><div class="pdot"></div></div>
+      </div>
+      <div class="kr right">
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#8cd6ef"/><circle cx="19.5" cy="5.2" r="1" fill="#8cd6ef"/><circle cx="23.2" cy="9.5" r="1" fill="#8cd6ef"/><circle cx="24.5" cy="15" r="1" fill="#8cd6ef"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="23.2" y2="9.5" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">PITCH</div><div class="kv">+12 st</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">SIZE</div><div class="kv">1.00×</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#8cd6ef"/><circle cx="19.5" cy="5.2" r="1" fill="#8cd6ef"/><circle cx="23.2" cy="9.5" r="1" fill="#8cd6ef"/><circle cx="24.5" cy="15" r="1" fill="#8cd6ef"/><circle cx="23.2" cy="18.5" r="1" fill="#8cd6ef"/><circle cx="19.5" cy="22.8" r="1" fill="#8cd6ef"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="19.5" y2="22.8" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">COLOUR</div><div class="kv">9.4 kHz</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#8cd6ef"/><circle cx="19.5" cy="5.2" r="1" fill="#8cd6ef"/><circle cx="23.2" cy="9.5" r="1" fill="#8cd6ef"/><circle cx="24.5" cy="15" r="1" fill="#8cd6ef"/><circle cx="23.2" cy="18.5" r="1" fill="#8cd6ef"/><circle cx="19.5" cy="22.8" r="1" fill="#8cd6ef"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="19.5" y2="22.8" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">IR FEED</div><div class="kv">0.50</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">VOLUME</div><div class="kv">0.00</div></div>
+      </div>
+    </div><!-- /Cloud+Shimmer panel -->
+
+    <!-- Row R3: Tail AM + Tail Frq mod — single panel -->
+    <div class="panel row-panel">
+      <div class="ph">
+        <span class="ph-title">TAIL AM MOD</span>
+        <span style="flex:1;"></span>
+        <span class="ph-title">TAIL FRQ MOD</span>
+      </div>
+      <div class="kr right">
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">LFO DEPTH</div><div class="kv">0.00</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">LFO RATE</div><div class="kv">0.50</div></div>
+        <div class="sg-gap"></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">TAIL MOD</div><div class="kv">0.00</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl" style="font-size:6.5px;">DELAY DEPTH</div><div class="kv">2.0 ms</div></div>
+        <div class="kw"><svg class="k-sm" viewBox="0 0 28 28"><ellipse cx="15" cy="15" rx="12" ry="12" fill="rgba(0,0,0,0.45)"/><circle cx="14" cy="14" r="11" fill="url(#rg)"/><circle cx="14" cy="3.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="19.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="23.2" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="24.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><circle cx="8.5" cy="5.2" r="1" fill="#1c2236" opacity="0.6"/><circle cx="4.8" cy="9.5" r="1" fill="#1c2236" opacity="0.6"/><circle cx="3.5" cy="15" r="1" fill="#1c2236" opacity="0.6"/><line x1="14" y1="14" x2="14" y2="4" stroke="#ccd8e4" stroke-width="1.4" stroke-linecap="round"/></svg><div class="kl">RATE</div><div class="kv">0.50</div></div>
+      </div>
+    </div>
+
+  </div><!-- /right column -->
+</div><!-- /body grid -->
+
+<!-- BOTTOM STRIP ─────────────────────────────────────────── -->
+<div class="bstrip">
+
+  <!-- Meter -->
+  <div class="bpanel">
+    <div class="bpanel-title">OUTPUT LEVELS</div>
+    <div class="mtr">
+      <div class="mtr-row"><span class="mtr-lbl">INPUT L</span><div class="mtr-bg"><div class="mtr-fill" style="width:62%"></div></div></div>
+      <div class="mtr-row"><span class="mtr-lbl">INPUT R</span><div class="mtr-bg"><div class="mtr-fill" style="width:65%"></div></div></div>
+      <div class="mtr-row"><span class="mtr-lbl">ER L</span><div class="mtr-bg"><div class="mtr-fill" style="width:55%"></div></div></div>
+      <div class="mtr-row"><span class="mtr-lbl">ER R</span><div class="mtr-bg"><div class="mtr-fill" style="width:58%"></div></div></div>
+      <div class="mtr-row"><span class="mtr-lbl">TAIL L</span><div class="mtr-bg"><div class="mtr-fill" style="width:70%"></div></div></div>
+      <div class="mtr-row"><span class="mtr-lbl">TAIL R</span><div class="mtr-bg"><div class="mtr-fill" style="width:68%"></div></div></div>
+    </div>
+    <div class="mtr-scale"><span>−60</span><span>−48</span><span>−24</span><span>−12</span><span>−6</span><span>0</span><span>+6</span></div>
+  </div>
+
+  <!-- Waveform -->
+  <div class="bpanel">
+    <div class="bpanel-title">IR WAVEFORM</div>
+    <div class="wf-area">
+      <svg width="100%" height="100%" viewBox="0 0 340 72" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="wfg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="rgba(140,214,239,0.45)"/>
+            <stop offset="100%" stop-color="rgba(140,214,239,0.03)"/>
+          </linearGradient>
+        </defs>
+        <path d="M0,36 L3,6 L8,10 L15,14 L25,18 L40,22 L60,25.5 L90,28 L130,30 L180,32 L240,33.5 L300,35 L340,36"
+              stroke="rgba(140,214,239,0.65)" stroke-width="1.2" fill="none"/>
+        <path d="M0,36 L3,6 L8,10 L15,14 L25,18 L40,22 L60,25.5 L90,28 L130,30 L180,32 L240,33.5 L300,35 L340,36 Z"
+              fill="url(#wfg)"/>
+        <path d="M0,36 L3,66 L8,62 L15,58 L25,54 L40,50 L60,46.5 L90,44 L130,42 L180,40 L240,38.5 L300,37 L340,36 Z"
+              fill="url(#wfg)" transform="translate(0,72) scale(1,-1)"/>
+        <path d="M0,36 L3,66 L8,62 L15,58 L25,54 L40,50 L60,46.5 L90,44 L130,42 L180,40 L240,38.5 L300,37 L340,36"
+              stroke="rgba(140,214,239,0.65)" stroke-width="1.2" fill="none"/>
+        <line x1="0" y1="36" x2="340" y2="36" stroke="rgba(140,214,239,0.1)" stroke-width="0.5"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- EQ -->
+  <div class="bpanel">
+    <div class="bpanel-title">EQUALISER</div>
+    <div class="eq-area">
+      <svg width="100%" height="100%" viewBox="0 0 315 72" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="eqg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="rgba(140,214,239,0.2)"/>
+            <stop offset="100%" stop-color="rgba(140,214,239,0.01)"/>
+          </linearGradient>
+        </defs>
+        <line x1="0" y1="36" x2="315" y2="36" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>
+        <line x1="0" y1="18" x2="315" y2="18" stroke="rgba(255,255,255,0.025)" stroke-width="0.5" stroke-dasharray="3,5"/>
+        <line x1="0" y1="54" x2="315" y2="54" stroke="rgba(255,255,255,0.025)" stroke-width="0.5" stroke-dasharray="3,5"/>
+        <path d="M0,31 C15,28 30,27 60,27 C85,27 100,36 130,35 C155,34 175,32 210,33 C240,34 270,36 315,36"
+              stroke="#8cd6ef" stroke-width="1.5" fill="none"/>
+        <path d="M0,31 C15,28 30,27 60,27 C85,27 100,36 130,35 C155,34 175,32 210,33 C240,34 270,36 315,36 L315,72 L0,72 Z"
+              fill="url(#eqg)"/>
+        <circle cx="48"  cy="27" r="3" fill="#8cd6ef" opacity="0.85"/>
+        <circle cx="130" cy="35" r="3" fill="#8cd6ef" opacity="0.6"/>
+        <circle cx="210" cy="33" r="3" fill="#8cd6ef" opacity="0.6"/>
+        <circle cx="270" cy="36" r="3" fill="#8cd6ef" opacity="0.6"/>
+      </svg>
+    </div>
+  </div>
+
+</div><!-- /bottom strip -->
+
+<!-- Scale selector + version -->
+<div class="ver">v1.9.8</div>
+<div class="scale">
+  <span>75%</span><span class="cur">100%</span><span>125%</span><span>150%</span>
+</div>
+
+</div><!-- /plugin -->
+</body>
+</html>
