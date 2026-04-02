@@ -52,13 +52,15 @@ namespace IDs
     static const juce::String cloudRate       { "cloudRate" };
     static const juce::String cloudSize       { "cloudSize" };
     static const juce::String cloudVolume     { "cloudVolume" };
+    static const juce::String cloudFeedback   { "cloudFeedback" };
     static const juce::String cloudIRFeed     { "cloudIRFeed" };
     static const juce::String shimOn          { "shimOn" };
     static const juce::String shimPitch       { "shimPitch" };
     static const juce::String shimSize        { "shimSize" };
-    static const juce::String shimColour      { "shimColour" };
+    static const juce::String shimDelay       { "shimDelay" };
     static const juce::String shimIRFeed      { "shimIRFeed" };
     static const juce::String shimVolume      { "shimVolume" };
+    static const juce::String shimFeedback    { "shimFeedback" };
 }
 
 static juce::File getLicenceDirectory()
@@ -273,19 +275,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomVolume,    "Bloom Volume",     0.0f, 1.0f,   0.0f));
     // Cloud Multi-LFO
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::cloudOn,     "Cloud On",      false));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudDepth,  "Cloud Depth",   0.0f,  1.0f,  0.3f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudRate,   "Cloud Rate",    0.1f,  4.0f,  1.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudSize,   "Cloud Size",    1.0f,  40.0f, 5.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudVolume, "Cloud Volume",  0.0f,  1.0f,  0.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudIRFeed, "Cloud IR Feed", 0.0f,  1.0f,  0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudDepth,    "Cloud Width",    0.0f,  1.0f,  0.3f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudRate,     "Cloud Density",  0.1f,  4.0f,  1.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudSize,     "Cloud Length",   25.0f, 1000.0f, 200.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudVolume,   "Cloud Volume",   0.0f,  1.0f,  0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudFeedback, "Cloud Feedback", 0.0f,  0.7f,  0.3f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudIRFeed,   "Cloud IR Feed",  0.0f,  1.0f,  0.5f));
     // Shimmer
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::shimOn,     "Shimmer On",      false));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimPitch,  "Shimmer Pitch",
-                    juce::NormalisableRange<float> (-24.f, 24.f, 1.f), 12.f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimSize,   "Shimmer Size",    0.5f,  4.0f, 1.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimColour, "Shimmer Colour",  0.0f,  1.0f, 0.7f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimIRFeed, "Shimmer IR Feed", 0.0f,  1.0f, 0.5f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimVolume, "Shimmer Volume",  0.0f,  1.0f, 0.0f));
+                    juce::NormalisableRange<float> (-24.f, 24.f, 1.f), 7.f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimSize,  "Shimmer Grain",  50.0f,  500.0f, 200.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimDelay, "Shimmer Delay",   0.0f, 1000.0f,   0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimIRFeed,   "Shimmer IR Feed",   0.0f, 1.0f, 0.5f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimVolume,   "Shimmer Volume",    0.0f, 1.0f, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimFeedback, "Shimmer Feedback",  0.0f, 0.7f, 0.3f));
     return layout;
 }
 
@@ -398,7 +402,7 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     bloomBuffer.setSize (2, samplesPerBlock);
     bloomBuffer.clear();
 
-    // Cloud Granular: pre-convolution grain engine on the dry input.
+    // Cloud Granular Delay: 3-second capture buffer, variable-length grains.
     {
         const int capBufSamps = (int)std::ceil (kCloudCaptureBufMs * sampleRate / 1000.0);
         for (int ch = 0; ch < 2; ++ch)
@@ -411,10 +415,14 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
             g.readPos  = 0.f;
             g.grainLen = 0;
             g.phase    = 1.f;   // inactive
+            g.reverse  = false;
+            g.srcCh    = -1;
         }
-        cloudSpawnPhase    = 0.f;
-        cloudNextGrainSlot = 0;
-        cloudSpawnSeed     = 12345u;
+        cloudSpawnPhase                = 0.f;
+        cloudCurrentSpawnIntervalSamps = 0.75f * (float)sampleRate; // 750 ms default
+        cloudNextGrainSlot             = 0;
+        cloudSpawnSeed                 = 12345u;
+        cloudFbSamples.fill (0.f);
         cloudBuffer.setSize (2, samplesPerBlock);
         cloudBuffer.clear();
     }
@@ -436,12 +444,11 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         initVoice (shimVoices[ch],    kShimGrainLen);
         initVoice (shimVoicesVol[ch], kShimGrainLen);
     }
-    shimColourState.fill (0.f);
-    shimColourStateVol.fill (0.f);
     shimBuffer.setSize (2, samplesPerBlock);
     shimBuffer.clear();
-    shimBufferVol.setSize (2, samplesPerBlock);
-    shimBufferVol.clear();
+    shimFeedbackBuf.setSize (2, samplesPerBlock);
+    shimFeedbackBuf.clear();
+    shimFeedbackLastBlockSize = 0;
     shimLastBlockSize = 0;
 
     updateGains();
@@ -679,69 +686,117 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 
     // ——————————————————————————————————————————————————————————————————
-    // Cloud Granular: pre-convolution grain engine on the dry input.
-    // Grains are Hann-windowed fragments read at random positions from a
-    // circular dry-input capture buffer.
-    // cloudIRFeed: injects grain sum into the convolver (one-way — dry source,
-    //   no loop back through the convolver, unconditionally stable).
-    // cloudVolume: grain sum added to the final output after dry/wet blend
-    //   (like bloomVolume — audible regardless of wet level). Applied post-blend below.
+    // Cloud Granular Delay: variable-length Hann-windowed grains read from
+    // a 3-second circular capture buffer of the dry input.
+    //
+    // DENSITY (cloudRate) controls only spawn interval:
+    //   t=0 (low)  → spawned every 500–1000 ms (sparse)
+    //   t=1 (high) → spawned every   10–50 ms  (dense)
+    // LENGTH (cloudSize) sets grain length directly in ms (25–1000 ms).
+    // WIDTH (cloudDepth) controls stereo spread + reverse grain probability.
+    // FEEDBACK (cloudFeedback) mixes grain output back into the capture buffer.
+    // cloudVolume: added post-blend (applied below alongside bloomVolume).
     // ——————————————————————————————————————————————————————————————————
     if (apvts.getRawParameterValue (IDs::cloudOn)->load() > 0.5f)
     {
-        const float cdepth  = apvts.getRawParameterValue (IDs::cloudDepth)->load();
-        const float crate   = juce::jlimit (0.1f, 4.0f,
-                                  apvts.getRawParameterValue (IDs::cloudRate)->load());
-        const float csizeMs = juce::jlimit (1.f, kCloudSizeMaxMs,
-                                  apvts.getRawParameterValue (IDs::cloudSize)->load());
-        const float irFeed  = apvts.getRawParameterValue (IDs::cloudIRFeed)->load();
+        const float cwidth    = juce::jlimit (0.f, 1.f,
+                                    apvts.getRawParameterValue (IDs::cloudDepth)->load());
+        const float crate     = juce::jlimit (0.1f, 4.0f,
+                                    apvts.getRawParameterValue (IDs::cloudRate)->load());
+        const float csize     = juce::jlimit (25.f, 1000.f,
+                                    apvts.getRawParameterValue (IDs::cloudSize)->load());
+        const float cfeedback = juce::jlimit (0.f, 0.7f,
+                                    apvts.getRawParameterValue (IDs::cloudFeedback)->load());
+        const float cirFeed   = apvts.getRawParameterValue (IDs::cloudIRFeed)->load();
 
         if (numSamples > cloudBuffer.getNumSamples())
             cloudBuffer.setSize (2, numSamples, false, true, true);
         cloudBuffer.clear();
 
-        const int   capBufSamps   = (int)cloudCaptureBufs[0].size();
-        const int   grainLenSamps = juce::jlimit (1, capBufSamps / 2,
-                                        (int)std::round (csizeMs * currentSampleRate / 1000.0));
-        // Overlap factor: crate × 4 concurrent grains at maximum rate (up to kNumCloudGrains=16)
-        const float spawnInterval = (float)grainLenSamps
-                                    / juce::jmax (0.01f, crate * 4.f);
+        const int   capBufSamps = (int)cloudCaptureBufs[0].size();
+        const float sr          = (float)currentSampleRate;
+
+        // DENSITY → normalised t (0 = sparse, 1 = dense) — affects spawn interval only
+        const float t = (crate - 0.1f) / (4.0f - 0.1f);
+
+        // Grain length: directly from LENGTH knob (ms)
+        const float grainLengthMs = csize;
+
+        // Spawn interval window (ms), driven by DENSITY
+        const float minSpawnMs = 500.f * (1.f - t) + 10.f  * t;
+        const float maxSpawnMs = 1000.f * (1.f - t) + 50.f  * t;
 
         for (int i = 0; i < numSamples; ++i)
         {
-            // Write dry input into capture buffers (both channels)
+            // Write dry input + feedback into capture buffers
             for (int ch = 0; ch < numChannels; ++ch)
             {
-                cloudCaptureBufs[ch][(size_t)cloudCaptureWritePtrs[ch]] =
-                    buffer.getSample (ch, i);
+                const float fb = (ch < 2) ? cloudFbSamples[(size_t)ch] * cfeedback : 0.f;
+                cloudCaptureBufs[(size_t)ch][(size_t)cloudCaptureWritePtrs[ch]] =
+                    buffer.getSample (ch, i) + fb;
                 cloudCaptureWritePtrs[ch] =
                     (cloudCaptureWritePtrs[ch] + 1) % capBufSamps;
             }
 
-            // Spawn new grains when the accumulator tips over
-            cloudSpawnPhase += 1.f / spawnInterval;
+            // Spawn new grain when the randomised interval elapses
+            cloudSpawnPhase += 1.f / juce::jmax (1.f, cloudCurrentSpawnIntervalSamps);
             while (cloudSpawnPhase >= 1.f)
             {
                 cloudSpawnPhase -= 1.f;
 
-                // LCG random: scatter grain start within [grainLen, (1+depth)×grainLen]
-                // behind the current write head
-                cloudSpawnSeed = cloudSpawnSeed * 1664525u + 1013904223u;
-                const float r = (float)(cloudSpawnSeed >> 8) / (float)(1u << 24);
+                // ── Grain length from LENGTH knob ────────────────────────────
+                const int   grainLen = juce::jlimit (1,
+                                           (int)(capBufSamps * 0.9f),
+                                           (int)std::round (grainLengthMs * sr / 1000.f));
 
-                const float scatterSamps = cdepth * (float)grainLenSamps * r;
-                float       startPos     = (float)cloudCaptureWritePtrs[0]
-                                           - (float)grainLenSamps - scatterSamps;
+                // ── Random read position: 1–2 grain lengths behind write head ─
+                cloudSpawnSeed = cloudSpawnSeed * 1664525u + 1013904223u;
+                const float r2 = (float)(cloudSpawnSeed >> 8) / (float)(1u << 24);
+                float startPos = (float)cloudCaptureWritePtrs[0]
+                                 - (float)grainLen * (1.f + r2);
                 while (startPos < 0.f) startPos += (float)capBufSamps;
 
+                // ── Random direction (WIDTH drives reverse probability) ────────
+                cloudSpawnSeed = cloudSpawnSeed * 1664525u + 1013904223u;
+                const float r3 = (float)(cloudSpawnSeed >> 8) / (float)(1u << 24);
+                const bool  rev = (r3 < cwidth * 0.5f);
+
+                // If reversed, start at far end of grain window and read backwards
+                float grainStartPos = startPos;
+                if (rev)
+                {
+                    grainStartPos = startPos + (float)(grainLen - 1);
+                    if (grainStartPos >= (float)capBufSamps)
+                        grainStartPos -= (float)capBufSamps;
+                }
+
+                // ── Random source channel (WIDTH drives cross-channel sampling) ─
+                cloudSpawnSeed = cloudSpawnSeed * 1664525u + 1013904223u;
+                const float r4 = (float)(cloudSpawnSeed >> 8) / (float)(1u << 24);
+                int srcCh = -1; // -1 = normal stereo
+                if (numChannels > 1 && r4 < cwidth)
+                {
+                    cloudSpawnSeed = cloudSpawnSeed * 1664525u + 1013904223u;
+                    const float r5 = (float)(cloudSpawnSeed >> 8) / (float)(1u << 24);
+                    srcCh = (r5 < 0.5f) ? 0 : 1;
+                }
+
                 auto& g    = cloudGrains[(size_t)cloudNextGrainSlot];
-                g.readPos  = startPos;
-                g.grainLen = grainLenSamps;
+                g.readPos  = grainStartPos;
+                g.grainLen = grainLen;
                 g.phase    = 0.f;
+                g.reverse  = rev;
+                g.srcCh    = srcCh;
                 cloudNextGrainSlot = (cloudNextGrainSlot + 1) % kNumCloudGrains;
+
+                // ── Random next spawn interval ────────────────────────────────
+                cloudSpawnSeed = cloudSpawnSeed * 1664525u + 1013904223u;
+                const float r6 = (float)(cloudSpawnSeed >> 8) / (float)(1u << 24);
+                const float nextSpawnMs = minSpawnMs + r6 * (maxSpawnMs - minSpawnMs);
+                cloudCurrentSpawnIntervalSamps = nextSpawnMs * sr / 1000.f;
             }
 
-            // Sum active grains (Hann-windowed, normalised by active count)
+            // ── Sum active grains (Hann-windowed, normalised by active count) ──
             float grainSumL = 0.f, grainSumR = 0.f;
             int   activeCount = 0;
 
@@ -753,22 +808,35 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                 const float win = 0.5f - 0.5f * std::cos (
                     juce::MathConstants<float>::twoPi * grain.phase);
 
-                int         ri    = (int)grain.readPos % capBufSamps;
+                int         ri    = (int)std::floor (grain.readPos) % capBufSamps;
                 if (ri < 0) ri   += capBufSamps;
                 const float rfrac = grain.readPos - std::floor (grain.readPos);
                 const int   ri1   = (ri + 1) % capBufSamps;
 
-                grainSumL += (cloudCaptureBufs[0][(size_t)ri]  * (1.f - rfrac)
-                            + cloudCaptureBufs[0][(size_t)ri1] * rfrac) * win;
+                // Channel source: normal = own channel; biased = fixed channel
+                const int chL = (grain.srcCh >= 0) ? grain.srcCh : 0;
+                const int chR = (grain.srcCh >= 0) ? grain.srcCh
+                                                    : (numChannels > 1 ? 1 : 0);
+
+                grainSumL += (cloudCaptureBufs[(size_t)chL][(size_t)ri]  * (1.f - rfrac)
+                            + cloudCaptureBufs[(size_t)chL][(size_t)ri1] * rfrac) * win;
                 if (numChannels > 1)
-                    grainSumR += (cloudCaptureBufs[1][(size_t)ri]  * (1.f - rfrac)
-                                + cloudCaptureBufs[1][(size_t)ri1] * rfrac) * win;
+                    grainSumR += (cloudCaptureBufs[(size_t)chR][(size_t)ri]  * (1.f - rfrac)
+                                + cloudCaptureBufs[(size_t)chR][(size_t)ri1] * rfrac) * win;
 
-                grain.readPos += 1.f;
-                if (grain.readPos >= (float)capBufSamps)
-                    grain.readPos -= (float)capBufSamps;
+                // Advance read position (forward or reverse)
+                if (grain.reverse)
+                {
+                    grain.readPos -= 1.f;
+                    if (grain.readPos < 0.f) grain.readPos += (float)capBufSamps;
+                }
+                else
+                {
+                    grain.readPos += 1.f;
+                    if (grain.readPos >= (float)capBufSamps)
+                        grain.readPos -= (float)capBufSamps;
+                }
                 grain.phase += 1.f / (float)grain.grainLen;
-
                 ++activeCount;
             }
 
@@ -779,45 +847,53 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             cloudBuffer.setSample (0, i, outL);
             if (numChannels > 1) cloudBuffer.setSample (1, i, outR);
 
-            // Inject grain sum into convolver input (one-way, no feedback loop)
-            if (irFeed > 0.f)
+            // Inject grain output into convolver input (one-way, no loop back)
+            if (cirFeed > 0.f)
             {
-                buffer.setSample (0, i, buffer.getSample (0, i) + outL * irFeed);
+                buffer.setSample (0, i, buffer.getSample (0, i) + outL * cirFeed);
                 if (numChannels > 1)
-                    buffer.setSample (1, i, buffer.getSample (1, i) + outR * irFeed);
+                    buffer.setSample (1, i, buffer.getSample (1, i) + outR * cirFeed);
             }
+
+            // Save grain output for feedback into next sample's capture write
+            cloudFbSamples[0] = outL;
+            cloudFbSamples[1] = (numChannels > 1) ? outR : outL;
         }
     }
     else
     {
         cloudBuffer.clear();
+        cloudFbSamples.fill (0.f);
     }
 
     // ——————————————————————————————————————————————————————————————————
-    // Shimmer: two-grain Hann-windowed pitch shifter on the pre-convolution
-    // dry signal. Reads the signal that is about to enter the convolver,
-    // pitch-shifts it, and optionally feeds it into the convolver input
-    // (shimIRFeed — one-way injection, no loop) and/or the final output
-    // post-blend (shimVolume — handled below alongside bloomVolume).
+    // Shimmer: two signal paths sharing the same pitch-shift grain engine.
     //
-    // Architecture: dry → pitch-shift → convolver → wet.
-    // The pitch-shifted signal flows FORWARD through the convolver;
-    // shimBuffer is a same-block bridge to the post-blend shimVolume output.
-    // There is no feedback loop and no convolver in any loop, so this is
-    // inherently stable with any IR.
+    // IR Feed path (shimVoices, same-block):
+    //   dry → pitch-shift → inject × shimIRFeed into convolver input.
+    //   One-way; shimVoices reads the CLEAN dry buffer before any feedback injection.
+    //
+    // Feedback loop (shimVoicesVol, cross-block — classic Lexicon shimmer):
+    //   post-conv wet → pitch-shift → tanh soft-clip → shimFeedbackBuf.
+    //   NEXT block: shimFeedbackBuf × shimFeedback injected AFTER shimVoices runs,
+    //   so feedback is pitched only once (by shimVoicesVol), not a second time here.
+    //   Loop: wet → pitch-shift (+N st) → convolver → wet (repeats, stacking pitch each pass).
     // ——————————————————————————————————————————————————————————————————
     if (apvts.getRawParameterValue (IDs::shimOn)->load() > 0.5f)
     {
         const float shimPitchSt = apvts.getRawParameterValue (IDs::shimPitch)->load();
         const float pitchRatio  = std::pow (2.f, shimPitchSt / 12.f);
-        const int   effGrainLen = juce::roundToInt (kShimGrainLen *
-                                    apvts.getRawParameterValue (IDs::shimSize)->load());
+        // shimSize is now in milliseconds (50–500 ms)
+        const int   effGrainLen = juce::jmax (1, juce::roundToInt (
+                                    apvts.getRawParameterValue (IDs::shimSize)->load()
+                                    * (float)currentSampleRate / 1000.f));
+        // shimDelay: how far behind the write head the grain read start is (on top of effGrainLen)
+        const int   delaySamps  = juce::roundToInt (
+                                    apvts.getRawParameterValue (IDs::shimDelay)->load()
+                                    * (float)currentSampleRate / 1000.f);
         const float shimIRFd    = apvts.getRawParameterValue (IDs::shimIRFeed)->load();
-
-        // 1-pole LP colour: 0 → 2 kHz, 1 → 20 kHz
-        const float cutoffHz = 2000.f + apvts.getRawParameterValue (IDs::shimColour)->load() * 18000.f;
-        const float lpAlpha  = 1.f - std::exp (-juce::MathConstants<float>::twoPi * cutoffHz
-                                               / (float)currentSampleRate);
+        const float shimFb      = juce::jlimit (0.f, 0.7f,
+                                    apvts.getRawParameterValue (IDs::shimFeedback)->load());
 
         if (numSamples > shimBuffer.getNumSamples())
             shimBuffer.setSize (2, numSamples, false, true, true);
@@ -826,18 +902,19 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             return 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * p);
         };
 
+        // ── IR Feed path: pitch-shift the clean dry signal ────────────────────
+        // shimVoices reads buffer BEFORE any feedback injection so that the
+        // feedback signal is never double-pitched through this path.
         for (int ch = 0; ch < numChannels; ++ch)
         {
-            auto& v          = shimVoices[ch];
-            const float* src = buffer.getReadPointer (ch);   // pre-conv dry signal
+            auto& v           = shimVoices[ch];
+            const float* src  = buffer.getReadPointer (ch);   // clean pre-conv dry
             float*       shim = shimBuffer.getWritePointer (ch);
 
             for (int i = 0; i < numSamples; ++i)
             {
-                // Write current dry sample into the circular grain buffer
                 v.grainBuf[(size_t)v.writePtr] = src[i];
 
-                // Linear-interpolated read from two grains, Hann windowed
                 auto readAt = [&](float rp) -> float {
                     int   ri   = ((int)std::floor (rp) % kShimBufLen + kShimBufLen) % kShimBufLen;
                     float frac = rp - std::floor (rp);
@@ -845,16 +922,9 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                          + v.grainBuf[(size_t)((ri + 1) % kShimBufLen)] * frac;
                 };
 
-                float out = (readAt (v.readPtrA) * hannW (v.grainPhaseA)
-                           + readAt (v.readPtrB) * hannW (v.grainPhaseB)) * 0.5f;
+                shim[i] = (readAt (v.readPtrA) * hannW (v.grainPhaseA)
+                         + readAt (v.readPtrB) * hannW (v.grainPhaseB)) * 0.5f;
 
-                // 1-pole LP for shimmer colour
-                shimColourState[ch] += lpAlpha * (out - shimColourState[ch]);
-                out = shimColourState[ch];
-
-                shim[i] = out;
-
-                // Advance read pointers and grain phases
                 v.readPtrA    += pitchRatio;
                 v.readPtrB    += pitchRatio;
                 v.grainPhaseA += pitchRatio / (float)effGrainLen;
@@ -863,27 +933,42 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                 if (v.readPtrA >= (float)kShimBufLen) v.readPtrA -= (float)kShimBufLen;
                 if (v.readPtrB >= (float)kShimBufLen) v.readPtrB -= (float)kShimBufLen;
 
-                // On grain reset: snap read head one effGrainLen behind write head
+                const int resetOffset = effGrainLen + delaySamps;
                 if (v.grainPhaseA >= 1.f)
                 {
                     v.grainPhaseA -= 1.f;
-                    v.readPtrA = (float)((v.writePtr - effGrainLen + kShimBufLen) % kShimBufLen);
+                    v.readPtrA = (float)((v.writePtr - resetOffset + kShimBufLen * 2) % kShimBufLen);
                 }
                 if (v.grainPhaseB >= 1.f)
                 {
                     v.grainPhaseB -= 1.f;
-                    v.readPtrB = (float)((v.writePtr - effGrainLen + kShimBufLen) % kShimBufLen);
+                    v.readPtrB = (float)((v.writePtr - resetOffset + kShimBufLen * 2) % kShimBufLen);
                 }
 
                 v.writePtr = (v.writePtr + 1) % kShimBufLen;
             }
 
-            // IR Feed: inject pitch-shifted dry signal into the convolver input (one-way)
+            // Inject pitched dry into convolver input (one-way, no loop)
             if (shimIRFd > 0.001f)
             {
                 float* data = buffer.getWritePointer (ch);
                 for (int i = 0; i < numSamples; ++i)
                     data[i] += shim[i] * shimIRFd;
+            }
+        }
+
+        // ── Feedback path: inject previous block's pitched wet into convolver ─
+        // Injected AFTER shimVoices so the feedback signal is only pitched once
+        // (by shimVoicesVol post-conv), not a second time by shimVoices.
+        if (shimFb > 0.f && shimFeedbackLastBlockSize > 0)
+        {
+            const int injectN = juce::jmin (numSamples, shimFeedbackLastBlockSize);
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                float*       buf = buffer.getWritePointer (ch);
+                const float* fb  = shimFeedbackBuf.getReadPointer (ch);
+                for (int i = 0; i < injectN; ++i)
+                    buf[i] += fb[i] * shimFb;
             }
         }
     }
@@ -1161,88 +1246,101 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     //  cloudVolume is applied post-blend below, alongside bloomVolume.)
 
     // ——————————————————————————————————————————————————————————————————
-    // Shimmer Volume path: pitch-shift the post-conv wet signal and store
-    // in shimBufferVol. This uses a separate grain engine (shimVoicesVol)
-    // so it never interferes with the pre-conv IR Feed path.
-    // shimBufferVol is added post-blend below (like bloomVolume/cloudVolume).
+    // Shimmer Feedback capture: pitch-shift the post-conv wet signal and
+    // store in shimFeedbackBuf. Applied on the NEXT block as convolver input.
+    // tanh soft-saturation prevents runaway feedback at high settings.
+    // Always runs when shimOn so grain state stays warm even at shimFeedback=0.
     // ——————————————————————————————————————————————————————————————————
     if (apvts.getRawParameterValue (IDs::shimOn)->load() > 0.5f)
     {
-        const float shimVol = apvts.getRawParameterValue (IDs::shimVolume)->load();
-        if (shimVol > 0.001f)
+        const float shimPitchSt  = apvts.getRawParameterValue (IDs::shimPitch)->load();
+        const float pitchRatio   = std::pow (2.f, shimPitchSt / 12.f);
+        // shimSize in milliseconds — same grain length as IR Feed path
+        const int   effGrainLen  = juce::jmax (1, juce::roundToInt (
+                                     apvts.getRawParameterValue (IDs::shimSize)->load()
+                                     * (float)currentSampleRate / 1000.f));
+        const int   delaySamps   = juce::roundToInt (
+                                     apvts.getRawParameterValue (IDs::shimDelay)->load()
+                                     * (float)currentSampleRate / 1000.f);
+
+        if (numSamples > shimFeedbackBuf.getNumSamples())
+            shimFeedbackBuf.setSize (2, numSamples, false, true, true);
+
+        auto hannW = [](float p) -> float {
+            return 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * p);
+        };
+
+        for (int ch = 0; ch < numChannels; ++ch)
         {
-            const float shimPitchSt = apvts.getRawParameterValue (IDs::shimPitch)->load();
-            const float pitchRatio  = std::pow (2.f, shimPitchSt / 12.f);
-            const int   effGrainLen = juce::roundToInt (kShimGrainLen *
-                                        apvts.getRawParameterValue (IDs::shimSize)->load());
+            auto& v          = shimVoicesVol[ch];
+            const float* wet = buffer.getReadPointer (ch);
+            float*       fb  = shimFeedbackBuf.getWritePointer (ch);
 
-            const float cutoffHz = 2000.f + apvts.getRawParameterValue (IDs::shimColour)->load() * 18000.f;
-            const float lpAlpha  = 1.f - std::exp (-juce::MathConstants<float>::twoPi * cutoffHz
-                                                   / (float)currentSampleRate);
-
-            if (numSamples > shimBufferVol.getNumSamples())
-                shimBufferVol.setSize (2, numSamples, false, true, true);
-
-            auto hannW = [](float p) -> float {
-                return 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * p);
-            };
-
-            for (int ch = 0; ch < numChannels; ++ch)
+            for (int i = 0; i < numSamples; ++i)
             {
-                auto& v            = shimVoicesVol[ch];
-                const float* wet   = buffer.getReadPointer (ch);
-                float*       shimV = shimBufferVol.getWritePointer (ch);
+                v.grainBuf[(size_t)v.writePtr] = wet[i];
 
-                for (int i = 0; i < numSamples; ++i)
+                auto readAt = [&](float rp) -> float {
+                    int   ri   = ((int)std::floor (rp) % kShimBufLen + kShimBufLen) % kShimBufLen;
+                    float frac = rp - std::floor (rp);
+                    return v.grainBuf[(size_t)ri]                       * (1.f - frac)
+                         + v.grainBuf[(size_t)((ri + 1) % kShimBufLen)] * frac;
+                };
+
+                float out = (readAt (v.readPtrA) * hannW (v.grainPhaseA)
+                           + readAt (v.readPtrB) * hannW (v.grainPhaseB)) * 0.5f;
+
+                // Soft-clip to prevent runaway loop gain
+                fb[i] = std::tanh (out);
+
+                v.readPtrA    += pitchRatio;
+                v.readPtrB    += pitchRatio;
+                v.grainPhaseA += pitchRatio / (float)effGrainLen;
+                v.grainPhaseB += pitchRatio / (float)effGrainLen;
+
+                if (v.readPtrA >= (float)kShimBufLen) v.readPtrA -= (float)kShimBufLen;
+                if (v.readPtrB >= (float)kShimBufLen) v.readPtrB -= (float)kShimBufLen;
+
+                const int resetOffset = effGrainLen + delaySamps;
+                if (v.grainPhaseA >= 1.f)
                 {
-                    v.grainBuf[(size_t)v.writePtr] = wet[i];
-
-                    auto readAt = [&](float rp) -> float {
-                        int   ri   = ((int)std::floor (rp) % kShimBufLen + kShimBufLen) % kShimBufLen;
-                        float frac = rp - std::floor (rp);
-                        return v.grainBuf[(size_t)ri]                       * (1.f - frac)
-                             + v.grainBuf[(size_t)((ri + 1) % kShimBufLen)] * frac;
-                    };
-
-                    float out = (readAt (v.readPtrA) * hannW (v.grainPhaseA)
-                               + readAt (v.readPtrB) * hannW (v.grainPhaseB)) * 0.5f;
-
-                    shimColourStateVol[ch] += lpAlpha * (out - shimColourStateVol[ch]);
-                    out = shimColourStateVol[ch];
-
-                    shimV[i] = out;
-
-                    v.readPtrA    += pitchRatio;
-                    v.readPtrB    += pitchRatio;
-                    v.grainPhaseA += pitchRatio / (float)effGrainLen;
-                    v.grainPhaseB += pitchRatio / (float)effGrainLen;
-
-                    if (v.readPtrA >= (float)kShimBufLen) v.readPtrA -= (float)kShimBufLen;
-                    if (v.readPtrB >= (float)kShimBufLen) v.readPtrB -= (float)kShimBufLen;
-
-                    if (v.grainPhaseA >= 1.f)
-                    {
-                        v.grainPhaseA -= 1.f;
-                        v.readPtrA = (float)((v.writePtr - effGrainLen + kShimBufLen) % kShimBufLen);
-                    }
-                    if (v.grainPhaseB >= 1.f)
-                    {
-                        v.grainPhaseB -= 1.f;
-                        v.readPtrB = (float)((v.writePtr - effGrainLen + kShimBufLen) % kShimBufLen);
-                    }
-
-                    v.writePtr = (v.writePtr + 1) % kShimBufLen;
+                    v.grainPhaseA -= 1.f;
+                    v.readPtrA = (float)((v.writePtr - resetOffset + kShimBufLen * 2) % kShimBufLen);
                 }
+                if (v.grainPhaseB >= 1.f)
+                {
+                    v.grainPhaseB -= 1.f;
+                    v.readPtrB = (float)((v.writePtr - resetOffset + kShimBufLen * 2) % kShimBufLen);
+                }
+
+                v.writePtr = (v.writePtr + 1) % kShimBufLen;
             }
         }
-        else
+        // ── Peak ceiling: keep shimFeedbackBuf below a safe level so the
+        // loop gain (shimFb × grain_gain≈0.5 × IR_gain) stays < 1.
+        // Without this, IRs with significant gain (e.g. synth IRs with the
+        // built-in +15 dB boost) push the loop above unity and every pitch
+        // rise stacks more energy than the previous one.
+        // kFbCeiling=0.35 keeps the loop stable for IR gains up to ~8×.
         {
-            shimBufferVol.clear();
+            static constexpr float kFbCeiling = 0.35f;
+            float fbPeak = 0.f;
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                const float* fb = shimFeedbackBuf.getReadPointer (ch);
+                for (int i = 0; i < numSamples; ++i)
+                    fbPeak = juce::jmax (fbPeak, std::abs (fb[i]));
+            }
+            if (fbPeak > kFbCeiling)
+                shimFeedbackBuf.applyGain (kFbCeiling / fbPeak);
         }
+
+        shimFeedbackLastBlockSize = numSamples;
     }
     else
     {
-        shimBufferVol.clear();
+        shimFeedbackBuf.clear();
+        shimFeedbackLastBlockSize = 0;
     }
 
     // Wet output gain (boost/cut the whole wet signal, like input gain for output)
@@ -1310,24 +1408,9 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         }
     }
 
-    // ——————————————————————————————————————————————————————————————————
-    // Shimmer Volume: pitch-shifted WET output added post-blend, independent
-    // of dry/wet. shimBufferVol was written from the post-conv wet signal above.
-    // ——————————————————————————————————————————————————————————————————
-    if (apvts.getRawParameterValue (IDs::shimOn)->load() > 0.5f)
-    {
-        const float shimVol = apvts.getRawParameterValue (IDs::shimVolume)->load();
-        if (shimVol > 0.f && numSamples <= shimBufferVol.getNumSamples())
-        {
-            for (int ch = 0; ch < numChannels; ++ch)
-            {
-                float*       data  = buffer.getWritePointer (ch);
-                const float* shimV = shimBufferVol.getReadPointer (ch);
-                for (int i = 0; i < numSamples; ++i)
-                    data[i] += shimV[i] * shimVol;
-            }
-        }
-    }
+    // (shimVolume direct-output path removed — shimmer output now flows exclusively
+    //  through the feedback loop: post-conv wet → pitch-shift → shimFeedbackBuf
+    //  → next block's convolver input × shimFeedback.)
 
     // Output level metering
     float peakL = 0.0f, peakR = 0.0f;

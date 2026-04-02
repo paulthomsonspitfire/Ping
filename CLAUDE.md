@@ -214,10 +214,10 @@ Single **"Bloom hybrid"** group: SIZE, FEEDBACK, TIME, IR FEED, VOLUME, power-bu
 All right-side rows share `placeRightRowKnob` / `placeR3Knob` lambdas. Knobs are placed right-to-left from `rightRowEdge = b.getRight() - 5` (5 px inset from the content-area right edge): `cx = rightRowEdge - (4 - idx) * rowStep - rowKnobSize / 2`. The rightmost knob's right edge aligns with `rightRowEdge`.
 
 **Row R1 — Cloud multi-LFO (5 knobs + 1 switch)** — vertically aligned with Row 1 (`rowY`).
-Single **"Clouds post convolution"** group: SCATTER, DENSITY, SIZE, IR FEED, VOLUME, power-button switch `cloudOnButton`. Group header Y = `topKnobRow.getY() - 10 - rowShiftUp`. Group header bounds: `cloudGroupBounds`.
+Single **"Clouds post convolution"** group: WIDTH, DENSITY, LENGTH, FEEDBACK, IR FEED, power-button switch `cloudOnButton`. Group header Y = `topKnobRow.getY() - 10 - rowShiftUp`. Group header bounds: `cloudGroupBounds`.
 
 **Row R2 — Shimmer (5 knobs + 1 switch)** — vertically aligned with Row 2 (`row2KnobY`).
-Single **"Shimmer"** group: PITCH, GRAIN, COLOUR, IR FEED, VOLUME, power-button switch `shimOnButton`. Group header Y = `row2AbsY - rowShiftUp`. Group header bounds: `shimGroupBounds`.
+Single **"Shimmer"** group: PITCH, LENGTH, DELAY, IR FEED, FEEDBACK, power-button switch `shimOnButton`. Group header Y = `row2AbsY - rowShiftUp`. Group header bounds: `shimGroupBounds`.
 
 **Row R3 — Tail AM mod + Tail Frq mod (5 knobs, no switch)** — vertically aligned with Row 3 (`row3KnobY`).
 A 5 px extra gap before index 2 splits into two groups (mirroring the IR Input / IR Controls split):
@@ -457,17 +457,19 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `bloomIRFeed` | Bloom IR Feed | 0–1 | 0 |
 | `bloomVolume` | Bloom Volume | 0–1 | 0 |
 | `cloudOn` | Cloud On | bool | false |
-| `cloudDepth` | Cloud Scatter (UI: SCATTER) | 0–1 | 0.3 |
+| `cloudDepth` | Cloud Width (UI: WIDTH) | 0–1 | 0.3 |
 | `cloudRate` | Cloud Density (UI: DENSITY) | 0.1–4.0 | 1.0 |
-| `cloudSize` | Cloud Size (ms) | 1–40 | 5.0 |
-| `cloudVolume` | Cloud Volume | 0–1 | 0 |
-| `cloudIRFeed` | Cloud IR Feed | 0–1 | 0 |
+| `cloudSize` | Cloud Length (UI: LENGTH) | 25–1000 ms | 200 ms |
+| `cloudVolume` | Cloud Volume (unused — reserved) | 0–1 | 0 |
+| `cloudFeedback` | Cloud Feedback (UI: FEEDBACK) | 0–0.7 | 0.3 |
+| `cloudIRFeed` | Cloud IR Feed (UI: IR FEED) | 0–1 | 0.5 |
 | `shimOn` | Shimmer On | bool | false |
-| `shimPitch` | Shimmer Pitch | −24–+24 semitones (integer steps) | +12 |
-| `shimSize` | Shimmer Grain (UI: GRAIN) | 0.5–4.0 | 1.0 |
-| `shimColour` | Shimmer Colour | 0–1 | 0.7 |
+| `shimPitch` | Shimmer Pitch | −24–+24 semitones (integer steps) | +7 |
+| `shimSize` | Shimmer Length (ms) | 50–500 | 200 |
+| `shimDelay` | Shimmer Delay (ms) | 0–1000 | 0 |
 | `shimIRFeed` | Shimmer IR Feed | 0–1 | 0.5 |
-| `shimVolume` | Shimmer Volume | 0–1 | 0 |
+| `shimVolume` | Shimmer Volume (unused — reserved) | 0–1 | 0 |
+| `shimFeedback` | Shimmer Feedback | 0–0.7 | 0.3 |
 | `reversetrim` | Reverse Trim | 0–0.95 | 0 |
 | `b3freq/b3gain/b3q` | Low Shelf EQ | 20–1200 Hz / ±12 dB / slope 0.3–2.0 | 200 Hz, 0 dB, 0.707 |
 | `b0freq/b0gain/b0q` | Peak 1 EQ | 50–16k Hz / ±12 dB / Q 0.3–10 | 400 Hz, 0 dB, 0.707 |
@@ -510,13 +512,18 @@ Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix +
   │   feedback tap: bloomFbBufs[ch][wp] = cascade output (NOT wet signal) — written here, same sample loop
   │
   ▼
-[Cloud Insertion 1: previous block's cloudBuffer × cloudIRFeed injected into main signal]  (if cloudOn && cloudIRFeed > 0)
-  │   1-block deferred: cloudBuffer written at Insertion 2, read here next block
+[Cloud Granular: previous block's cloudBuffer × cloudIRFeed injected into main signal]  (if cloudOn && cloudIRFeed > 0)
+  │   1-block deferred: cloudBuffer written at Cloud block, read here next block
   │
   ▼
-[Shimmer IR Feed: reads pre-conv dry signal, pitch-shifts (shimVoices), injects × shimIRFeed into convolver input]  (if shimOn)
-  │   shimBuffer ← grain output × shimColour LP (same-block bridge — IR Feed path only)
-  │   Architecture: dry → pitch-shift → convolver → wet (one-way, no feedback loop)
+[Shimmer IR Feed: reads pre-conv dry signal, pitch-shifts (shimVoices) with delay offset, injects × shimIRFeed]  (if shimOn)
+  │   shimBuffer ← grain output (same-block bridge — IR Feed path only)
+  │   Architecture: dry → pitch-shift → convolver → wet (one-way, no feedback loop for IR Feed)
+  │
+  ▼
+[Shimmer Feedback inject: shimFeedbackBuf × shimFeedback added to main signal]  (if shimOn && shimFeedback > 0)
+  │   Injected AFTER shimVoices so feedback is never double-pitched through shimVoices
+  │   cross-block: shimFeedbackBuf written post-conv, injected here next block
   │
   ▼
 Convolution  ── see "Convolution modes" below
@@ -537,12 +544,14 @@ Stereo Width (M/S: S × width)
 Tail Chorus Modulation (optional — variable delay ±depthMs, skipped for ER-only IRs)
   │
   ▼
-[Cloud Insertion 2: 8-line LFO delay bank on wet signal]  (if cloudOn)
-  │   cloudBuffer ← lineSum/8; wet signal += cloudBuffer × cloudVolume (if cloudVolume > 0)
-  │   LFO phases advanced per-sample; R channel uses π phase offset for decorrelation
+[Cloud Granular: 3-s capture buffer + random grain playback, stores cloudBuffer]  (if cloudOn)
+  │   cloudBuffer stores grain output; cloudBuffer × cloudIRFeed injected Insertion 1 next block
+  │   cloudFeedback mixes previous grain output back into capture buffer each sample
   │
   ▼
-[Shimmer Volume path: reads post-conv wet signal, pitch-shifts (shimVoicesVol), stores shimBufferVol]  (if shimOn && shimVolume > 0)
+[Shimmer Feedback capture: post-conv wet → pitch-shift (shimVoicesVol) → tanh → peak ceiling (kFbCeiling=0.35) → shimFeedbackBuf]  (if shimOn)
+  │   cross-block: shimFeedbackBuf injected × shimFeedback into convolver next block
+  │   Loop: wet → pitch-shift (+N st) → convolver → wet (stacks pitch each pass)
   │
   ▼
 Output Gain (dB, smoothed)
@@ -555,12 +564,6 @@ Dry/Wet blend: out = wet × √(mix) + dry × √(1−mix)   [constant-power cro
   │
   ▼
 [Bloom Volume: bloomBuffer × bloomVolume added here]  (if bloomOn — independent of dry/wet control)
-  │
-  ▼
-[Cloud Volume: cloudBuffer × cloudVolume added here]  (if cloudOn — independent of dry/wet control)
-  │
-  ▼
-[Shimmer Volume: shimBufferVol × shimVolume added here]  (if shimOn — pitch-shifted wet, independent of dry/wet)
   │
   ▼
 Output (stereo) + L/R peak meter update
@@ -709,73 +712,89 @@ Immediately after Row 3 (Plate), same `rowKnobSize`/`rowStep`/`rowStartX` consta
 
 ---
 
-## Cloud Multi-LFO (Feature 3 — implemented)
+## Cloud Granular Delay (Feature 3 — implemented)
 
 ### What it does
 
-Eight independently-paced LFO-modulated delay lines applied to the wet reverb tail, after Tail Chorus. Each line animates the tail with subtle pitch and time variation; together they produce a shimmering, living quality — widening and enlivening long reverb tails without discrete echoes. The R channel uses a π phase offset on all LFO phases for free stereo decorrelation.
+A granular delay effect that captures a 3-second window of the input and plays back randomised grains from it. DENSITY controls only spawn interval: at low density grains are sparse (500–1000 ms apart), producing slowly evolving textures; at high density grains are rapid (10–50 ms apart), producing a dense, rhythmic cloud. LENGTH sets grain length directly in ms (25–1000 ms), independently of DENSITY. WIDTH controls stereo spread by routing grains to the opposite channel and enabling random reverse playback. FEEDBACK mixes the previous grain output back into the capture buffer, causing the granular texture to self-reinforce. IR FEED sends the grain output into the convolver so it gets reverberated.
 
-Unlike Plate (pre-conv diffusion) and Bloom (pre-conv feedback texture), Cloud is purely post-convolution. It does not have its own feedback loop — any "re-reverberation" effect must flow through the convolver via `cloudIRFeed`.
+Unlike the original LFO delay-line design, Cloud is now a pre-convolution granular source. It has no post-convolution insertion point.
 
-### Architecture — post-convolution tail animator
+### Architecture — pre-convolution granular source with deferred IR feed
 
 Cloud runs in two insertion points within `processBlock`:
 
-- **Cloud Insertion 1** (pre-convolution, before the convolver block): Reads `cloudBuffer` from the *previous* block and injects it × `cloudIRFeed` into the main signal before convolution. This implements a 1-block deferred IR feed — necessary because Cloud runs post-convolution but its output needs to enter the convolver.
-- **Cloud Insertion 2** (post-Tail Chorus, before Output Gain): Runs the 8-line LFO delay bank on the current wet signal. Stores `lineSum / 8` in `cloudBuffer` (the bridge to Insertion 1 next block). Adds `cloudBuffer × cloudVolume` to the wet signal if volume > 0.
+- **Cloud Insertion 1** (pre-convolution, before the convolver block): Reads `cloudBuffer` from the *previous* block and injects it × `cloudIRFeed` into the main signal before convolution. This 1-block-deferred feed is necessary because Cloud writes `cloudBuffer` during its main block (which runs before the convolver), but the convolver has already run for the current block by the time Cloud finishes.
+- **Cloud main block** (before Shimmer, before convolver): Per-sample: writes dry input + `cloudFeedback × cloudFbSamples[ch]` into a 3-second circular capture buffer; spawns grains (spawn interval driven by DENSITY, grain length set directly by LENGTH); advances active grains, accumulating output into `cloudBuffer`. WIDTH probability routes grains across channels and enables random reverse playback. `cloudFbSamples[ch]` updated to current grain output at end of each sample.
 
-`cloudBuffer` is a persistent member variable that naturally bridges the two blocks. No separate deferred-write buffer is needed.
+`cloudBuffer` is a persistent member variable that bridges the two blocks. `cloudFbSamples[2]` persists across blocks so feedback never resets.
 
-### LFO rate design
+### DENSITY → spawn interval; LENGTH → grain length
 
-Geometric spacing: `r_i = 0.04 × k^i` Hz where `k = pow(0.35/0.04, 1/(kNumCloudLines-1)) ≈ 1.3165`, giving 8 lines from 0.04 Hz to 0.35 Hz. This ensures no two lines share a rational beat frequency (same principle as the FDN LFO spacing). LFO phases are staggered at `i × π/4` on initialisation.
+DENSITY (`cloudRate`, 0.1–4.0) is normalised to `t = (crate − 0.1) / (4.0 − 0.1)` and controls **only** spawn interval:
+- Spawn interval window: `500 × (1−t) + 10 × t` to `1000 × (1−t) + 50 × t` ms
+
+At t=0 (min density): grains spawn every 500–1000 ms (sparse). At t=1 (max density): grains spawn every 10–50 ms (dense).
+
+LENGTH (`cloudSize`, 25–1000 ms, default 200 ms) sets grain length directly in ms, entirely independent of DENSITY. All grains within a block use the same length (no randomisation around the LENGTH value — variation comes from random read positions and randomised spawn timing).
 
 ### DSP state (`PluginProcessor.h`)
 
 ```cpp
-static constexpr int   kNumCloudLines    = 8;
-static constexpr float kCloudBaseDepthMs = 3.0f;
-static constexpr float kCloudSizeMaxMs   = 40.0f;
-static constexpr float kCloudBufMs       = 45.0f;  // sizeMax + depthMax + 2 ms margin
+static constexpr int kNumCloudLines       = 8;   // retained for LFO array sizing; cloud grains use a different model
+static constexpr float kCloudCaptureBufMs = 3000.0f;  // 3-second capture buffer
 
-std::array<std::array<std::vector<float>, kNumCloudLines>, 2> cloudBufs;       // [ch][line]
-std::array<std::array<int,               kNumCloudLines>, 2> cloudWritePtrs {};
-std::array<float, kNumCloudLines> cloudLfoPhases    {};
-std::array<float, kNumCloudLines> cloudLfoBaseRates {};
-juce::AudioBuffer<float> cloudBuffer;     // bridge: Insertion 2 → Insertion 1 (next block)
-int                      cloudLastBlockSize = 0;
+struct CloudGrain {
+    int   startPos   = 0;
+    int   length     = 0;
+    int   pos        = 0;
+    bool  active     = false;
+    bool  reverse    = false;
+    int   srcCh      = -1;   // -1=same ch, 0=L-only, 1=R-only
+};
+
+std::array<std::vector<float>, 2>       cloudCaptureBufs;   // [ch] 3-s circular capture
+std::array<int, 2>                      cloudCaptureWrPtrs {};
+std::array<std::array<CloudGrain, 8>, 2> cloudGrains;       // [ch][grain] up to 8 simultaneous
+std::array<float, 2>                    cloudFbSamples { 0.f, 0.f };  // per-sample feedback state
+int                                     cloudCurrentSpawnIntervalSamps = 0;
+int                                     cloudSpawnCountdown = 0;
+juce::AudioBuffer<float>                cloudBuffer;      // bridge: Cloud block → Insertion 1 (next block)
+int                                     cloudLastBlockSize = 0;
+uint32_t                                cloudRng = 12345u; // LCG state
 ```
 
 ### `prepareToPlay`
 
-Buffer size = `ceil(45.0 × sampleRate / 1000)` samples per line per channel (covers full `cloudSize` + `cloudDepth` range). Geometric LFO rates computed once. Phases staggered at `i × π/4`. `cloudBuffer` sized to `(2, samplesPerBlock)` and cleared.
+Capture buffer sized to `ceil(3000 × sampleRate / 1000)` samples per channel. All grain structs reset (`active = false`). `cloudBuffer` sized to `(2, samplesPerBlock)` and cleared. `cloudFbSamples` filled to 0. `cloudCurrentSpawnIntervalSamps` and `cloudSpawnCountdown` reset to 0.
 
 ### `processBlock` details
 
-**Insertion 1** reads `cloudBuffer` (from previous block, `cloudLastBlockSize` samples) and adds `× cloudIRFeed` to the main input buffer before the convolver. On the first block, `cloudBuffer` is zeroed and has no effect.
+**Insertion 1** (before Cloud main block) reads `cloudBuffer` from previous block and injects `× cloudIRFeed` into the main input signal before the convolver.
 
-**Insertion 2** iterates per-sample:
-- Each LFO phase advances by `baseRate × cloudRate / sampleRate` (2π radians per cycle normalised).
-- Modulation depth per line = `cloudDepth × kCloudBaseDepthMs × sampleRate / 1000` samples.
-- Read position = `writePtr - cloudSize_samples - depth × sin(phase)`, with linear interpolation.
-- R channel: same rates/depths but `phase + π` for decorrelation.
-- `lineSum` averages all 8 lines; `cloudBuffer[ch][i] = lineSum / 8`.
-- If `cloudVolume > 0`: wet signal += `cloudBuffer[ch][i] × cloudVolume`.
+**Cloud main block** per-sample:
+1. Write `dry[ch] + cloudFeedback × cloudFbSamples[ch]` into the capture buffer.
+2. Decrement `cloudSpawnCountdown`; when ≤ 0 spawn a new grain: pick random length from the density-derived window, random start position behind write head, random reverse flag (probability driven by WIDTH), random srcCh (probability driven by WIDTH). Reset countdown to a new random spawn interval from the density-derived window.
+3. For each active grain: compute read position (forward or reverse), linear-interpolate from the source channel's capture buffer (srcCh selects cross-channel sampling), apply Hann window, accumulate into `cloudBuffer[ch][i]`. Advance grain position; mark inactive on completion.
+4. Update `cloudFbSamples[ch] = cloudBuffer[ch][i]` (normalised by number of active grains).
 
 ### Controls
 
 | Parameter ID | Range | Default | Effect |
 |---|---|---|---|
 | `cloudOn` | bool | false | Enables Cloud; zero overhead when off |
-| `cloudDepth` | 0–1 | 0.3 | LFO modulation depth — scales `kCloudBaseDepthMs` (3 ms). At 0: static delay (no shimmer). At 1: ±3 ms swing. Readout shows 0.00–1.00. |
-| `cloudRate` | 0.1–4.0 | 1.0 | Global rate multiplier applied to all 8 geometric LFO rates. At 1.0: lines span 0.04–0.35 Hz. At 4.0: 0.16–1.4 Hz (faster shimmer). Readout shows multiplier (e.g. "1.00×"). |
-| `cloudSize` | 1–40 ms | 5.0 ms | Base delay time shared by all 8 lines. Longer = more spacious, more pitched. Shorter = subtle smear. Readout shows ms (1 decimal). |
-| `cloudVolume` | 0–1 | 0 | Adds `cloudBuffer × cloudVolume` to the wet signal at Insertion 2. Audible at any dry/wet setting. Default 0 = no direct output until user raises it. |
-| `cloudIRFeed` | 0–1 | 0 | Injects previous-block `cloudBuffer × cloudIRFeed` into the convolver input (Insertion 1). Creates a "re-reverberated shimmer" — the Cloud output gets convolved again. Loop gain = `cloudIRFeed × convolver_gain` stays < 1 for real room IRs. Default 0 = no feed. |
+| `cloudDepth` | 0–1 | 0 | WIDTH — stereo spread probability. At 0: grains always read from same channel. At 1: maximum cross-channel sampling and reverse probability. UI label: WIDTH. |
+| `cloudRate` | 0.1–4.0 | 1.0 | DENSITY — controls spawn interval only via normalised t. Low = sparse (500–1000 ms apart); high = dense (10–50 ms apart). |
+| `cloudSize` | 25–1000 ms | 200 ms | LENGTH — grain length in ms, independent of DENSITY. All grains use this length directly. |
+| `cloudFeedback` | 0–0.7 | 0 | FEEDBACK — mixes previous grain output back into capture buffer each sample. Safety-clamped at 0.7. Creates self-reinforcing, accumulating granular texture. |
+| `cloudIRFeed` | 0–1 | 0 | IR FEED — injects `cloudBuffer × cloudIRFeed` into the convolver input (1-block deferred). Sends the granular output through the reverb. |
+| `cloudVolume` | 0–1 | 0 | Reserved / unused — the old direct dry-output path has been removed. VOLUME slot is now occupied by IR FEED in the UI. |
 
-### UI layout (Row 5 — "Cloud multi-LFO")
+### UI layout (Row R1 — "Clouds post convolution")
 
-Immediately after Row 4 (Bloom), same `rowKnobSize`/`rowStep`/`rowStartX` constants. Single group "Clouds post convolution" with 5 knobs (DEPTH, RATE, SIZE, VOLUME, IR FEED) + pill switch (`cloudOnButton`, component ID `CloudSwitch`) right-aligned in the group header. Group header bounds stored as `cloudGroupBounds`. Editor height bumped from 672 → **744 px**. Row 5 uses `row5AbsY = row4AbsY + row4TotalH_` (absolute anchor). The 6-knob grid (LFO Depth/Width/etc.) is now anchored at `row5AbsY + row5TotalH_ + 70`.
+Right-side Row R1 (aligned with left-side Row 1). Same `rowKnobSize`/`rowStep` constants. Single group "Clouds post convolution" with 5 knobs: WIDTH (`cloudDepthSlider`), DENSITY (`cloudRateSlider`), LENGTH (`cloudSizeSlider`), FEEDBACK (`cloudIRFeedSlider` — attached to `cloudFeedback`), IR FEED (`cloudVolumeSlider` — attached to `cloudIRFeed`). Power-button switch `cloudOnButton` (component ID `CloudSwitch`) right-aligned in the group header. Group header bounds stored as `cloudGroupBounds`.
+
+**Attachment remapping:** `cloudIRFeedSlider` / `cloudIRFeedAttach` are bound to `"cloudFeedback"` (UI slot 4 = FEEDBACK). `cloudVolumeSlider` / `cloudVolumeAttach` are bound to `"cloudIRFeed"` (UI slot 5 = IR FEED). The original VOLUME parameter (`cloudVolume`) has no knob; its APVTS entry is kept for preset backward-compatibility but has no UI attachment.
 
 ---
 
@@ -783,29 +802,31 @@ Immediately after Row 4 (Bloom), same `rowKnobSize`/`rowStep`/`rowStartX` consta
 
 ### What it does
 
-A two-grain Hann-windowed pitch shifter with two independent signal paths. `shimIRFeed` injects pitch-shifted dry signal one-way into the convolver (classic Lexicon shimmer: dry → pitch-shift → reverb), inherently stable with any IR. `shimVolume` adds pitch-shifted wet signal directly to the output after the dry/wet blend (pitch-shifted reverb tail in parallel). A 1-pole lowpass (`shimColour`) controls warmth on both paths. Unlike Bloom and Cloud, `shimIRFeed` defaults to **0.5** — the effect is immediately audible when enabled.
+A Lexicon 480-style infinite shimmer with two signal paths. `shimIRFeed` injects pitch-shifted dry signal one-way into the convolver (classic Lexicon shimmer: dry → pitch-shift → reverb), inherently stable with any IR. `shimFeedback` creates the infinite shimmer loop: post-conv wet signal is pitch-shifted and injected back into the convolver on the next block, stacking pitch by +N semitones each pass through the loop. LENGTH sets the grain length directly in milliseconds (50–500 ms) — larger grains give smoother, more sustained pitch with less smearing. DELAY offsets the grain read start further behind the write head, introducing a time gap before the shimmer octave appears.
+
+Unlike the original design, the `shimVolume` direct-output path has been removed. Shimmer output flows exclusively through the two loop paths: `shimIRFeed` (same-block, one-way) and `shimFeedback` (cross-block, looping). `shimIRFeed` defaults to **0.5** — the effect is immediately audible when enabled.
 
 ### Architecture
 
-Unlike Cloud, both `shimBuffer` and `shimBufferVol` are **same-block bridges**: written and consumed within the same `processBlock` call. No cross-block state. No feedback loops in either path.
+Two independent signal paths:
 
-Two independent signal paths, each with its own grain voices:
+- **Pre-conv Shimmer IR Feed block** (before convolver): reads the **clean pre-conv dry signal** using `shimVoices`, stores in `shimBuffer`. Injects `shimBuffer × shimIRFeed` into the convolver input (same-block, one-way: dry → pitch-shift → reverb). No feedback loop on this path.
+- **Shimmer Feedback inject** (immediately after IR Feed, still pre-conv): injects `shimFeedbackBuf × shimFeedback` into the convolver input. Deliberately placed *after* shimVoices so the feedback signal is never pitch-shifted a second time by shimVoices.
+- **Post-conv Shimmer Feedback capture** (after Tail Chorus / Cloud granular block, before Output Gain): reads the fully-processed post-conv wet signal using `shimVoicesVol`, applies tanh soft-saturation per-sample, then applies a block-level peak ceiling (`kFbCeiling = 0.35f`) to guarantee loop stability regardless of IR gain. Stores result in `shimFeedbackBuf`. This is a **cross-block bridge**: the next block injects `shimFeedbackBuf × shimFeedback` into the convolver input after shimVoices runs. Loop: wet → pitch-shift (+N st) → convolver → wet → pitch-shift again (each pass adds N more semitones — stacked octaves with 1 block latency).
 
-- **Pre-conv Shimmer block** (after Cloud Insertion 1, before convolver): reads the pre-convolution dry signal using `shimVoices`, applies `shimColour` 1-pole LP (`shimColourState`), stores in `shimBuffer`. Injects `shimBuffer × shimIRFeed` into the convolver input (one-way: dry → pitch-shift → reverb).
-- **Post-conv Shimmer Volume block** (after tail chorus, before output gain): reads the fully-processed post-conv wet signal using `shimVoicesVol`, applies `shimColour` 1-pole LP (`shimColourStateVol`), stores in `shimBufferVol`. Only runs when `shimVolume > 0`.
-- **Post-blend Shimmer Volume** (after dry/wet blend, alongside bloomVolume and cloudVolume): adds `shimBufferVol × shimVolume` to the final output. This is the pitch-shifted reverb tail — independent of dry/wet.
+`shimBuffer` is a same-block bridge (written and read within one processBlock). `shimFeedbackBuf` is a cross-block bridge (written post-conv, injected pre-conv next block).
 
 ### Grain engine
 
-Two grains offset by half a grain length (phase 0 and 0.5), Hann windowed, summed and normalised by 0.5. Read pointer advances `pitchRatio` samples per input sample. On phase rollover the read head is snapped to `writePtr − effGrainLen` (one full grain behind the write head), ensuring it always reads real signal rather than zeroes. This is the exact spec verified by DSP_07–DSP_09.
+Two grains offset by half a grain length (phase 0 and 0.5), Hann windowed, summed and normalised by 0.5. Read pointer advances `pitchRatio` samples per input sample. On phase rollover the read head is snapped to `writePtr − effGrainLen − delaySamps` (grain length + delay offset behind the write head). This is the spec verified by DSP_07–DSP_09, extended with the `delaySamps` offset.
 
-`effGrainLen = round(kShimGrainLen × shimSize)`. Buffer allocation is fixed at `kShimBufLen = 8192` — no reallocation needed at runtime.
+`effGrainLen = round(shimSize_ms × sampleRate / 1000)`. Buffer allocation is fixed at `kShimBufLen = 131072` (2.73 s at 48 kHz) — covers max grain (500 ms) + max delay (1000 ms) with headroom.
 
 ### DSP state (`PluginProcessor.h`)
 
 ```cpp
-static constexpr int kShimGrainLen = 512;
-static constexpr int kShimBufLen   = 8192;
+static constexpr int kShimGrainLen = 9600;    // default 200 ms at 48 kHz (legacy; not used in DSP — shimSize param is in ms)
+static constexpr int kShimBufLen   = 131072;  // 2.73 s at 48 kHz — covers max grain (500 ms) + max delay (1000 ms)
 
 struct ShimmerVoice {
     std::vector<float> grainBuf;   // kShimBufLen samples, circular
@@ -816,9 +837,11 @@ struct ShimmerVoice {
     float grainPhaseB = 0.5f;
 };
 
-std::array<ShimmerVoice, 2> shimVoices;
-std::array<float, 2>        shimColourState { 0.f, 0.f };
-juce::AudioBuffer<float>    shimBuffer;
+std::array<ShimmerVoice, 2> shimVoices;       // IR Feed path (pre-conv dry)
+std::array<ShimmerVoice, 2> shimVoicesVol;    // Feedback path (post-conv wet)
+juce::AudioBuffer<float>    shimBuffer;       // same-block bridge: IR Feed grain output
+juce::AudioBuffer<float>    shimFeedbackBuf;  // cross-block bridge: feedback grain output → next block's convolver
+int                         shimFeedbackLastBlockSize = 0;
 int                         shimLastBlockSize = 0;
 ```
 
@@ -827,15 +850,18 @@ int                         shimLastBlockSize = 0;
 | Parameter ID | Range | Default | Effect |
 |---|---|---|---|
 | `shimOn` | bool | false | Enables Shimmer; zero overhead when off |
-| `shimPitch` | −24–+24 st (integer steps) | +12 | Semitone interval for pitch shift. +12 = octave up. Readout: "+12 st". Integer NormalisableRange enforces musical intervals. |
-| `shimSize` | 0.5–4.0 | 1.0 | Scales grain length (effGrainLen = kShimGrainLen × shimSize). Longer = smoother pitch at cost of more smear. Readout: multiplier "1.00×". |
-| `shimColour` | 0–1 | 0.7 | 1-pole LP on shifter output: 0 → 2 kHz (warm/dark), 1 → 20 kHz (full brightness). Readout: cutoff in Hz. |
-| `shimIRFeed` | 0–1 | **0.5** | Injects shimBuffer into convolver input (the pitch-shifted re-reverberation path). Default 0.5 — audible immediately on enable. |
-| `shimVolume` | 0–1 | 0 | Adds shimBuffer directly to wet signal before output gain, independent of dry/wet. |
+| `shimPitch` | −24–+24 st (integer steps) | +7 | Semitone interval for pitch shift. +7 = perfect fifth. Readout: "+7 st". Integer NormalisableRange enforces musical intervals. |
+| `shimSize` | 50–500 ms | 200 ms | LENGTH — grain length in milliseconds. Longer = smoother, more sustained pitch shift with more smear. At 200 ms each grain is ~4.2× longer than the old 512-sample default, giving proper shimmer character. Readout: "200 ms". UI label: LENGTH. |
+| `shimDelay` | 0–1000 ms | 0 ms | Additional offset behind write head when each grain resets: `readPtr = writePtr − effGrainLen − delaySamps`. At 0: grains start immediately behind the write head (minimum latency). At 1000 ms: grains start 1 second further back — the shimmer octave appears 1 second after each note. Readout: "0 ms". UI knob: DELAY (reuses `shimColourSlider`). |
+| `shimIRFeed` | 0–1 | **0.5** | Injects `shimBuffer × shimIRFeed` into the convolver input (same-block, one-way). Default 0.5 — audible immediately on enable. |
+| `shimVolume` | 0–1 | 0 | Reserved / unused — the direct output path has been removed. APVTS entry kept for preset backward-compatibility. |
+| `shimFeedback` | 0–0.7 | 0.3 | Injects `shimFeedbackBuf × shimFeedback` from previous block into convolver input. Creates the infinite loop. Safety-clamped at 0.7; tanh + peak ceiling (`kFbCeiling=0.35`) on shimFeedbackBuf guarantee loop stability regardless of IR gain. UI knob: FEEDBACK (reuses `shimVolumeSlider`). |
 
-### UI layout (Row 6 — "Shimmer")
+### UI layout (Row R2 — "Shimmer")
 
-Immediately after Row 5 (Cloud), same `rowKnobSize`/`rowStep`/`rowStartX` constants. Single group "Shimmer" with 5 knobs (PITCH, SIZE, COLOUR, IR FEED, VOLUME) + pill switch (`shimOnButton`, component ID `ShimmerSwitch`) right-aligned in the group header. Group header bounds stored as `shimGroupBounds`. Editor height bumped from 744 → **816 px**. Row 6 uses `row6AbsY = row5AbsY + row5TotalH_` (absolute anchor). The 6-knob grid (LFO Depth/Width/etc.) is now anchored at `row6AbsY + row6TotalH_ + 70`.
+Right-side Row R2 (aligned with left-side Row 2). Same `rowKnobSize`/`rowStep` constants. Single group "Shimmer" with 5 knobs: PITCH (`shimPitchSlider`), LENGTH (`shimSizeSlider`), DELAY (`shimColourSlider` — attached to `shimDelay`), IR FEED (`shimIRFeedSlider`), FEEDBACK (`shimVolumeSlider` — attached to `shimFeedback`). Power-button switch `shimOnButton` (component ID `ShimmerSwitch`) right-aligned in the group header. Group header bounds stored as `shimGroupBounds`.
+
+**Attachment remapping:** `shimColourSlider` / `shimColourAttach` are bound to `"shimDelay"` (UI slot 3 = DELAY). `shimVolumeSlider` / `shimVolumeAttach` are bound to `"shimFeedback"` (UI slot 5 = FEEDBACK). The original `shimColour` and `shimVolume` APVTS parameters no longer exist; `shimVolume` is retained as a no-op for preset backward-compatibility.
 
 ---
 
@@ -1026,19 +1052,20 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Bloom uses separate L/R prime sets for genuine stereo independence** — L primes `{241, 383, 577, 863, 1297, 1913}` and R primes `{263, 431, 673, 1049, 1531, 2111}` are incommensurate (no shared factors). After several feedback cycles the L and R textures diverge into genuinely different patterns, filling the stereo field without any explicit width/decorrelation DSP. This is the primary source of Bloom's wide stereo character. Do not unify L/R primes or the stereo independence is lost.
 - **Bloom delay range is ~5–40 ms (at size=1.0)** — this is deliberately below the ~30 ms threshold at which allpass delays become audible as discrete echoes. The previous {~39–300 ms} primes were all above this threshold, making the individual taps clearly audible as fragments. At 5–40 ms the allpass stages act as diffusers rather than distinct echoes, producing the "textured swirl" character. `bloomSize` scales linearly — at size=2.0 delays reach ~10–80 ms (more spacious), at size=0.5 ~2.5–20 ms (very dense).
 - **Bloom feedback is safety-clamped at 0.65** — the loop gain is `bloomFeedback` alone (the convolver is no longer in the loop). The clamp provides a hard stability bound independent of IR content or signal level.
-- **Cloud uses a 1-block deferred IR feed via `cloudBuffer`** — Cloud runs post-convolution, but its output needs to reach the convolver input. The bridge is `cloudBuffer` (a member variable): Insertion 2 writes to it; Insertion 1 reads it the following block. This introduces exactly 1 block of latency on the IR feed path, which is inaudible at any normal buffer size. No separate circular deferred-write buffer is needed. `cloudLastBlockSize` tracks the previous block's sample count so Insertion 1 reads exactly the right number of samples.
-- **Cloud `cloudVolume` and `cloudIRFeed` both default to 0** — consistent with Bloom and Plate. Cloud has zero audible effect at defaults even when `cloudOn = true`. Users raise at least one output to hear it.
-- **Cloud `cloudBuffer` bridges Insertion 2 → Insertion 1 across blocks, not within the same block** — unlike `bloomBuffer` which is written and read within the same processBlock call, `cloudBuffer` is written at Insertion 2 and consumed at Insertion 1 of the *next* block. Do not clear `cloudBuffer` at the start of each block — it must survive between blocks.
-- **Cloud LFO rates use geometric spacing (0.04–0.35 Hz)** — same principle as FDN LFO. `k = pow(0.35/0.04, 1/(kNumCloudLines-1)) ≈ 1.3165`. No two lines share a rational beat frequency. LFO phases staggered at `i × π/4`. Do not change to arithmetic spacing.
-- **Cloud R-channel decorrelation uses a π phase offset** — all 8 LFO phases for the R channel are offset by π relative to L. This gives free stereo width without any extra DSP: at any given moment L lines are near their maximum delay excursion when R lines are near minimum, and vice versa. No separate delay line set needed (unlike Bloom which uses separate L/R prime arrays).
-- **Cloud has no self-feedback loop** — unlike Bloom, Cloud's delay lines do not feed back into themselves. The only recirculation path is via `cloudIRFeed` → convolver → wet signal → Cloud Insertion 2. The convolver is inherently attenuating for real room IRs, so loop gain < 1 for any physical IR. Very high-gain IR presets with boosted `outputGain` are the only edge case to be aware of.
-- **Cloud `cloudDepth` scales `kCloudBaseDepthMs = 3.0f`** — the maximum ±3 ms swing was chosen to keep modulation below the ~5 ms threshold where pitch variation becomes audible as vibrato on sustained tones. At `cloudDepth = 0` the delay lines are static (no modulation), which gives a comb-filter character rather than shimmer.
+- **Cloud is a granular delay, not an LFO delay bank** — the original 8-line LFO post-convolution design was replaced with a 3-second granular capture buffer. DENSITY controls only spawn interval (500–1000 ms at low; 10–50 ms at high). LENGTH (`cloudSize`, 25–1000 ms, default 200 ms) sets grain length directly in ms, independent of DENSITY — all grains use the same length with no random variation. WIDTH (`cloudDepth`) controls cross-channel sampling probability and reverse-grain probability. FEEDBACK (`cloudFeedback`, clamped 0–0.7) mixes grain output back into the capture buffer per sample.
+- **Cloud IR FEED uses the old VOLUME knob slot; FEEDBACK uses the old IR FEED slot** — in the UI, `cloudIRFeedSlider` is attached to `"cloudFeedback"` (FEEDBACK) and `cloudVolumeSlider` is attached to `"cloudIRFeed"` (IR FEED). The original `cloudVolume` APVTS entry is retained for backward-compatibility but has no UI attachment or DSP path. Do not swap these attachments back.
+- **Cloud `cloudBuffer` bridges the granular block → Insertion 1 across blocks** — `cloudBuffer` is written during the Cloud main block (pre-convolver) and injected into the next block's convolver input at Insertion 1. Do not clear `cloudBuffer` at the start of each block — it must survive between blocks. `cloudFbSamples[2]` also persists between blocks (per-sample feedback state). `cloudLastBlockSize` tracks the previous block's size for Insertion 1.
+- **Cloud `cloudFbSamples` is per-sample, not per-block** — the feedback state is updated every sample inside the per-sample loop (`cloudFbSamples[ch] = currentGrainOutput`), not at block boundaries. This keeps feedback response immediate and avoids block-sized steps in the captured texture.
+- **Cloud grain reset reads from source channel (WIDTH-driven)** — `srcCh = -1` means read from the same channel as the output; `srcCh = 0` reads exclusively from L; `srcCh = 1` reads exclusively from R. WIDTH probability determines the likelihood of a cross-channel grain. Reverse grains (`reverse = true`) decrement the read position each sample rather than incrementing it.
 - **Width is the only remaining large knob in the bottom grid** — LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3 (aligned with Plate / Row 3). The grid anchor `row6AbsY + row6TotalH_ + 70` is unchanged.
-- **Shimmer uses a same-block bridge, NOT a cross-block deferred bridge** — `shimBuffer` is written pre-convolution and read post-blend within the same `processBlock` call. There is no cross-block state and no `shimLastBlockSize` needed. This is a fundamental architectural difference from Cloud: Shimmer reads the pre-conv dry signal and feeds it forward through the convolver (dry → pitch-shift → convolver → wet), so no feedback loop exists and the effect is stable with any IR. Do NOT revert to a cross-block architecture where shimBuffer is read the following block — that puts the convolver inside a feedback loop and causes runaway feedback with high-gain stereo IRs.
-- **Shimmer grain engine matches DSP_07–DSP_09 exactly** — two grains at phase 0 and 0.5, Hann windowed, read pointer advances `pitchRatio` per sample, grain reset snaps to `writePtr − effGrainLen`. Fixed buffers: `kShimGrainLen = 512`, `kShimBufLen = 8192`. The production code must stay in sync with these test specs.
+- **Shimmer IR Feed is a same-block bridge; Shimmer Feedback is a cross-block bridge** — `shimBuffer` (IR Feed path) is written pre-convolution and injected into the convolver within the same block. `shimFeedbackBuf` (Feedback path) is written post-convolution and injected into the next block's convolver input. Do NOT make `shimBuffer` a cross-block bridge — that would put the convolver inside a feedback loop and cause runaway feedback with high-gain stereo IRs. The feedback loop is deliberately routed through `shimFeedbackBuf`, which has both per-sample tanh saturation and a block-level peak ceiling (`kFbCeiling = 0.35f`) applied before storing. The ceiling is essential: tanh alone only clips the grain output to ±1, but IRs with significant gain (especially synth IRs with the built-in +15 dB boost, effective gain up to ×5.6) push the loop above unity — each pitch-shift pass stacks more energy than it loses and the feedback grows progressively louder. With `kFbCeiling = 0.35`, the maximum injection into the convolver is `0.35 × shimFb_max(0.7) = 0.245`, keeping the loop stable for IR gains up to ~8×.
+- **shimVoices must read the buffer BEFORE shimFeedbackBuf is injected** — the feedback injection must happen AFTER shimVoices processes the dry signal. If the injection is moved before shimVoices, the feedback signal gets pitch-shifted a second time (on top of the shift already applied by shimVoicesVol), creating a compound feedback path. At moderate shimFeedback + shimIRFeed settings, this doubles the pitch-shift rate per loop and causes runaway gain. Correct order: (1) shimVoices reads clean dry → injects × shimIRFeed, (2) shimFeedbackBuf × shimFeedback injected into buffer, (3) convolver, (4) shimVoicesVol captures post-conv wet → tanh → shimFeedbackBuf.
+- **Shimmer LENGTH engine: `shimSize` is direct milliseconds (50–500 ms), UI label LENGTH** — `effGrainLen = round(shimSize_ms × sampleRate / 1000)`. The old `kShimGrainLen = 512` (~10.7 ms) was 20× too short for smooth shimmer and caused chirping artefacts. The 200 ms default gives grains approximately the length expected for classic shimmer (4–5 Hz grain rate = 200–250 ms). `kShimBufLen` is 131072 (2.73 s) to accommodate max grain (500 ms) + max delay (1000 ms). The DSP tests DSP_07–DSP_09 use the old constants — **the production code has diverged from the test specs on these constants** (grain length formula and buffer size are different); the test coverage of the core grain engine logic (two grains, Hann window, phase advancement, grain reset) still applies.
+- **Shimmer grain reset offset includes delay: `writePtr − effGrainLen − delaySamps`** — `shimDelay` (0–1000 ms) adds `delaySamps = shimDelay_ms × sampleRate / 1000` to the reset offset. At 0 ms delay the behaviour matches the original spec (grains start `effGrainLen` behind write head). At larger delays the shimmer octave appears noticeably later after each note attack. The modulo calculation uses `kShimBufLen * 2` to guarantee a positive result when `resetOffset > kShimBufLen`.
+- **`shimColour` parameter removed; replaced with `shimDelay`** — the old 1-pole LP colour filter (`shimColourState`, `shimColourStateVol`) has been completely removed from both grain paths. The UI knob slot (3rd knob, `shimColourSlider`) is now attached to `"shimDelay"` with range 0–1000 ms. The old `shimColour` APVTS entry no longer exists.
+- **Shimmer FEEDBACK knob replaces VOLUME** — `shimVolumeSlider` is attached to `"shimFeedback"` (0–0.7). The old direct-output Volume path (`shimBufferVol`, `shimVolumeAttach` → `"shimVolume"`) has been removed. `shimVolume` APVTS entry is retained for preset backward-compatibility but has no DSP path.
 - **`shimPitch` uses integer NormalisableRange (step=1)** — fractional semitones produce detuned output not aligned to musical intervals. The parameter layout uses `juce::NormalisableRange<float>(-24.f, 24.f, 1.f)`.
 - **`shimIRFeed` defaults to 0.5** — unlike every other IR-feed parameter (Plate, Bloom, Cloud all default to 0), Shimmer defaults to 0.5 so the effect is immediately audible when enabled. This matches expected shimmer plugin UX: you enable it and it shimmers.
-- **`shimColour` is a 1-pole LP applied independently on both grain paths** — cutoff = `2000 + shimColour × 18000` Hz. `shimColourState[ch]` is used by the IR Feed path (`shimVoices`); `shimColourStateVol[ch]` is used by the Volume path (`shimVoicesVol`). Both reset to zero in `prepareToPlay`.
 - **EQ response curve is display-only** — `getResponseAt()` is an approximation. The actual audio uses JUCE biquad coefficients. The two will not match exactly at steep slopes or very high/low frequencies, but are visually representative for a mixing EQ.
 - **EQ knob labels must have `setInterceptsMouseClicks(false, false)`** — JUCE `Label` components default to intercepting mouse events (`setInterceptsMouseClicks(true, true)`). In `EQGraphComponent`, labels are added after sliders and therefore sit in front (higher Z-order). Without the click-through flag, labels silently swallow mouse-down events and the knob beneath never receives them. This applied to all three label types: `knobLabels[b][k]`, `knobReadouts[b][k]`, and `bandNameLabel[b]`. The FREQ readout overlapped the upper portion of the GAIN knob; GAIN readout/label overlapped the Q knob area. Fix: call `setInterceptsMouseClicks(false, false)` on all three label arrays in the `EQGraphComponent` constructor.
 - **Group header title font is 10.0f** — `drawGroupHeader` in `PluginEditor.cpp paint()` uses `g.setFont(juce::FontOptions(10.0f))` (increased from 9.0f). This applies to all group title labels: IR Input, IR Controls, ER Crossfade, Tail Crossfade, Plate pre-diffuser, Bloom hybrid, Clouds post convolution, Shimmer, Tail AM mod, Tail Frq mod, and the IR Preset label. Do not revert to 9.0f.

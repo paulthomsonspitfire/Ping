@@ -160,38 +160,53 @@ private:
     // injection (pre-conv) and the volume injection (post-conv) read the same values.
     juce::AudioBuffer<float> bloomBuffer;
 
-    // ── Cloud Granular Scatter ─────────────────────────────────────────────────
-    // Pre-convolution granular engine. Reads Hann-windowed grains at random
-    // positions in a circular dry-input capture buffer.
-    // cloudIRFeed: one-way injection into the convolver (dry source — no loop back).
-    // cloudVolume: added post-dry/wet blend (like bloomVolume, audible at any wet level).
-    // cloudBuffer is written and read within the same processBlock (no cross-block bridge).
-    static constexpr int   kNumCloudGrains    = 16;    // max simultaneous grain voices
-    static constexpr float kCloudSizeMaxMs    = 40.0f; // grain length UI upper bound
-    static constexpr float kCloudCaptureBufMs = 85.0f; // 2 × sizeMax + margin
+    // ── Cloud Granular Delay ──────────────────────────────────────────────────
+    // Pre-convolution granular delay engine. Reads Hann-windowed grains at
+    // random positions in a 3-second circular capture buffer.
+    //
+    // DENSITY (cloudRate 0.1–4.0) controls grain length and spawn interval:
+    //   Low density → long sparse grains (400–1000 ms, 500–1000 ms apart)
+    //   High density → short dense grains (25–75 ms, 10–50 ms apart)
+    // SIZE (cloudSize 0.25–4.0) is a global multiplier on grain length.
+    // WIDTH (cloudDepth 0–1): stereo spread + probability of reverse grains.
+    // FEEDBACK (cloudFeedback 0–0.7): grain output mixed back into capture.
+    // cloudVolume: added post-dry/wet blend (audible at any wet level).
+    static constexpr int   kNumCloudGrains    = 16;     // max simultaneous grain voices
+    static constexpr float kCloudCaptureBufMs = 3000.0f; // 3 s for longest grains + headroom
 
     struct CloudGrain {
-        float readPos  = 0.f;  // fractional read position in capture buffer
-        int   grainLen = 0;    // grain length in samples
-        float phase    = 1.f;  // 0..1 through grain; ≥ 1.0 = inactive
+        float readPos  = 0.f;   // fractional read position in capture buffer
+        int   grainLen = 0;     // grain length in samples
+        float phase    = 1.f;   // 0..1 through grain; ≥ 1.0 = inactive
+        bool  reverse  = false; // play grain backwards
+        int   srcCh    = -1;    // -1 = normal stereo, 0 = L-only, 1 = R-only
     };
 
-    std::array<std::vector<float>, 2>       cloudCaptureBufs;        // [ch] circular dry input
-    std::array<int, 2>                      cloudCaptureWritePtrs {}; // per-channel write heads
+    std::array<std::vector<float>, 2>       cloudCaptureBufs;         // [ch] circular capture
+    std::array<int, 2>                      cloudCaptureWritePtrs {};  // per-channel write heads
     std::array<CloudGrain, kNumCloudGrains> cloudGrains;
     float                                   cloudSpawnPhase    = 0.f;
-    int                                     cloudNextGrainSlot = 0;   // round-robin index
+    float                                   cloudCurrentSpawnIntervalSamps = 24000.f;
+    int                                     cloudNextGrainSlot = 0;    // round-robin index
     uint32_t                                cloudSpawnSeed     = 12345u;
+    std::array<float, 2>                    cloudFbSamples     { 0.f, 0.f }; // feedback state
 
     // Same-block bridge: written pre-conv, read post-blend.
     juce::AudioBuffer<float> cloudBuffer;
 
     // ── Shimmer ───────────────────────────────────────────────────────────────
-    // Two-grain Hann-windowed pitch shifter applied to the post-convolution wet
-    // signal. shimBuffer bridges Insertion 2 (post-Cloud) → Insertion 1 (next
-    // block, pre-convolver), identical pattern to cloudBuffer.
-    static constexpr int kShimGrainLen = 512;
-    static constexpr int kShimBufLen   = 8192;
+    // Two signal paths:
+    //   shimVoices     — IR Feed: reads pre-conv dry (delayed by shimDelay ms), injects × shimIRFeed
+    //   shimVoicesVol  — Feedback: reads post-conv wet, pitch-shifts, stores in shimFeedbackBuf.
+    //                    shimFeedbackBuf injected × shimFeedback into convolver next block.
+    //                    Loop: wet → pitch-shift (+N st) → convolver → wet (stacks octaves each pass).
+    //
+    // Grain size (shimSize): 50–500 ms — large grains for smooth, stable shimmer
+    // Delay (shimDelay): 0–1000 ms — how far back in the grain buffer to start reading
+    //   (controls how long before the shimmer octave appears after a note)
+    // kShimBufLen must hold: max grain (500 ms) + max delay (1000 ms) + headroom ≈ 2.5 s = 120000
+    static constexpr int kShimGrainLen = 9600;    // default 200 ms at 48 kHz (legacy; not used in DSP)
+    static constexpr int kShimBufLen   = 131072;  // 2.73 s at 48 kHz — covers grain + delay range
 
     struct ShimmerVoice {
         std::vector<float> grainBuf;   // kShimBufLen samples, circular
@@ -202,12 +217,11 @@ private:
         float grainPhaseB = 0.5f;
     };
 
-    std::array<ShimmerVoice, 2> shimVoices;          // [ch] — IR Feed path: reads pre-conv dry signal
-    std::array<ShimmerVoice, 2> shimVoicesVol;       // [ch] — Volume path:   reads post-conv wet signal
-    std::array<float, 2>        shimColourState    { 0.f, 0.f };  // 1-pole LP state for IR Feed path
-    std::array<float, 2>        shimColourStateVol { 0.f, 0.f };  // 1-pole LP state for Volume path
-    juce::AudioBuffer<float>    shimBuffer;    // same-block bridge: pre-conv IR Feed output
-    juce::AudioBuffer<float>    shimBufferVol; // same-block bridge: post-conv Volume output
+    std::array<ShimmerVoice, 2> shimVoices;          // [ch] — IR Feed path (pre-conv dry)
+    std::array<ShimmerVoice, 2> shimVoicesVol;       // [ch] — Feedback path (post-conv wet)
+    juce::AudioBuffer<float>    shimBuffer;          // same-block bridge: IR Feed grain output
+    juce::AudioBuffer<float>    shimFeedbackBuf;     // cross-block bridge: feedback grain output → next block's convolver input
+    int                         shimFeedbackLastBlockSize = 0;
     int                         shimLastBlockSize = 0;
 
     juce::dsp::Gain<float> dryGain, wetGain;

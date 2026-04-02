@@ -74,12 +74,15 @@ void PingLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& but
 
     if (id == "IRSynth")
     {
-        juce::Colour fill = button.findColour (juce::TextButton::buttonColourId);
-        if (isOver || isDown) fill = fill.brighter (isDown ? 0.1f : 0.05f);
-        g.setColour (fill);
-        g.fillRoundedRectangle (bounds, corner);
+        // Use full local bounds (no reduction) so height matches the adjacent combo box visually
+        auto fullBounds = button.getLocalBounds().toFloat();
+        // Semi-transparent white fill — lets the background texture show through at the same
+        // brightness level as the header bar. Slightly more opaque on hover/down.
+        const juce::uint8 alpha = isDown ? 0x58 : (isOver ? 0x48 : 0x38);
+        g.setColour (juce::Colours::white.withAlpha (alpha));
+        g.fillRoundedRectangle (fullBounds, corner);
         g.setColour ((isOver || isDown) ? accentIce : buttonBorder);
-        g.drawRoundedRectangle (bounds, corner, 1.2f);
+        g.drawRoundedRectangle (fullBounds.reduced (0.5f), corner, 0.8f);
         return;
     }
 
@@ -182,8 +185,8 @@ void PingLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& butto
 
     if (id == "IRSynth")
     {
-        g.setColour (button.findColour (juce::TextButton::textColourOffId));
-        g.setFont (juce::FontOptions (11.0f));
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::Font (11.0f, juce::Font::bold));
         g.drawText (button.getButtonText(), button.getLocalBounds(), juce::Justification::centred, true);
         return;
     }

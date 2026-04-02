@@ -32,6 +32,10 @@ public:
     // Tail-mod knob column rather than spanning the full EQ component width.
     int ctrlAreaXOffset = 0;
 
+    // Top Y of the band-name labels (LOW / MID 1 … HIGH) in local component coordinates.
+    // Set by resized(); used by PluginEditor to align the EQ emboss panel top edge.
+    int bandLabelTopY = 0;
+
 private:
     // ── timer ──────────────────────────────────────────────────────────
     void timerCallback() override;

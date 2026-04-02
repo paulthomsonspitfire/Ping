@@ -184,6 +184,7 @@ void EQGraphComponent::resized()
 
         // ── Band-name header — sits 3 px above the FREQ knob top ─────────
         bandNameLabel[i].setBounds (colX, freqRowY + freqDY - 3 - bandLblH, colW, bandLblH);
+        if (i == 0) bandLabelTopY = freqRowY + freqDY - 3 - bandLblH;  // expose for PluginEditor emboss
 
         // ── FREQ row (param 0) ────────────────────────────────────────────
         const int fY = freqRowY + freqDY;

@@ -349,16 +349,16 @@ PingEditor::PingEditor (PingProcessor& p)
     bloomTimeSlider.setRange      (50.0, 500.0, 1.0);
     bloomIRFeedSlider.setRange    (0.0,  1.0,  0.01);
     bloomVolumeSlider.setRange    (0.0,  1.0,  0.01);
-    cloudDepthSlider.setRange  (0.0,  1.0,  0.01);
-    cloudRateSlider.setRange   (0.1,  4.0,  0.01);
-    cloudSizeSlider.setRange   (1.0, 40.0,  0.1);
-    cloudIRFeedSlider.setRange (0.0,  1.0,  0.01);
-    cloudVolumeSlider.setRange (0.0,  1.0,  0.01);
+    cloudDepthSlider.setRange  (0.0,  1.0,  0.01);   // WIDTH
+    cloudRateSlider.setRange   (0.1,  4.0,  0.01);   // DENSITY
+    cloudSizeSlider.setRange   (0.25, 4.0,  0.01);   // SIZE multiplier
+    cloudIRFeedSlider.setRange (0.0,  0.7,  0.01);   // FEEDBACK
+    cloudVolumeSlider.setRange (0.0,  1.0,  0.01);   // IR FEED
     shimPitchSlider.setRange   (-24.0, 24.0, 1.0);
-    shimSizeSlider.setRange    (0.5,   4.0,  0.01);
-    shimColourSlider.setRange  (0.0,   1.0,  0.01);
+    shimSizeSlider.setRange    (50.0, 500.0,  1.0);
+    shimColourSlider.setRange  (0.0, 1000.0,  1.0);   // DELAY
     shimIRFeedSlider.setRange  (0.0,   1.0,  0.01);
-    shimVolumeSlider.setRange  (0.0,   1.0,  0.01);
+    shimVolumeSlider.setRange  (0.0,   0.7,  0.01);  // FEEDBACK
 
     dryWetAttach    = std::make_unique<SliderAttachment> (apvts, "drywet",   dryWetSlider);
     predelayAttach  = std::make_unique<SliderAttachment> (apvts, "predelay", predelaySlider);
@@ -395,14 +395,14 @@ PingEditor::PingEditor (PingProcessor& p)
     cloudDepthAttach  = std::make_unique<SliderAttachment> (apvts, "cloudDepth",  cloudDepthSlider);
     cloudRateAttach   = std::make_unique<SliderAttachment> (apvts, "cloudRate",   cloudRateSlider);
     cloudSizeAttach   = std::make_unique<SliderAttachment> (apvts, "cloudSize",   cloudSizeSlider);
-    cloudIRFeedAttach = std::make_unique<SliderAttachment> (apvts, "cloudIRFeed", cloudIRFeedSlider);
-    cloudVolumeAttach = std::make_unique<SliderAttachment> (apvts, "cloudVolume", cloudVolumeSlider);
+    cloudIRFeedAttach = std::make_unique<SliderAttachment> (apvts, "cloudFeedback", cloudIRFeedSlider);
+    cloudVolumeAttach = std::make_unique<SliderAttachment> (apvts, "cloudIRFeed", cloudVolumeSlider);
     cloudOnAttach     = std::make_unique<ButtonAttachment> (apvts, "cloudOn",     cloudOnButton);
     shimPitchAttach   = std::make_unique<SliderAttachment> (apvts, "shimPitch",   shimPitchSlider);
     shimSizeAttach    = std::make_unique<SliderAttachment> (apvts, "shimSize",    shimSizeSlider);
-    shimColourAttach  = std::make_unique<SliderAttachment> (apvts, "shimColour",  shimColourSlider);
+    shimColourAttach  = std::make_unique<SliderAttachment> (apvts, "shimDelay",   shimColourSlider);
     shimIRFeedAttach  = std::make_unique<SliderAttachment> (apvts, "shimIRFeed",  shimIRFeedSlider);
-    shimVolumeAttach  = std::make_unique<SliderAttachment> (apvts, "shimVolume",  shimVolumeSlider);
+    shimVolumeAttach  = std::make_unique<SliderAttachment> (apvts, "shimFeedback", shimVolumeSlider);
     shimOnAttach      = std::make_unique<ButtonAttachment> (apvts, "shimOn",      shimOnButton);
 
     setLookAndFeel (&pingLook);
@@ -457,16 +457,16 @@ PingEditor::PingEditor (PingProcessor& p)
     bloomTimeLabel.setText      ("TIME",      juce::dontSendNotification);
     bloomIRFeedLabel.setText    ("IR FEED",   juce::dontSendNotification);
     bloomVolumeLabel.setText    ("VOLUME",    juce::dontSendNotification);
-    cloudDepthLabel.setText  ("SCATTER", juce::dontSendNotification);
-    cloudRateLabel.setText   ("DENSITY", juce::dontSendNotification);
-    cloudSizeLabel.setText   ("SIZE",    juce::dontSendNotification);
-    cloudIRFeedLabel.setText ("IR FEED", juce::dontSendNotification);
-    cloudVolumeLabel.setText ("VOLUME",  juce::dontSendNotification);
+    cloudDepthLabel.setText  ("WIDTH",    juce::dontSendNotification);
+    cloudRateLabel.setText   ("DENSITY",  juce::dontSendNotification);
+    cloudSizeLabel.setText   ("LENGTH",   juce::dontSendNotification);
+    cloudIRFeedLabel.setText ("FEEDBACK", juce::dontSendNotification);
+    cloudVolumeLabel.setText ("IR FEED",  juce::dontSendNotification);
     shimPitchLabel.setText   ("PITCH",   juce::dontSendNotification);
-    shimSizeLabel.setText    ("GRAIN",   juce::dontSendNotification);
-    shimColourLabel.setText  ("COLOUR",  juce::dontSendNotification);
+    shimSizeLabel.setText    ("LENGTH",  juce::dontSendNotification);
+    shimColourLabel.setText  ("DELAY",   juce::dontSendNotification);
     shimIRFeedLabel.setText  ("IR FEED", juce::dontSendNotification);
-    shimVolumeLabel.setText  ("VOLUME",  juce::dontSendNotification);
+    shimVolumeLabel.setText  ("FEEDBACK", juce::dontSendNotification);
 
     for (auto* r : { &dryWetReadout, &predelayReadout, &decayReadout, &modDepthReadout,
                      &stretchReadout, &widthReadout, &modRateReadout,
@@ -631,7 +631,7 @@ void PingEditor::paint (juce::Graphics& g)
                                  panel.getRight(), panel.getY(),
                                  panel.getX(),     panel.getBottom());
             g.reduceClipRegion (clipTri);
-            g.setColour (juce::Colour (0xbfffffff));
+            g.setColour (juce::Colour (0x33ffffff));
             g.strokePath (outline, juce::PathStrokeType (lw));
         }
 
@@ -643,7 +643,222 @@ void PingEditor::paint (juce::Graphics& g)
                                  panel.getRight(), panel.getY(),
                                  panel.getX(),     panel.getBottom());
             g.reduceClipRegion (clipTri);
-            g.setColour (juce::Colour (0xbf000000));
+            g.setColour (juce::Colour (0x33000000));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+    }
+
+    // ── Raised bevel panel: left Rows 3+4 (Plate pre-diffuser / Bloom hybrid) ──────────────────
+    if (plateGroupBounds.getWidth() > 0)
+    {
+        const float padH = 14.f, padV = 12.f;
+        const auto panel = juce::Rectangle<float> (
+            (float) plateDiffusionSlider.getX()      - padH,
+            (float) plateGroupBounds.getY()          - padV,
+            (float) stretchSlider.getRight()           + padH - ((float) plateDiffusionSlider.getX() - padH),
+            (float) bloomVolumeReadout.getBottom()   + padV - ((float) plateGroupBounds.getY() - padV)
+        );
+
+        const float lw  = 3.0f;
+        const float hlw = lw * 0.5f;
+        const float cr  = 9.0f;
+
+        juce::Path outline;
+        outline.addRoundedRectangle (panel.reduced (hlw), cr - hlw);
+
+        // Highlight — top and left edges
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getX(),     panel.getY(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0x33ffffff));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+
+        // Shadow — bottom and right edges
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getRight(), panel.getBottom(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0x33000000));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+    }
+
+    // ── Raised bevel panel: right Rows R1+R2 (Clouds / Shimmer) ─────────────────────────────────
+    if (cloudGroupBounds.getWidth() > 0)
+    {
+        const float padH = 14.f, padV = 12.f;
+        const auto panel = juce::Rectangle<float> (
+            (float) modDepthSlider.getX()            - padH,
+            (float) cloudGroupBounds.getY()         - padV,
+            (float) cloudVolumeSlider.getRight()     + padH - ((float) cloudDepthSlider.getX() - padH),
+            (float) shimVolumeReadout.getBottom()   + padV - ((float) cloudGroupBounds.getY() - padV)
+        );
+
+        const float lw  = 3.0f;
+        const float hlw = lw * 0.5f;
+        const float cr  = 9.0f;
+
+        juce::Path outline;
+        outline.addRoundedRectangle (panel.reduced (hlw), cr - hlw);
+
+        // Highlight — top and left edges
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getX(),     panel.getY(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0x33ffffff));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+
+        // Shadow — bottom and right edges
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getRight(), panel.getBottom(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0x33000000));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+    }
+
+    // ── Raised bevel panel: right Row R3 (Tail AM mod / Tail Frq mod) ───────────────────────────
+    if (tailAMModGroupBounds.getWidth() > 0)
+    {
+        const float padH = 14.f, padV = 12.f;
+        const auto panel = juce::Rectangle<float> (
+            (float) modDepthSlider.getX()            - padH,
+            (float) tailAMModGroupBounds.getY()      - padV,
+            (float) tailRateSlider.getRight()         + padH - ((float) modDepthSlider.getX() - padH),
+            (float) tailRateReadout.getBottom()      + padV - ((float) tailAMModGroupBounds.getY() - padV)
+        );
+
+        const float lw  = 3.0f;
+        const float hlw = lw * 0.5f;
+        const float cr  = 9.0f;
+
+        juce::Path outline;
+        outline.addRoundedRectangle (panel.reduced (hlw), cr - hlw);
+
+        // Highlight — top and left edges
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getX(),     panel.getY(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0x33ffffff));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+
+        // Shadow — bottom and right edges
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getRight(), panel.getBottom(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0x33000000));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+    }
+
+    // ── Raised bevel panel: EQ control panel ────────────────────────────────────────────────────
+    if (eqGraph.getWidth() > 0)
+    {
+        const float padH = 6.f, padV = 4.f;
+        const auto eb = eqGraph.getBounds().toFloat();
+        const float panelTop = eb.getY() + (float) eqGraph.bandLabelTopY - padV;
+        const auto panel = juce::Rectangle<float> (eb.getX()    - padH,
+                                                   panelTop,
+                                                   eb.getWidth() + padH * 2.f,
+                                                   eb.getBottom() + padV - panelTop);
+
+        const float lw  = 3.0f;
+        const float hlw = lw * 0.5f;
+        const float cr  = 9.0f;
+
+        juce::Path outline;
+        outline.addRoundedRectangle (panel.reduced (hlw), cr - hlw);
+
+        // Highlight — top and left edges
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getX(),     panel.getY(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0x33ffffff));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+
+        // Shadow — bottom and right edges
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getRight(), panel.getBottom(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0x33000000));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+    }
+
+    // ── Raised bevel panel: central column (ER/Tail/DryWet/WetOut knobs → IR combo → waveform) ──
+    if (waveformComponent.getWidth() > 0)
+    {
+        const float padH = 14.f, padV = 12.f;
+        const auto panel = juce::Rectangle<float> (
+            (float) erLevelReadout.getX()          - padH,
+            (float) erLevelSlider.getY()            - padV,
+            (float) outputGainReadout.getRight()    + padH - ((float) erLevelReadout.getX() - padH),
+            (float) waveformComponent.getBottom()   + padV - ((float) erLevelSlider.getY() - padV)
+        );
+
+        const float lw  = 3.0f;
+        const float hlw = lw * 0.5f;
+        const float cr  = 9.0f;
+
+        juce::Path outline;
+        outline.addRoundedRectangle (panel.reduced (hlw), cr - hlw);
+
+        // Highlight — top and left edges
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getX(),     panel.getY(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0x33ffffff));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+
+        // Shadow — bottom and right edges
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getRight(), panel.getBottom(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0x33000000));
             g.strokePath (outline, juce::PathStrokeType (lw));
         }
     }
@@ -934,7 +1149,7 @@ void PingEditor::resized()
             const int revBtnY   = irCombo.getBottom() + 10;
             const int waveformY = revBtnY + revBtnH + 2;
             const int waveCentreX = dryWetSlider.getBounds().getCentreX();   // = w/2
-            reverseButton.setBounds (waveCentreX + wavePanelW / 2 - revBtnW,
+            reverseButton.setBounds (waveCentreX - wavePanelW / 2,
                                      revBtnY, revBtnW, revBtnH);
             waveformComponent.setBounds (waveCentreX - wavePanelW / 2, waveformY,
                                          wavePanelW, wavePanelH);
@@ -1516,20 +1731,21 @@ void PingEditor::updateAllReadouts()
     bloomTimeReadout.setText      (juce::String (juce::roundToInt (v ("bloomTime"))) + " ms", juce::dontSendNotification);
     bloomIRFeedReadout.setText    (juce::String (v ("bloomIRFeed"),    2),  juce::dontSendNotification);
     bloomVolumeReadout.setText    (juce::String (v ("bloomVolume"),    2),  juce::dontSendNotification);
-    cloudDepthReadout.setText     (juce::String (v ("cloudDepth"),  2),         juce::dontSendNotification);
-    cloudRateReadout.setText      (juce::String (v ("cloudRate"),   2) + "\xc3\x97",   juce::dontSendNotification);
-    cloudSizeReadout.setText      (juce::String (v ("cloudSize"),   1) + " ms", juce::dontSendNotification);
-    cloudIRFeedReadout.setText    (juce::String (v ("cloudIRFeed"), 2),         juce::dontSendNotification);
-    cloudVolumeReadout.setText    (juce::String (v ("cloudVolume"), 2),         juce::dontSendNotification);
+    cloudDepthReadout.setText  (juce::String (juce::roundToInt (v ("cloudDepth") * 100)) + "%",
+                               juce::dontSendNotification);
+    cloudRateReadout.setText   (juce::String (v ("cloudRate"),    2), juce::dontSendNotification);
+    cloudSizeReadout.setText   (juce::String (juce::roundToInt (v ("cloudSize"))) + " ms", juce::dontSendNotification);
+    cloudIRFeedReadout.setText (juce::String (v ("cloudFeedback"), 2), juce::dontSendNotification);
+    cloudVolumeReadout.setText (juce::String (v ("cloudIRFeed"),  2), juce::dontSendNotification);
     {
         int st = juce::roundToInt (v ("shimPitch"));
         shimPitchReadout.setText  ((st >= 0 ? "+" : "") + juce::String (st) + " st", juce::dontSendNotification);
     }
-    shimSizeReadout.setText   (juce::String (v ("shimSize"),   2) + "\xc3\x97",    juce::dontSendNotification);
-    shimColourReadout.setText (juce::String (juce::roundToInt (2000.f + v ("shimColour") * 18000.f)) + " Hz",
+    shimSizeReadout.setText   (juce::String (juce::roundToInt (v ("shimSize"))) + " ms",   juce::dontSendNotification);
+    shimColourReadout.setText (juce::String (juce::roundToInt (v ("shimDelay")))  + " ms",
                                juce::dontSendNotification);
     shimIRFeedReadout.setText (juce::String (v ("shimIRFeed"), 2),                 juce::dontSendNotification);
-    shimVolumeReadout.setText (juce::String (v ("shimVolume"), 2),                 juce::dontSendNotification);
+    shimVolumeReadout.setText (juce::String (v ("shimFeedback"), 2),               juce::dontSendNotification);
 }
 
 void PingEditor::refreshIRList()
