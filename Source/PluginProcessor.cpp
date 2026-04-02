@@ -491,6 +491,18 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     shimOnsetCounters.fill (0);
     shimWasEnabled = false;
 
+    // Per-voice delay lines: max period is 1.6× the DELAY knob max (1000 ms),
+    // so the ceiling is 1600 ms.  Allocate 1700 ms for a comfortable margin.
+    // ~1700 ms × sr ≈ 81 600 samples per buffer at 48 kHz.
+    // 8 voices × 2 ch × 81 600 × 4 bytes ≈ 5.2 MB total — still well within budget.
+    const int maxDelayBufLen = juce::roundToInt (1700.f * (float)sampleRate / 1000.f) + 4;
+    for (int v = 0; v < kNumShimVoices; ++v)
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            shimDelayBufs[v][ch].assign ((size_t)maxDelayBufLen, 0.f);
+            shimDelayPtrs[v][ch] = 0;
+        }
+
     updateGains();
     updatePredelay();
     updateEQ();
@@ -988,14 +1000,27 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                                     * (float)currentSampleRate / 1000.f));
         const float shimIRFd    = apvts.getRawParameterValue (IDs::shimIRFeed)->load();
 
-        // shimFeedback → LFO depth: [0, 0.7] → normDepth [0, 1].
-        // Base delay 300 ms, sweep up to +450 ms at full depth (300–750 ms range).
-        const float normDepth       = juce::jlimit (0.f, 1.f,
-                                        apvts.getRawParameterValue (IDs::shimFeedback)->load()
-                                        / 0.7f);
-        const int   baseDelaySamps  = juce::roundToInt (300.f * (float)currentSampleRate / 1000.f);
-        const int   sweepDelaySamps = juce::roundToInt (normDepth * 450.f
-                                        * (float)currentSampleRate / 1000.f);
+        // FEEDBACK → decay time via exponential mapping: T = 2 × (15/2)^(raw/0.7)
+        //   raw=0   → T≈2 s  |  raw=0.3 → T≈5.5 s  |  raw=0.7 → T=15 s
+        const float feedbackRaw = apvts.getRawParameterValue (IDs::shimFeedback)->load();
+        const float decayT      = 2.f * std::pow (15.f / 2.f, feedbackRaw / 0.7f);
+
+        // DELAY knob in samples (raw; per-voice multipliers applied below).
+        const int shimDelaySamps = juce::roundToInt (
+            apvts.getRawParameterValue (IDs::shimDelay)->load()
+            * (float)currentSampleRate / 1000.f);
+
+        // Per-voice delay multipliers derived from 8 primes (2,3,5,7,11,13,17,19)
+        // scaled linearly to [0.4, 1.6]: multiplier = 0.4 + (prime − 2) / 17 × 1.2.
+        // Ratios between any pair are ratios of distinct primes — no common factors,
+        // so echo recurrence periods between voices are extremely long and inaudible.
+        // The multiplier applies only to the DELAY component (shimDelaySamps); at
+        // DELAY=0 all voices still fall back to effGrainLen (no spread when delay is off).
+        static constexpr float kShimVoiceMultiplier[kNumShimVoices] =
+            { 0.400f, 0.471f, 0.612f, 0.753f, 1.035f, 1.176f, 1.459f, 1.600f };
+
+        // Grain read delay: small fixed base (20 ms) + ±5 ms per-voice LFO sweep.
+        // The old 300 ms base caused grains to miss any note shorter than ~500 ms.
 
         // LFO phase increments per sample.
         const float mainLfoInc = juce::MathConstants<float>::twoPi * 0.5f
@@ -1047,16 +1072,31 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             const float stTotal    = (float)semiMult[vi] * shimPitchSt + semiOff[vi];
             const float pitchRatio = std::pow (2.f, stTotal / 12.f);
 
-            // Sample the main LFO once per block per voice (grain resets within a block
-            // all use the same delay — sufficient because blocks are ~10 ms at 48 kHz).
+            // Small fixed base (20 ms) + ±5 ms per-voice LFO for subtle chorus movement.
+            // Grains read audio from ~220–225 ms ago at default grain size, so even a
+            // short note immediately fills the buffer and all staggered voices have content.
             const float mainLv        = 0.5f * (1.f + std::sin (shimLfoPhase[vi]));  // [0,1]
-            const int   voiceDelaySamps = baseDelaySamps
-                                         + juce::roundToInt ((float)sweepDelaySamps * mainLv);
+            const int   voiceDelaySamps = juce::roundToInt ((20.f + 5.f * mainLv)
+                                           * (float)currentSampleRate / 1000.f);
+
+            // Per-voice delay period: apply prime-derived multiplier to the DELAY knob
+            // value only.  At DELAY=0 voiceDelayPeriod=0 and the max() falls back to
+            // effGrainLen — spreading is inactive when the knob is at zero.
+            const int voiceDelayPeriod = juce::roundToInt (
+                (float)shimDelaySamps * kShimVoiceMultiplier[vi]);
+            const int voicePeriodSamps = juce::jlimit (1,
+                (int)shimDelayBufs[vi][0].size() - 1,
+                std::max (effGrainLen, voiceDelayPeriod));
+
+            // Feedback coefficient that produces the target decay time for this voice.
+            // shimFb < 1 always — exp() of a negative argument.
+            const float shimFb = std::exp (-3.f * (float)voicePeriodSamps
+                                           / (float)currentSampleRate / decayT);
 
             // Staggered onset: voice vi is silent until its counter reaches 0.
             // onsetStartSample is the first sample in this block at which this voice outputs.
-            // The grain engine still runs (buffer writes + read-pointer advances) during silence
-            // so that voices have real content and stable state when they do come in.
+            // The grain engine and delay line both run during silence so voices have real
+            // content and stable state when they do come in.
             const int onsetStartSample = juce::jmin (numSamples, shimOnsetCounters[vi]);
 
             for (int ch = 0; ch < numChannels; ++ch)
@@ -1081,9 +1121,23 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                                    + readAt (v.readPtrB) * hannW (v.grainPhaseB)) * 0.5f;
                     grainOut = shimAPs[vi][0][ch].process (grainOut);
                     grainOut = shimAPs[vi][1][ch].process (grainOut);
-                    // Only add to output once the onset window for this voice has passed.
+
+                    // ── Per-voice delay line with feedback ───────────────────────────
+                    // Runs every sample (even during onset silence) so state is stable
+                    // at voice onset. Read delayed sample, write grain + fedback echo.
+                    auto&  dBuf  = shimDelayBufs[vi][ch];
+                    int&   dPtr  = shimDelayPtrs[vi][ch];
+                    const int bufLen   = (int)dBuf.size();
+                    const int dReadPtr = ((dPtr - voicePeriodSamps) % bufLen + bufLen) % bufLen;
+                    const float delayOut = dBuf[(size_t)dReadPtr];
+                    dBuf[(size_t)dPtr] = grainOut + shimFb * delayOut;
+                    dPtr = (dPtr + 1) % bufLen;
+
+                    // Only contribute to shimBuffer once the onset window has passed.
+                    // Both the immediate grain and the echoing delay output are summed —
+                    // grainOut for the immediate attack, delayOut for the decaying tail.
                     if (i >= onsetStartSample)
-                        out[i] += grainOut;
+                        out[i] += grainOut + delayOut;
 
                     v.readPtrA    += pitchRatio;
                     v.readPtrB    += pitchRatio;
@@ -1142,10 +1196,18 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                     dst[i] += shm[i] * gain;
             }
         }
+
     }
     else
     {
         shimBuffer.clear();
+        // Clear per-voice delay lines so stale energy doesn't bleed in on re-enable.
+        for (int v = 0; v < kNumShimVoices; ++v)
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                std::fill (shimDelayBufs[v][ch].begin(), shimDelayBufs[v][ch].end(), 0.f);
+                shimDelayPtrs[v][ch] = 0;
+            }
     }
 
     float erDb = apvts.getRawParameterValue (IDs::erLevel)->load();
@@ -1709,6 +1771,8 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
     // Cross-channels (iRL, iLR) are zero: a plain stereo file has no cross-channel IR content.
     // Non-zero channels are scaled ×0.5 to cancel the ×2.0 trueStereoWetGain applied in
     // processBlock, keeping output level consistent with the former stereo path.
+    // An additional −9 dB trim compensates for the observed level excess of file-based IRs
+    // relative to synthesised IRs. Synth IRs (numCh == 4) bypass this block entirely.
     if (numCh < 4)
     {
         juce::AudioBuffer<float> expanded (4, fullLen);
@@ -1718,6 +1782,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         const int srcRCh = (numCh >= 2) ? 1 : 0;                         // use ch0 for mono sources
         expanded.copyFrom (3, 0, buffer, srcRCh, 0, fullLen);             // iRR = IR_R (or IR_L for mono)
         expanded.applyGain (3, 0, fullLen, 0.5f);
+        expanded.applyGain (juce::Decibels::decibelsToGain (-9.0f));      // −9 dB: file IR level trim
         buffer = std::move (expanded);
         numCh  = 4;
     }

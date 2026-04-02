@@ -226,7 +226,7 @@ private:
     // ~0.2 Hz (phases spread independently) for additional spectral smearing.
     //
     // ±25% per-grain LCG jitter on delay at each grain boundary gives organic timing.
-    // kShimBufLen holds max grain (500 ms) + max delay (750 ms) + jitter headroom.
+    // kShimBufLen holds max grain (500 ms) + max voice delay (1.6 × 1000 ms = 1600 ms) + headroom.
     static constexpr int kNumShimVoices = 8;
     static constexpr int kShimGrainLen  = 9600;   // 200 ms at 48 kHz (legacy constant)
     static constexpr int kShimBufLen    = 131072;  // 2.73 s at 48 kHz
@@ -261,6 +261,12 @@ private:
     // at onset. Counts down at block granularity; unlock is sample-accurate within a block.
     std::array<int,  kNumShimVoices> shimOnsetCounters {};
     bool shimWasEnabled = false;
+
+    // Per-voice delay lines for sustain feedback (8 voices × 2 channels).
+    // Each voice has its own period (kShimVoiceMultiplier, 0.4–1.6× the DELAY knob)
+    // so echoes are widely spread — no audible pulse repeats at any DELAY setting.
+    std::array<std::array<std::vector<float>, 2>, kNumShimVoices> shimDelayBufs;
+    std::array<std::array<int, 2>, kNumShimVoices> shimDelayPtrs {};
 
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand, lowShelfBand, highShelfBand;

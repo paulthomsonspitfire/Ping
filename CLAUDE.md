@@ -466,10 +466,10 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `shimOn` | Shimmer On | bool | false |
 | `shimPitch` | Shimmer Pitch | −24–+24 semitones (integer steps) | +7 |
 | `shimSize` | Shimmer Length (ms) | 50–500 | 200 |
-| `shimDelay` | Shimmer Delay (ms) | 0–1000 | 0 |
+| `shimDelay` | Shimmer Delay / Onset Stagger (ms) | 0–1000 | 0 |
 | `shimIRFeed` | Shimmer IR Feed | 0–1 | 0.5 |
 | `shimVolume` | Shimmer Volume (unused — reserved) | 0–1 | 0 |
-| `shimFeedback` | Shimmer Feedback | 0–0.7 | 0.3 |
+| `shimFeedback` | Shimmer Decay Time | 0–0.7 | 0.3 |
 | `reversetrim` | Reverse Trim | 0–0.95 | 0 |
 | `b3freq/b3gain/b3q` | Low Shelf EQ | 20–1200 Hz / ±12 dB / slope 0.3–2.0 | 200 Hz, 0 dB, 0.707 |
 | `b0freq/b0gain/b0q` | Peak 1 EQ | 50–16k Hz / ±12 dB / Q 0.3–10 | 400 Hz, 0 dB, 0.707 |
@@ -516,14 +516,10 @@ Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix +
   │   Same-block injection: diffused grain sum written to cloudBuffer AND injected here in the same per-sample loop
   │
   ▼
-[Shimmer IR Feed: reads pre-conv dry signal, pitch-shifts (shimVoices) with delay offset, injects × shimIRFeed]  (if shimOn)
-  │   shimBuffer ← grain output (same-block bridge — IR Feed path only)
-  │   Architecture: dry → pitch-shift → convolver → wet (one-way, no feedback loop for IR Feed)
-  │
-  ▼
-[Shimmer Feedback inject: shimFeedbackBuf × shimFeedback added to main signal]  (if shimOn && shimFeedback > 0)
-  │   Injected AFTER shimVoices so feedback is never double-pitched through shimVoices
-  │   cross-block: shimFeedbackBuf written post-conv, injected here next block
+[Shimmer 8-voice harmonic cloud: all 8 voices read clean pre-conv dry; sum × shimIRFeed injected]  (if shimOn)
+  │   shimBuffer ← per-block sum of all 8 pitch-shifted, allpass-smeared grain voices
+  │   Voices staggered onset: voice vi silent for (vi+1)×shimDelay ms after shimOn enabled
+  │   No post-conv loopback — the IR provides all decay and smearing
   │
   ▼
 Convolution  ── see "Convolution modes" below
@@ -547,11 +543,6 @@ Tail Chorus Modulation (optional — variable delay ±depthMs, skipped for ER-on
 [Cloud Granular: 3-s capture buffer + random grain playback, stores cloudBuffer]  (if cloudOn)
   │   Grains scatter across full 3-s buffer; sum normalised by sqrt(N); 4-stage allpass diffusion applied
   │   cloudFeedback mixes previous grain output back into capture buffer each sample
-  │
-  ▼
-[Shimmer Feedback capture: post-conv wet → pitch-shift (shimVoicesVol) → tanh → peak ceiling (kFbCeiling=0.35) → shimFeedbackBuf]  (if shimOn)
-  │   cross-block: shimFeedbackBuf injected × shimFeedback into convolver next block
-  │   Loop: wet → pitch-shift (+N st) → convolver → wet (stacks pitch each pass)
   │
   ▼
 Output Gain (dB, smoothed)
@@ -838,31 +829,117 @@ Right-side Row R1 (aligned with left-side Row 1). Same `rowKnobSize`/`rowStep` c
 
 ### What it does
 
-A Lexicon 480-style infinite shimmer with two signal paths. `shimIRFeed` injects pitch-shifted dry signal one-way into the convolver (classic Lexicon shimmer: dry → pitch-shift → reverb), inherently stable with any IR. `shimFeedback` creates the infinite shimmer loop: post-conv wet signal is pitch-shifted and injected back into the convolver on the next block, stacking pitch by +N semitones each pass through the loop. LENGTH sets the grain length directly in milliseconds (50–500 ms) — larger grains give smoother, more sustained pitch with less smearing. DELAY offsets the grain read start further behind the write head, introducing a time gap before the shimmer octave appears.
+An 8-voice harmonic shimmer cloud. Every voice reads the **clean pre-conv dry signal**, pitch-shifts it by a fixed harmonic interval (see voice layout below), runs it through a 2-stage allpass for spectral smearing, and injects the sum into the convolver input via `shimIRFeed`. There is **no post-conv feedback loop** — the convolver IR provides all decay and smearing. Pitch never stacks beyond the fixed voice layout regardless of any knob setting.
 
-Unlike the original design, the `shimVolume` direct-output path has been removed. Shimmer output flows exclusively through the two loop paths: `shimIRFeed` (same-block, one-way) and `shimFeedback` (cross-block, looping). `shimIRFeed` defaults to **0.5** — the effect is immediately audible when enabled.
+LENGTH sets the grain length in milliseconds. DELAY controls the staggered voice onset: each voice waits `(voiceIndex + 1) × delay` ms before it starts outputting, so the shimmer cloud builds progressively from voice 0 upward. FEEDBACK controls the sustain/ring-out of the shimmer cloud: the previous block's summed shimmer output (`shimSelfFbBuf`) is mixed back into each voice's grain capture buffer, allowing the cloud to self-sustain and ring out after input stops. Higher FEEDBACK = longer ring-out (medium bloom ~2–5 s at max). Each voice's grain read position uses a small fixed base delay of 20 ms plus a ±5 ms per-voice LFO (0.5 Hz, 45° apart) for subtle chorus movement. `shimIRFeed` defaults to **0.5** — the effect is immediately audible when enabled.
 
 ### Architecture
 
-Two independent signal paths:
+Single pre-conv insertion point (before the convolver block). All 8 `shimVoicesHarm` voices run in parallel. Each voice:
+1. Writes the incoming dry sample into its circular `grainBuf`.
+2. Reads two Hann-windowed grains (phases 0 and 0.5), sums and scales by 0.5.
+3. Passes the grain output through 2 per-voice allpass stages for spectral smearing.
+4. Accumulates into `shimBuffer` — but only if that voice's `shimOnsetCounters[vi]` has counted down to zero.
 
-- **Pre-conv Shimmer IR Feed block** (before convolver): reads the **clean pre-conv dry signal** using `shimVoices`, stores in `shimBuffer`. Injects `shimBuffer × shimIRFeed` into the convolver input (same-block, one-way: dry → pitch-shift → reverb). No feedback loop on this path.
-- **Shimmer Feedback inject** (immediately after IR Feed, still pre-conv): injects `shimFeedbackBuf × shimFeedback` into the convolver input. Deliberately placed *after* shimVoices so the feedback signal is never pitch-shifted a second time by shimVoices.
-- **Post-conv Shimmer Feedback capture** (after Tail Chorus / Cloud granular block, before Output Gain): reads the fully-processed post-conv wet signal using `shimVoicesVol`, applies tanh soft-saturation per-sample, then applies a block-level peak ceiling (`kFbCeiling = 0.35f`) to guarantee loop stability regardless of IR gain. Stores result in `shimFeedbackBuf`. This is a **cross-block bridge**: the next block injects `shimFeedbackBuf × shimFeedback` into the convolver input after shimVoices runs. Loop: wet → pitch-shift (+N st) → convolver → wet → pitch-shift again (each pass adds N more semitones — stacked octaves with 1 block latency).
+After all voices have run, `shimBuffer × shimIRFeed × (1/√8)` is injected into the convolver input. The 1/√8 normalisation keeps perceived loudness consistent with a single voice.
 
-`shimBuffer` is a same-block bridge (written and read within one processBlock). `shimFeedbackBuf` is a cross-block bridge (written post-conv, injected pre-conv next block).
+There is no post-conv shimmer block.
+
+### Voice layout
+
+`shimPitch` = N semitones (integer steps, e.g. +7 = perfect fifth).
+
+| Voice | Pitch | Role |
+|---|---|---|
+| 0 | 0 st | Unshifted — body / unison reverb tail |
+| 1 | +N st | Fundamental shimmer interval |
+| 2 | +2N st | 2nd harmonic up |
+| 3 | −N st | 1st harmonic down |
+| 4 | +3N st | 3rd harmonic up |
+| 5 | −2N st | 2nd harmonic down |
+| 6 | 0 st + **3 cents fixed** | Chorus double of voice 0 |
+| 7 | +N st + **6 cents fixed** | Chorus double of voice 1 |
+
+Voices 6 and 7 provide gentle chorus beating against voices 0 and 1. The +3c/+6c detune is hard-coded in `semiOff[]` and is not knob-controllable.
 
 ### Grain engine
 
-Two grains offset by half a grain length (phase 0 and 0.5), Hann windowed, summed and normalised by 0.5. Read pointer advances `pitchRatio` samples per input sample. On phase rollover the read head is snapped to `writePtr − effGrainLen − delaySamps` (grain length + delay offset behind the write head). This is the spec verified by DSP_07–DSP_09, extended with the `delaySamps` offset.
+Two grains per voice per channel, offset by half a grain length (phases 0 and 0.5), Hann windowed, summed and scaled by 0.5. Read pointer advances `pitchRatio` samples per input sample. On phase rollover the read head snaps to `writePtr − effGrainLen − voiceDelaySamps`, where `voiceDelaySamps` is the LFO-modulated delay sampled once per block for this voice. ±25% LCG jitter (`shimRng`) is applied at each grain reset.
 
-`effGrainLen = round(shimSize_ms × sampleRate / 1000)`. Buffer allocation is fixed at `kShimBufLen = 131072` (2.73 s at 48 kHz) — covers max grain (500 ms) + max delay (1000 ms) with headroom.
+`effGrainLen = round(shimSize_ms × sampleRate / 1000)`. `kShimBufLen = 131072` (2.73 s at 48 kHz) — covers max grain (500 ms) + max modulated delay (750 ms) + jitter headroom.
+
+### Grain read delay (subtle LFO)
+
+Each voice uses a small fixed base of 20 ms plus a ±5 ms per-voice LFO sweep for subtle chorus movement:
+
+```
+mainLv          = 0.5 × (1 + sin(shimLfoPhase[vi]))       // [0,1]
+voiceDelaySamps = round((20 + 5 × mainLv) × sr / 1000)    // 20–25 ms
+```
+
+This puts grains near-current audio (reads content recorded ~220–225 ms ago at default 200 ms grain) so short notes immediately fill the grain buffers. The previous 300 ms base was too far back and caused grains to read silence for any note shorter than ~500 ms.
+
+LFO rate: 0.5 Hz. Phase per voice: `shimLfoPhase[vi] = vi × 2π/8` (45° apart). Phase advances by `2π × 0.5 / sr × numSamples` per block per voice.
+
+### Per-voice delay lines (FEEDBACK knob — decay time)
+
+After the 2-stage allpass, each voice's grain output feeds a per-channel circular delay line (`shimDelayBufs[voice][ch]`, `shimDelayPtrs[voice][ch]`). This is entirely separate from `grainBuf` — the delay output never re-enters the pitch-shifting path.
+
+**Delay period:** Each voice has an independent period derived by applying a prime-scaled multiplier to the raw DELAY knob value: `voiceDelayPeriod = round(shimDelaySamps × kShimVoiceMultiplier[vi])`, then `voicePeriodSamps = max(effGrainLen, voiceDelayPeriod)`. At DELAY=0 `voiceDelayPeriod` is 0 and all voices fall back to `effGrainLen` (no spreading when delay is off). The multipliers span **0.4–1.6×** the set delay, derived from 8 primes (2, 3, 5, 7, 11, 13, 17, 19) mapped linearly to that range:
+
+```
+kShimVoiceMultiplier[8] = { 0.400, 0.471, 0.612, 0.753, 1.035, 1.176, 1.459, 1.600 }
+```
+
+Ratios between any pair are ratios of distinct primes (no common factors), so beat periods between voices are extremely long and inaudible. At 500 ms DELAY the eight voice periods are approximately 200, 235, 306, 376, 518, 588, 729, 800 ms — a 4× spread that eliminates the audible pulsing that occurs when all voices share the same period.
+
+**Feedback coefficient:** Derived from the desired decay time `T` via an exponential mapping:
+```
+T      = 2 × (15/2)^(feedbackRaw / 0.7)            // feedbackRaw ∈ [0, 0.7]
+shimFb = exp(-3 × voicePeriodSamps / sr / T)         // always < 1
+```
+| FEEDBACK | Decay T | shimFb (at 200 ms period) |
+|---|---|---|
+| 0.0 | ~2 s | 0.74 |
+| 0.3 (default) | ~5.5 s | 0.89 |
+| 0.7 (max) | 15 s | 0.96 |
+
+**Per-sample delay processing (inside the grain loop):**
+```
+dReadPtr = (writePtr − voicePeriodSamps + bufLen) % bufLen
+delayOut = dBuf[dReadPtr]
+dBuf[writePtr] = grainOut + shimFb × delayOut    // internal feedback only — not into grainBuf
+writePtr = (writePtr + 1) % bufLen
+if (i >= onsetStartSample)
+    shimBuffer[ch][i] += grainOut + delayOut      // immediate grain + decaying echoes
+```
+
+The delay runs every sample including during onset silence so state is stable at voice onset. Buffers allocated in `prepareToPlay` at `ceil(1700 ms × sr / 1000)` samples per voice per channel (~5.2 MB total at 48 kHz) — sized to cover the maximum voice period of 1.6 × 1000 ms = 1600 ms plus headroom. All buffers zeroed when `shimOn` is false.
+
+### Per-voice allpass smearing
+
+Each voice passes its grain output through 2 `SimpleAllpass` stages before accumulation. Delay lengths are slowly modulated at ~0.2 Hz:
+- Stage 0: base 7 ms ± 3 ms → range 4–10 ms
+- Stage 1: base 14 ms ± 5 ms → range 9–19 ms
+
+Allpass LFO phase per voice: `shimApLfoPhase[vi] = vi × 2π/8 × 1.3` (offset from main LFO). Buffers allocated at 2× base (14 ms and 28 ms) so the full modulation range needs no reallocation. g = 0.5f on all stages. `effLen` updated once per block from allpass LFO.
+
+### Staggered onset (DELAY knob)
+
+When `shimOn` transitions false→true, each voice's countdown counter is armed:
+```
+shimOnsetCounters[vi] = (vi + 1) × shimDelaySamps
+```
+where `shimDelaySamps = round(shimDelay_ms × sr / 1000)`.
+
+`onsetStartSample = min(numSamples, shimOnsetCounters[vi])` — the first sample within the current block at which voice `vi` contributes to `shimBuffer`. The grain engine (buffer writes, read-pointer advances, jitter) runs for all samples regardless of onset state so voices have real content at pickup. Counter decrements by `numSamples` each block, clamped at zero. At DELAY=0: all voices start simultaneously. At DELAY=100 ms: voice 0 at 100 ms, voice 1 at 200 ms, …, voice 7 at 800 ms.
 
 ### DSP state (`PluginProcessor.h`)
 
 ```cpp
-static constexpr int kShimGrainLen = 9600;    // default 200 ms at 48 kHz (legacy; not used in DSP — shimSize param is in ms)
-static constexpr int kShimBufLen   = 131072;  // 2.73 s at 48 kHz — covers max grain (500 ms) + max delay (1000 ms)
+static constexpr int kNumShimVoices = 8;
+static constexpr int kShimGrainLen  = 9600;   // 200 ms at 48 kHz (legacy constant — effGrainLen computed from shimSize param)
+static constexpr int kShimBufLen    = 131072;  // 2.73 s at 48 kHz
 
 struct ShimmerVoice {
     std::vector<float> grainBuf;   // kShimBufLen samples, circular
@@ -873,12 +950,23 @@ struct ShimmerVoice {
     float grainPhaseB = 0.5f;
 };
 
-std::array<ShimmerVoice, 2> shimVoices;       // IR Feed path (pre-conv dry)
-std::array<ShimmerVoice, 2> shimVoicesVol;    // Feedback path (post-conv wet)
-juce::AudioBuffer<float>    shimBuffer;       // same-block bridge: IR Feed grain output
-juce::AudioBuffer<float>    shimFeedbackBuf;  // cross-block bridge: feedback grain output → next block's convolver
-int                         shimFeedbackLastBlockSize = 0;
-int                         shimLastBlockSize = 0;
+// [voice][ch] — 8 harmonic voices × 2 channels
+std::array<std::array<ShimmerVoice, 2>, kNumShimVoices> shimVoicesHarm;
+juce::AudioBuffer<float> shimBuffer;   // per-block scratch: sum of all voice outputs
+
+uint32_t shimRng = 0x92d68ca2u;  // LCG for per-grain delay jitter
+
+// Per-voice LFO state (main 0.5 Hz; allpass 0.2 Hz). Spread 45° (2π/8) per voice.
+std::array<float, kNumShimVoices> shimLfoPhase   {};
+std::array<float, kNumShimVoices> shimApLfoPhase {};
+
+// 2-stage per-voice allpass: shimAPs[voice][stage][ch]
+// Stage 0: 7 ms base (2× buf = 14 ms); Stage 1: 14 ms base (2× buf = 28 ms). g = 0.5f.
+std::array<std::array<std::array<SimpleAllpass, 2>, 2>, kNumShimVoices> shimAPs;
+
+// Staggered onset counters — armed on shimOn false→true, count down to zero.
+std::array<int,  kNumShimVoices> shimOnsetCounters {};
+bool shimWasEnabled = false;
 ```
 
 ### Controls
@@ -886,18 +974,18 @@ int                         shimLastBlockSize = 0;
 | Parameter ID | Range | Default | Effect |
 |---|---|---|---|
 | `shimOn` | bool | false | Enables Shimmer; zero overhead when off |
-| `shimPitch` | −24–+24 st (integer steps) | +7 | Semitone interval for pitch shift. +7 = perfect fifth. Readout: "+7 st". Integer NormalisableRange enforces musical intervals. |
-| `shimSize` | 50–500 ms | 200 ms | LENGTH — grain length in milliseconds. Longer = smoother, more sustained pitch shift with more smear. At 200 ms each grain is ~4.2× longer than the old 512-sample default, giving proper shimmer character. Readout: "200 ms". UI label: LENGTH. |
-| `shimDelay` | 0–1000 ms | 0 ms | Additional offset behind write head when each grain resets: `readPtr = writePtr − effGrainLen − delaySamps`. At 0: grains start immediately behind the write head (minimum latency). At 1000 ms: grains start 1 second further back — the shimmer octave appears 1 second after each note. Readout: "0 ms". UI knob: DELAY (reuses `shimColourSlider`). |
-| `shimIRFeed` | 0–1 | **0.5** | Injects `shimBuffer × shimIRFeed` into the convolver input (same-block, one-way). Default 0.5 — audible immediately on enable. |
-| `shimVolume` | 0–1 | 0 | Reserved / unused — the direct output path has been removed. APVTS entry kept for preset backward-compatibility. |
-| `shimFeedback` | 0–0.7 | 0.3 | Injects `shimFeedbackBuf × shimFeedback` from previous block into convolver input. Creates the infinite loop. Safety-clamped at 0.7; tanh + peak ceiling (`kFbCeiling=0.35`) on shimFeedbackBuf guarantee loop stability regardless of IR gain. UI knob: FEEDBACK (reuses `shimVolumeSlider`). |
+| `shimPitch` | −24–+24 st (integer steps) | +7 | Semitone interval N applied to voices 1–5 and 7. +7 = perfect fifth. Integer NormalisableRange. |
+| `shimSize` | 50–500 ms | 200 ms | LENGTH — grain length in ms. Longer = smoother, more sustained pitch with less smear. |
+| `shimDelay` | 0–1000 ms | 0 ms | DELAY — dual role: (1) stagger interval for voice onsets (voice vi waits (vi+1) × delay ms after shimOn enabled); (2) sets the per-voice delay line period. At DELAY=0 the delay period falls back to `effGrainLen`. |
+| `shimIRFeed` | 0–1 | **0.5** | IR FEED — `shimBuffer × shimIRFeed × (1/√8)` injected into convolver input (same-block, one-way). Default 0.5 — audible immediately on enable. |
+| `shimVolume` | 0–1 | 0 | Reserved / unused. APVTS entry kept for preset backward-compatibility. |
+| `shimFeedback` | 0–0.7 | 0.3 | FEEDBACK — decay time control for the per-voice delay lines. Exponential mapping: `T = 2 × (7.5)^(raw/0.7)`. At 0: T≈2 s. At 0.3 (default): T≈5.5 s. At 0.7: T=15 s. Feedback coefficient per voice: `shimFb = exp(-3 × period / sr / T)`, always < 1. |
 
 ### UI layout (Row R2 — "Shimmer")
 
 Right-side Row R2 (aligned with left-side Row 2). Same `rowKnobSize`/`rowStep` constants. Single group "Shimmer" with 5 knobs: PITCH (`shimPitchSlider`), LENGTH (`shimSizeSlider`), DELAY (`shimColourSlider` — attached to `shimDelay`), IR FEED (`shimIRFeedSlider`), FEEDBACK (`shimVolumeSlider` — attached to `shimFeedback`). Power-button switch `shimOnButton` (component ID `ShimmerSwitch`) right-aligned in the group header. Group header bounds stored as `shimGroupBounds`.
 
-**Attachment remapping:** `shimColourSlider` / `shimColourAttach` are bound to `"shimDelay"` (UI slot 3 = DELAY). `shimVolumeSlider` / `shimVolumeAttach` are bound to `"shimFeedback"` (UI slot 5 = FEEDBACK). The original `shimColour` and `shimVolume` APVTS parameters no longer exist; `shimVolume` is retained as a no-op for preset backward-compatibility.
+**Attachment remapping:** `shimColourSlider` / `shimColourAttach` are bound to `"shimDelay"` (UI slot 3 = DELAY). `shimVolumeSlider` / `shimVolumeAttach` are bound to `"shimFeedback"` (UI slot 5 = FEEDBACK). The original `shimColour` APVTS parameter no longer exists; `shimVolume` is retained as a no-op for preset backward-compatibility.
 
 ---
 
@@ -909,7 +997,8 @@ Steps applied in order:
 1. **Reverse** (if `reverse == true`) — sample order flipped per channel. Reverse Trim then skips `trimFrac × length` samples from the start of the reversed IR.
 2. **Stretch** — linear-interpolation time-scale to `stretchFactor × originalLength`.
 3. **Decay envelope** — exponential fade: `env(t) = exp(−decayParam × 6 × t)`, where `decayParam = 1 − UI_decay`.
-4. **ER / Tail split at 80 ms** — crossover at `0.080 × sr` samples, with a 10 ms fade-out on ER and 10 ms fade-in on Tail. Each half is loaded into its respective convolver pair.
+4. **Mono/stereo → 4-channel expansion** (file IRs only, skipped for synth IRs which arrive as 4-channel) — a 2-channel stereo (or 1-channel mono) buffer is padded to 4 channels: iLL = ch0, iRR = ch1 (or ch0 for mono), cross-channels iRL/iLR zeroed. The two non-zero channels are scaled ×0.5 (cancels the `trueStereoWetGain = 2.0f` in `processBlock`). An additional **−9 dB** scalar (`juce::Decibels::decibelsToGain(-9.0f)`) is applied to the whole expanded buffer to compensate for the observed level excess of file-based IRs relative to synthesised IRs. Synth IRs bypass this block entirely because they arrive with `numCh == 4`.
+5. **ER / Tail split at 80 ms** — crossover at `0.080 × sr` samples, with a 10 ms fade-out on ER and 10 ms fade-in on Tail. Each half is loaded into its respective convolver pair.
 
 > **Known inconsistency:** The file-load IR split uses **80 ms** but the IR Synth engine's internal crossover uses **85 ms** (`ec = 0.085 × sr`). These should ideally be unified. Don't introduce a third value.
 
@@ -1067,6 +1156,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Preset and IR save overwrite prompts are selection-based** — Save actions only prompt when the typed name matches the currently selected existing item in the corresponding editable combo (`presetCombo` or IR synth `irCombo`) and the target file already exists. Typing a different name saves directly as a new file. Use async JUCE dialogs (`AlertWindow::showAsync`) in plugin UI; avoid blocking modal loops.
 - **`rawSynthBuffer` stores the pre-processing synth IR — do not save it after any transforms** — It must be saved as the very first thing inside the `fromSynth` block of `loadIRFromBuffer`, before reverse/trim/stretch/decay are applied. If it were saved after transforms, `reloadSynthIR()` would double-apply them on every Reverse or Trim interaction.
 - **+15 dB output trim is intentional** — `synthIR()` applies a fixed `+15 dB` scalar (`gain15dB = pow(10, 15/20)`) to all four IR channels as the very last step, correcting for the observed output level shortfall. Do not remove this. It does not affect the synthesis calculations, RT60, ER/tail balance, or FDN gain calibration — it is a pure post-process scalar applied after everything else.
+- **−9 dB file IR trim is intentional** — During the mono/stereo → 4-channel expansion step in `loadIRFromBuffer`, a `juce::Decibels::decibelsToGain(-9.0f)` scalar is applied to the whole expanded buffer immediately after the ×0.5 per-channel compensation. This corrects the observed ~9 dB level excess of file-based IRs relative to synthesised IRs on the shared true-stereo convolution path. It is a post-expansion scalar and does not affect the ×0.5 compensation logic or `trueStereoWetGain`. Synth IRs bypass this entirely (they arrive with `numCh == 4` and skip the expansion block). If tuning is needed, adjust the single `-9.0f` constant in the expansion block — do not touch `trueStereoWetGain` or the ×0.5 gains.
 - **Plate pre-diffuser is a pure convolver pre-feed** — The Plate DSP runs in `processBlock` after the saturator. It processes the post-saturator signal through the allpass cascade and colour LP, storing the result in `plateBuffer`. **IR FEED** adds `plateBuffer * irFeed` to the convolver input before convolution — the diffused signal feeds the IR alongside the main signal. The only output is via the convolver; there is no direct parallel output. At irFeed=0 the plate has no effect. Plate parameters never trigger an IR recalculation. The IR output (and therefore all IR_01–IR_11 test golden values) is unchanged.
 - **Plate `effLen` and `g` are set per block, not per sample** — `plateSize` is read once, the 6 effective delay lengths are computed, and all `effLen` fields written before the sample loop. `plateDiffusion` is also read once and written to all `plateAPs[ch][s].g` before the sample loop. This avoids redundant computation while keeping the sample loop tight.
 - **Plate `plateColour` is a 1-pole lowpass, not a high-shelf** — A simple 1-pole lowpass applied to the diffused signal before feeding to the convolver. At `colour = 0` the cutoff is 2 kHz (warm, dark — EMT 140 character); at `colour = 1` it is 8 kHz (bright — AMS RMX16 character). Do not replace it with a true biquad shelf — the 1-pole is intentional.
@@ -1094,14 +1184,19 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Cloud `cloudFbSamples` is per-sample, not per-block** — the feedback state is updated every sample inside the per-sample loop (`cloudFbSamples[ch] = currentGrainOutput`), not at block boundaries. This keeps feedback response immediate and avoids block-sized steps in the captured texture.
 - **Cloud grain reset reads from source channel (WIDTH-driven)** — `srcCh = -1` means read from the same channel as the output; `srcCh = 0` reads exclusively from L; `srcCh = 1` reads exclusively from R. WIDTH probability determines the likelihood of a cross-channel grain. Reverse grains (`reverse = true`) decrement the read position each sample rather than incrementing it.
 - **Width is the only remaining large knob in the bottom grid** — LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3 (aligned with Plate / Row 3). The grid anchor `row6AbsY + row6TotalH_ + 70` is unchanged.
-- **Shimmer IR Feed is a same-block bridge; Shimmer Feedback is a cross-block bridge** — `shimBuffer` (IR Feed path) is written pre-convolution and injected into the convolver within the same block. `shimFeedbackBuf` (Feedback path) is written post-convolution and injected into the next block's convolver input. Do NOT make `shimBuffer` a cross-block bridge — that would put the convolver inside a feedback loop and cause runaway feedback with high-gain stereo IRs. The feedback loop is deliberately routed through `shimFeedbackBuf`, which has both per-sample tanh saturation and a block-level peak ceiling (`kFbCeiling = 0.35f`) applied before storing. The ceiling is essential: tanh alone only clips the grain output to ±1, but IRs with significant gain (especially synth IRs with the built-in +15 dB boost, effective gain up to ×5.6) push the loop above unity — each pitch-shift pass stacks more energy than it loses and the feedback grows progressively louder. With `kFbCeiling = 0.35`, the maximum injection into the convolver is `0.35 × shimFb_max(0.7) = 0.245`, keeping the loop stable for IR gains up to ~8×.
-- **shimVoices must read the buffer BEFORE shimFeedbackBuf is injected** — the feedback injection must happen AFTER shimVoices processes the dry signal. If the injection is moved before shimVoices, the feedback signal gets pitch-shifted a second time (on top of the shift already applied by shimVoicesVol), creating a compound feedback path. At moderate shimFeedback + shimIRFeed settings, this doubles the pitch-shift rate per loop and causes runaway gain. Correct order: (1) shimVoices reads clean dry → injects × shimIRFeed, (2) shimFeedbackBuf × shimFeedback injected into buffer, (3) convolver, (4) shimVoicesVol captures post-conv wet → tanh → shimFeedbackBuf.
-- **Shimmer LENGTH engine: `shimSize` is direct milliseconds (50–500 ms), UI label LENGTH** — `effGrainLen = round(shimSize_ms × sampleRate / 1000)`. The old `kShimGrainLen = 512` (~10.7 ms) was 20× too short for smooth shimmer and caused chirping artefacts. The 200 ms default gives grains approximately the length expected for classic shimmer (4–5 Hz grain rate = 200–250 ms). `kShimBufLen` is 131072 (2.73 s) to accommodate max grain (500 ms) + max delay (1000 ms). The DSP tests DSP_07–DSP_09 use the old constants — **the production code has diverged from the test specs on these constants** (grain length formula and buffer size are different); the test coverage of the core grain engine logic (two grains, Hann window, phase advancement, grain reset) still applies.
-- **Shimmer grain reset offset includes delay: `writePtr − effGrainLen − delaySamps`** — `shimDelay` (0–1000 ms) adds `delaySamps = shimDelay_ms × sampleRate / 1000` to the reset offset. At 0 ms delay the behaviour matches the original spec (grains start `effGrainLen` behind write head). At larger delays the shimmer octave appears noticeably later after each note attack. The modulo calculation uses `kShimBufLen * 2` to guarantee a positive result when `resetOffset > kShimBufLen`.
-- **`shimColour` parameter removed; replaced with `shimDelay`** — the old 1-pole LP colour filter (`shimColourState`, `shimColourStateVol`) has been completely removed from both grain paths. The UI knob slot (3rd knob, `shimColourSlider`) is now attached to `"shimDelay"` with range 0–1000 ms. The old `shimColour` APVTS entry no longer exists.
-- **Shimmer FEEDBACK knob replaces VOLUME** — `shimVolumeSlider` is attached to `"shimFeedback"` (0–0.7). The old direct-output Volume path (`shimBufferVol`, `shimVolumeAttach` → `"shimVolume"`) has been removed. `shimVolume` APVTS entry is retained for preset backward-compatibility but has no DSP path.
+- **Shimmer is a pure pre-conv 8-voice harmonic cloud — no post-conv loopback** — All 8 `shimVoicesHarm[vi][ch]` read the clean pre-conv dry signal. `shimBuffer` is a same-block bridge written pre-conv and injected into the convolver within the same block (× `shimIRFeed × 1/√8`). There is no `shimFeedbackBuf`, no post-conv capture, and no cross-block feedback path. Pitch never stacks beyond the fixed 8-voice harmonic layout regardless of any parameter. The previous loopback architecture (shimVoices / shimVoicesVol / shimFeedbackBuf / kFbCeiling) has been completely removed.
+- **`shimFeedback` controls decay time of the per-voice delay lines** — exponential mapping: `T = 2 × (7.5)^(raw/0.7)`. At 0: T≈2 s, at 0.3 (default): T≈5.5 s, at 0.7: T=15 s. Feedback coefficient per voice: `shimFb = exp(-3 × voicePeriodSamps / sr / T)`, always < 1. Do not revert to LFO-depth or shimSelfFbBuf approaches.
+- **`shimDelay` has a dual role** — (1) onset stagger: on shimOn false→true, `shimOnsetCounters[vi] = (vi+1) × shimDelaySamps` arms each voice; (2) delay line period: each voice applies its own prime-derived multiplier (`kShimVoiceMultiplier[vi]`, 0.4–1.6×) to `shimDelaySamps`, then takes `max(effGrainLen, voiceDelayPeriod)`. At DELAY=0 onset stagger is simultaneous and all voices fall back to `effGrainLen` (no spreading). Do not revert to a shared `basePeriod` with a small `kShimVoiceSpread` — that caused audible pulsing at long delay settings because all voices echoed at nearly the same period.
+- **`shimWasEnabled` detects the false→true transition** — stored as a member bool, updated each processBlock call after arming the counters. This means the staggered onset re-fires on every Shimmer enable. Do not move the transition check inside the `shimOn == true` branch — it must run unconditionally so `shimWasEnabled` is updated even when `shimOn` is false.
+- **Shimmer per-voice LFO phases are spread 45° apart** — `shimLfoPhase[vi] = vi × 2π/8`. Allpass LFO phases use `shimApLfoPhase[vi] = vi × 2π/8 × 1.3` — the 1.3× multiplier decorrelates the allpass modulation from the main delay modulation so the two sweeps don't beat in sync. Both phase arrays advance by `numSamples × lfoInc` once per voice per block (after both channels finish), not per-sample.
+- **Shimmer allpass effLen is updated once per block, not per sample** — `shimAPs[vi][0/1][ch].effLen` is computed from the allpass LFO and clamped to `[1, buf.size()]` at the start of the allpass setup loop, before the per-sample grain loop. This is safe because the LFO is ~0.2 Hz and changes negligibly within a single block. Do not move effLen updates into the per-sample loop.
+- **Per-voice delay lines are separate from grainBuf — no re-entry into pitch shifting** — `shimDelayBufs[kNumShimVoices][2]` and `shimDelayPtrs[kNumShimVoices][2]` are the delay state. The delay write is `dBuf[writePtr] = grainOut + shimFb × dBuf[readPtr]`; the output `grainOut + delayOut` goes only to `shimBuffer`, never back to `grainBuf`. Allocated in `prepareToPlay` at `ceil(1100 ms × sr / 1000) + 4` samples per voice per channel. Cleared on `shimOn = false`. The per-voice spread constant `kShimVoiceSpread[8]` is a local `static constexpr` inside the processBlock shimmer block.
+- **Shimmer voices 6 & 7 have fixed ±cents detune, not knob-controlled** — `semiOff[] = {0,0,0,0,0,0, 3.f/100.f, 6.f/100.f}` in semitones. This is a compile-time constant, not derived from any parameter. Voice 6 beats gently against voice 0; voice 7 beats against voice 1. Do not add a "chorus detune" knob or scale these values by shimFeedback.
+- **Shimmer LENGTH engine: `shimSize` is direct milliseconds (50–500 ms), UI label LENGTH** — `effGrainLen = round(shimSize_ms × sampleRate / 1000)`. `kShimBufLen` is 131072 (2.73 s at 48 kHz) — covers max grain (500 ms) + max modulated delay (750 ms) + jitter headroom. DSP tests DSP_07–DSP_09 use old single-voice constants and have diverged from production on grain length formula and buffer size; the core two-grain / Hann window / phase advancement logic they cover still applies.
 - **`shimPitch` uses integer NormalisableRange (step=1)** — fractional semitones produce detuned output not aligned to musical intervals. The parameter layout uses `juce::NormalisableRange<float>(-24.f, 24.f, 1.f)`.
 - **`shimIRFeed` defaults to 0.5** — unlike every other IR-feed parameter (Plate, Bloom, Cloud all default to 0), Shimmer defaults to 0.5 so the effect is immediately audible when enabled. This matches expected shimmer plugin UX: you enable it and it shimmers.
+- **`shimColour` parameter removed; DELAY knob slot now drives `shimDelay`** — `shimColourSlider` / `shimColourAttach` are bound to `"shimDelay"` with range 0–1000 ms. The old `shimColour` APVTS entry no longer exists.
+- **FEEDBACK knob slot drives `shimFeedback`** — `shimVolumeSlider` / `shimVolumeAttach` are bound to `"shimFeedback"` (0–0.7). `shimVolume` APVTS entry is retained for preset backward-compatibility but has no DSP path.
 - **EQ response curve is display-only** — `getResponseAt()` is an approximation. The actual audio uses JUCE biquad coefficients. The two will not match exactly at steep slopes or very high/low frequencies, but are visually representative for a mixing EQ.
 - **EQ knob labels must have `setInterceptsMouseClicks(false, false)`** — JUCE `Label` components default to intercepting mouse events (`setInterceptsMouseClicks(true, true)`). In `EQGraphComponent`, labels are added after sliders and therefore sit in front (higher Z-order). Without the click-through flag, labels silently swallow mouse-down events and the knob beneath never receives them. This applied to all three label types: `knobLabels[b][k]`, `knobReadouts[b][k]`, and `bandNameLabel[b]`. The FREQ readout overlapped the upper portion of the GAIN knob; GAIN readout/label overlapped the Q knob area. Fix: call `setInterceptsMouseClicks(false, false)` on all three label arrays in the `EQGraphComponent` constructor.
 - **Group header title font is 10.0f** — `drawGroupHeader` in `PluginEditor.cpp paint()` uses `g.setFont(juce::FontOptions(10.0f))` (increased from 9.0f). This applies to all group title labels: IR Input, IR Controls, ER Crossfade, Tail Crossfade, Plate pre-diffuser, Bloom hybrid, Clouds post convolution, Shimmer, Tail AM mod, Tail Frq mod, and the IR Preset label. Do not revert to 9.0f.

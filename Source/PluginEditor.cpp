@@ -46,11 +46,7 @@ PingEditor::PingEditor (PingProcessor& p)
       eqGraph (p.getAPVTS(), &p),
       waveformComponent (p)
 {
-    setSize (editorW, editorH);
-    setResizable (false, false);
-    setOpaque (true);
-
-    // Load brushed-steel background texture from embedded binary data.
+    // Load images before setSize() so resized() can use them when it fires.
     bgTexture = juce::ImageCache::getFromMemory (BinaryData::texture_bg_jpg,
                                                   BinaryData::texture_bg_jpgSize);
 
@@ -72,6 +68,10 @@ PingEditor::PingEditor (PingProcessor& p)
         pingLogoImage       = prepLogo (BinaryData::ping_logo_blue_png,    BinaryData::ping_logo_blue_pngSize);
         pingSubtitleImage   = prepLogo (BinaryData::pingsubtitle_png,      BinaryData::pingsubtitle_pngSize);
     }
+
+    setSize (editorW, editorH);
+    setResizable (false, false);
+    setOpaque (true);
 
     // IR list
     addAndMakeVisible (irCombo);
@@ -959,22 +959,23 @@ void PingEditor::resized()
     }
 
     // P!NG logo: centred horizontally, fills the header height (578×182 → ratio 3.176:1)
-    // Raised 5 px to leave room for the subtitle below.
     {
         const int logoH = topRowH - 6;
         const int logoW = (int) (logoH * 578.f / 182.f);
         pingBounds = juce::Rectangle<int> (w / 2 - logoW / 2,
-                                           topRow.getY() + (topRowH - logoH) / 2 - 9,
+                                           topRow.getY() + (topRowH - logoH) / 2 - 6,
                                            logoW, logoH);
 
-        // Subtitle: 2× P!NG logo width, centred at w/2, bottom edge 2 px above header bottom
+        // Subtitle: fixed 15 px tall, width derived from natural aspect ratio,
+        // vertical centre = logo vertical centre + 22 px.
         if (pingSubtitleImage.isValid() && pingSubtitleImage.getWidth() > 0)
         {
-            const int subW = logoW * 2;
-            const int subH = juce::roundToInt (subW * (float) pingSubtitleImage.getHeight()
-                                                     / (float) pingSubtitleImage.getWidth());
+            const int subH = 15;
+            const int subW = juce::roundToInt (subH * (float) pingSubtitleImage.getWidth()
+                                                     / (float) pingSubtitleImage.getHeight());
+            const int subCentreY = pingBounds.getCentreY() + 22;
             pingSubtitleBounds = juce::Rectangle<int> (w / 2 - subW / 2,
-                                                        topRow.getBottom() - 2 - subH,
+                                                        subCentreY - subH / 2,
                                                         subW, subH);
         }
         else
