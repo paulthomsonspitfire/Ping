@@ -458,7 +458,7 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `bloomVolume` | Bloom Volume | 0–1 | 0 |
 | `cloudOn` | Cloud On | bool | false |
 | `cloudDepth` | Cloud Width (UI: WIDTH) | 0–1 | 0.3 |
-| `cloudRate` | Cloud Density (UI: DENSITY) | 0.1–4.0 | 1.0 |
+| `cloudRate` | Cloud Density (UI: DENSITY) | 0.1–4.0 | 2.0 |
 | `cloudSize` | Cloud Length (UI: LENGTH) | 25–1000 ms | 200 ms |
 | `cloudVolume` | Cloud Volume (unused — reserved) | 0–1 | 0 |
 | `cloudFeedback` | Cloud Feedback (UI: FEEDBACK) | 0–0.7 | 0.3 |
@@ -512,8 +512,8 @@ Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix +
   │   feedback tap: bloomFbBufs[ch][wp] = cascade output (NOT wet signal) — written here, same sample loop
   │
   ▼
-[Cloud Granular: previous block's cloudBuffer × cloudIRFeed injected into main signal]  (if cloudOn && cloudIRFeed > 0)
-  │   1-block deferred: cloudBuffer written at Cloud block, read here next block
+[Cloud Granular: grain output × cloudIRFeed injected into main signal inline (same block)]  (if cloudOn && cloudIRFeed > 0)
+  │   Same-block injection: diffused grain sum written to cloudBuffer AND injected here in the same per-sample loop
   │
   ▼
 [Shimmer IR Feed: reads pre-conv dry signal, pitch-shifts (shimVoices) with delay offset, injects × shimIRFeed]  (if shimOn)
@@ -545,7 +545,7 @@ Tail Chorus Modulation (optional — variable delay ±depthMs, skipped for ER-on
   │
   ▼
 [Cloud Granular: 3-s capture buffer + random grain playback, stores cloudBuffer]  (if cloudOn)
-  │   cloudBuffer stores grain output; cloudBuffer × cloudIRFeed injected Insertion 1 next block
+  │   Grains scatter across full 3-s buffer; sum normalised by sqrt(N); 4-stage allpass diffusion applied
   │   cloudFeedback mixes previous grain output back into capture buffer each sample
   │
   ▼
@@ -716,7 +716,7 @@ Immediately after Row 3 (Plate), same `rowKnobSize`/`rowStep`/`rowStartX` consta
 
 ### What it does
 
-A granular delay effect that captures a 3-second window of the input and plays back randomised grains from it. DENSITY controls only spawn interval: at low density grains are sparse (500–1000 ms apart), producing slowly evolving textures; at high density grains are rapid (10–50 ms apart), producing a dense, rhythmic cloud. LENGTH sets grain length directly in ms (25–1000 ms), independently of DENSITY. WIDTH controls stereo spread by routing grains to the opposite channel and enabling random reverse playback. FEEDBACK mixes the previous grain output back into the capture buffer, causing the granular texture to self-reinforce. IR FEED sends the grain output into the convolver so it gets reverberated.
+A granular delay effect that captures a 3-second window of the input and plays back randomised grains from it. DENSITY controls spawn interval via an exponential curve: at low density grains are sparse (205–410 ms apart, 0–1 grains active), at mid-knob there are ~4 simultaneously overlapping grains, at maximum up to ~14 grains overlap. Crucially, grains are scattered across the **full 3-second buffer** — not just the most recent audio — so overlapping grains draw from very different moments in time, creating spectral richness rather than a phase-locked delay pattern. LENGTH sets grain length directly in ms (25–1000 ms), independently of DENSITY. WIDTH controls stereo spread and reverse-grain probability. FEEDBACK mixes grain output back into the capture buffer. A 4-stage all-pass diffusion cascade (Clouds-style) is applied to the grain sum before output, smoothing grain-boundary discontinuities into a continuous smear. IR FEED sends the diffused grain output into the convolver.
 
 Unlike the original LFO delay-line design, Cloud is now a pre-convolution granular source. It has no post-convolution insertion point.
 
@@ -731,52 +731,88 @@ Cloud runs in two insertion points within `processBlock`:
 
 ### DENSITY → spawn interval; LENGTH → grain length
 
-DENSITY (`cloudRate`, 0.1–4.0) is normalised to `t = (crate − 0.1) / (4.0 − 0.1)` and controls **only** spawn interval:
-- Spawn interval window: `500 × (1−t) + 10 × t` to `1000 × (1−t) + 50 × t` ms
+DENSITY (`cloudRate`, 0.1–4.0, default 2.0) is normalised to `t = (crate − 0.1) / (4.0 − 0.1)` and controls **only** spawn interval via an **exponential** curve:
 
-At t=0 (min density): grains spawn every 500–1000 ms (sparse). At t=1 (max density): grains spawn every 10–50 ms (dense).
+```
+tPow       = 0.02 ^ t            // 1.0 at t=0 → 0.02 at t=1
+minSpawnMs = 200 × tPow + 5      // ~205 ms (t=0) → ~9 ms (t=1)
+maxSpawnMs = 400 × tPow + 10     // ~410 ms (t=0) → ~18 ms (t=1)
+```
+
+| DENSITY knob | t | Spawn interval | Grains at 200 ms LENGTH |
+|---|---|---|---|
+| Min (0.1) | 0.0 | 205–410 ms | ~0–1 (sparse) |
+| 25% (1.08) | 0.25 | 80–160 ms | ~1–2 |
+| 50% / default (2.05) | 0.5 | 33–67 ms | ~4 |
+| 75% (3.02) | 0.75 | 16–31 ms | ~8 |
+| Max (4.0) | 1.0 | 9–18 ms | ~14 |
+
+The exponential taper means the entire knob range is useful, unlike a linear formula where most of the travel produces no meaningful overlap.
 
 LENGTH (`cloudSize`, 25–1000 ms, default 200 ms) sets grain length directly in ms, entirely independent of DENSITY. All grains within a block use the same length (no randomisation around the LENGTH value — variation comes from random read positions and randomised spawn timing).
+
+### Grain position scatter — full buffer depth
+
+Each new grain's read position is drawn uniformly from the range `[grainLen, 90% of buffer]` behind the write head (i.e., between one grain length and 2.7 seconds back). This is critical to the cloud sound: concurrent grains draw from very different moments in audio history and produce genuinely independent signals when summed. **Do not revert to 1–2 grain lengths of scatter** — that range causes all grains to read nearly the same audio content, producing comb filtering and a delay-like stutter rather than a cloud texture.
+
+### Output normalisation and diffusion
+
+After summing all active grains, the sum is scaled by `1 / √(activeCount)` (sqrt-power normalisation) before the diffusion cascade. This keeps perceived loudness consistent as density changes (`1/N` would make dense settings far too quiet).
+
+The normalised grain sum then passes through a **4-stage all-pass diffusion cascade** (per channel) before being written to `cloudBuffer` and injected into the convolver:
+
+| Stage | Delay (ms) | Delay @ 48 kHz |
+|---|---|---|
+| 1 | 13.7 ms | 658 samples |
+| 2 | 7.3 ms | 350 samples |
+| 3 | 4.1 ms | 197 samples |
+| 4 | 1.7 ms | 82 samples |
+
+g = 0.65f on all stages. `effLen = 0` (uses `buf.size()`). Buffers allocated in `prepareToPlay` at the exact delay size for the current sample rate. Reuses `SimpleAllpass` struct from Plate/Bloom. State stored in `cloudDiffuseAPs[2][4]`. This is the Mutable Instruments Clouds "TEXTURE" mechanism: all-pass filters smear grain boundaries at signal level without adding reverb tail or perceptible latency.
 
 ### DSP state (`PluginProcessor.h`)
 
 ```cpp
-static constexpr int kNumCloudLines       = 8;   // retained for LFO array sizing; cloud grains use a different model
-static constexpr float kCloudCaptureBufMs = 3000.0f;  // 3-second capture buffer
+static constexpr int   kNumCloudGrains        = 40;      // max simultaneous grains (Clouds-style density)
+static constexpr float kCloudCaptureBufMs     = 3000.0f; // 3-second capture buffer
+static constexpr int   kNumCloudDiffuseStages = 4;       // all-pass diffusion cascade stages
 
 struct CloudGrain {
-    int   startPos   = 0;
-    int   length     = 0;
-    int   pos        = 0;
-    bool  active     = false;
-    bool  reverse    = false;
-    int   srcCh      = -1;   // -1=same ch, 0=L-only, 1=R-only
+    float readPos  = 0.f;   // fractional read position in capture buffer
+    int   grainLen = 0;     // grain length in samples
+    float phase    = 1.f;   // 0..1 through grain; ≥ 1.0 = inactive
+    bool  reverse  = false; // play grain backwards
+    int   srcCh    = -1;    // -1 = normal stereo, 0 = L-only, 1 = R-only
 };
 
-std::array<std::vector<float>, 2>       cloudCaptureBufs;   // [ch] 3-s circular capture
-std::array<int, 2>                      cloudCaptureWrPtrs {};
-std::array<std::array<CloudGrain, 8>, 2> cloudGrains;       // [ch][grain] up to 8 simultaneous
-std::array<float, 2>                    cloudFbSamples { 0.f, 0.f };  // per-sample feedback state
-int                                     cloudCurrentSpawnIntervalSamps = 0;
-int                                     cloudSpawnCountdown = 0;
-juce::AudioBuffer<float>                cloudBuffer;      // bridge: Cloud block → Insertion 1 (next block)
-int                                     cloudLastBlockSize = 0;
-uint32_t                                cloudRng = 12345u; // LCG state
+std::array<std::vector<float>, 2>       cloudCaptureBufs;         // [ch] circular capture
+std::array<int, 2>                      cloudCaptureWritePtrs {};  // per-channel write heads
+std::array<CloudGrain, kNumCloudGrains> cloudGrains;               // flat array, round-robin
+float                                   cloudSpawnPhase    = 0.f;
+float                                   cloudCurrentSpawnIntervalSamps = 24000.f;
+int                                     cloudNextGrainSlot = 0;
+uint32_t                                cloudSpawnSeed     = 12345u;
+std::array<float, 2>                    cloudFbSamples { 0.f, 0.f };
+
+// 4-stage all-pass diffusion — reuses SimpleAllpass; allocated in prepareToPlay
+std::array<std::array<SimpleAllpass, kNumCloudDiffuseStages>, 2> cloudDiffuseAPs; // [ch][stage]
+
+juce::AudioBuffer<float> cloudBuffer;  // same-block bridge: grain output for IR Feed + cloudVolume
 ```
 
 ### `prepareToPlay`
 
-Capture buffer sized to `ceil(3000 × sampleRate / 1000)` samples per channel. All grain structs reset (`active = false`). `cloudBuffer` sized to `(2, samplesPerBlock)` and cleared. `cloudFbSamples` filled to 0. `cloudCurrentSpawnIntervalSamps` and `cloudSpawnCountdown` reset to 0.
+Capture buffer sized to `ceil(3000 × sampleRate / 1000)` samples per channel. All 40 grain structs reset (`phase = 1.f` = inactive). `cloudBuffer` sized to `(2, samplesPerBlock)` and cleared. `cloudFbSamples` filled to 0. Spawn phase and interval reset. Diffusion all-pass buffers allocated at their exact delay sizes (computed from the 4 delay constants scaled to current sample rate), g=0.65, zeroed.
 
 ### `processBlock` details
 
-**Insertion 1** (before Cloud main block) reads `cloudBuffer` from previous block and injects `× cloudIRFeed` into the main input signal before the convolver.
-
 **Cloud main block** per-sample:
 1. Write `dry[ch] + cloudFeedback × cloudFbSamples[ch]` into the capture buffer.
-2. Decrement `cloudSpawnCountdown`; when ≤ 0 spawn a new grain: pick random length from the density-derived window, random start position behind write head, random reverse flag (probability driven by WIDTH), random srcCh (probability driven by WIDTH). Reset countdown to a new random spawn interval from the density-derived window.
-3. For each active grain: compute read position (forward or reverse), linear-interpolate from the source channel's capture buffer (srcCh selects cross-channel sampling), apply Hann window, accumulate into `cloudBuffer[ch][i]`. Advance grain position; mark inactive on completion.
-4. Update `cloudFbSamples[ch] = cloudBuffer[ch][i]` (normalised by number of active grains).
+2. Advance spawn phase; when ≥ 1.0, spawn a new grain into the next round-robin slot: grain length from LENGTH knob, read position uniformly random across `[grainLen, 90% of buffer]` behind write head, reverse flag driven by WIDTH, srcCh driven by WIDTH.
+3. For each of the 40 grain slots: if active (`phase < 1.0`), compute Hann window, linear-interpolate from capture buffer, accumulate into grain sum. Advance read position and phase. Count active grains.
+4. Scale sum by `1 / √(activeCount)`. Apply 4-stage all-pass diffusion cascade per channel. Write to `cloudBuffer`.
+5. If `cirFeed > 0`, inject diffused output into main buffer (same-block, into convolver input).
+6. Store diffused output in `cloudFbSamples[ch]` for next sample's capture write.
 
 ### Controls
 
@@ -784,7 +820,7 @@ Capture buffer sized to `ceil(3000 × sampleRate / 1000)` samples per channel. A
 |---|---|---|---|
 | `cloudOn` | bool | false | Enables Cloud; zero overhead when off |
 | `cloudDepth` | 0–1 | 0 | WIDTH — stereo spread probability. At 0: grains always read from same channel. At 1: maximum cross-channel sampling and reverse probability. UI label: WIDTH. |
-| `cloudRate` | 0.1–4.0 | 1.0 | DENSITY — controls spawn interval only via normalised t. Low = sparse (500–1000 ms apart); high = dense (10–50 ms apart). |
+| `cloudRate` | 0.1–4.0 | 2.0 | DENSITY — controls spawn interval via exponential curve (`200 × 0.02^t + 5` ms). Default 2.0 ≈ t=0.5 → ~4 grains overlapping at 200 ms LENGTH. |
 | `cloudSize` | 25–1000 ms | 200 ms | LENGTH — grain length in ms, independent of DENSITY. All grains use this length directly. |
 | `cloudFeedback` | 0–0.7 | 0 | FEEDBACK — mixes previous grain output back into capture buffer each sample. Safety-clamped at 0.7. Creates self-reinforcing, accumulating granular texture. |
 | `cloudIRFeed` | 0–1 | 0 | IR FEED — injects `cloudBuffer × cloudIRFeed` into the convolver input (1-block deferred). Sends the granular output through the reverb. |
@@ -1052,9 +1088,9 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Bloom uses separate L/R prime sets for genuine stereo independence** — L primes `{241, 383, 577, 863, 1297, 1913}` and R primes `{263, 431, 673, 1049, 1531, 2111}` are incommensurate (no shared factors). After several feedback cycles the L and R textures diverge into genuinely different patterns, filling the stereo field without any explicit width/decorrelation DSP. This is the primary source of Bloom's wide stereo character. Do not unify L/R primes or the stereo independence is lost.
 - **Bloom delay range is ~5–40 ms (at size=1.0)** — this is deliberately below the ~30 ms threshold at which allpass delays become audible as discrete echoes. The previous {~39–300 ms} primes were all above this threshold, making the individual taps clearly audible as fragments. At 5–40 ms the allpass stages act as diffusers rather than distinct echoes, producing the "textured swirl" character. `bloomSize` scales linearly — at size=2.0 delays reach ~10–80 ms (more spacious), at size=0.5 ~2.5–20 ms (very dense).
 - **Bloom feedback is safety-clamped at 0.65** — the loop gain is `bloomFeedback` alone (the convolver is no longer in the loop). The clamp provides a hard stability bound independent of IR content or signal level.
-- **Cloud is a granular delay, not an LFO delay bank** — the original 8-line LFO post-convolution design was replaced with a 3-second granular capture buffer. DENSITY controls only spawn interval (500–1000 ms at low; 10–50 ms at high). LENGTH (`cloudSize`, 25–1000 ms, default 200 ms) sets grain length directly in ms, independent of DENSITY — all grains use the same length with no random variation. WIDTH (`cloudDepth`) controls cross-channel sampling probability and reverse-grain probability. FEEDBACK (`cloudFeedback`, clamped 0–0.7) mixes grain output back into the capture buffer per sample.
+- **Cloud is a Mutable Instruments Clouds-style granular processor** — the original 8-line LFO post-convolution design was replaced with a 3-second granular capture buffer. Key design properties: (a) DENSITY uses an **exponential** spawn-interval curve so the full knob range produces useful grain counts; (b) grains scatter across the **full 3-second buffer** (min lookback = grainLen, max = 90% of buffer) — this is the primary reason it sounds like a cloud rather than a delay; (c) output is normalised by `1/√(activeCount)` for consistent perceived loudness across density settings; (d) a **4-stage all-pass diffusion cascade** (`cloudDiffuseAPs[2][4]`, reusing `SimpleAllpass`) is applied per-sample to the grain sum, smearing grain boundaries (Clouds TEXTURE mechanism). DEFAULT cloudRate = 2.0 (≈ t=0.5, ~4 grains at 200 ms LENGTH). Max grain slots = 40.
 - **Cloud IR FEED uses the old VOLUME knob slot; FEEDBACK uses the old IR FEED slot** — in the UI, `cloudIRFeedSlider` is attached to `"cloudFeedback"` (FEEDBACK) and `cloudVolumeSlider` is attached to `"cloudIRFeed"` (IR FEED). The original `cloudVolume` APVTS entry is retained for backward-compatibility but has no UI attachment or DSP path. Do not swap these attachments back.
-- **Cloud `cloudBuffer` bridges the granular block → Insertion 1 across blocks** — `cloudBuffer` is written during the Cloud main block (pre-convolver) and injected into the next block's convolver input at Insertion 1. Do not clear `cloudBuffer` at the start of each block — it must survive between blocks. `cloudFbSamples[2]` also persists between blocks (per-sample feedback state). `cloudLastBlockSize` tracks the previous block's size for Insertion 1.
+- **Cloud `cloudBuffer` is a same-block bridge** — `cloudBuffer` is written and read within the same `processBlock` call. The diffused grain output is stored there and also injected inline into the main buffer (× `cloudIRFeed`) within the same per-sample loop — no cross-block deferral. `cloudFbSamples[2]` persists across blocks (per-sample feedback state updated at the end of each sample). `cloudBuffer` is cleared at the top of each Cloud block.
 - **Cloud `cloudFbSamples` is per-sample, not per-block** — the feedback state is updated every sample inside the per-sample loop (`cloudFbSamples[ch] = currentGrainOutput`), not at block boundaries. This keeps feedback response immediate and avoids block-sized steps in the captured texture.
 - **Cloud grain reset reads from source channel (WIDTH-driven)** — `srcCh = -1` means read from the same channel as the output; `srcCh = 0` reads exclusively from L; `srcCh = 1` reads exclusively from R. WIDTH probability determines the likelihood of a cross-channel grain. Reverse grains (`reverse = true`) decrement the read position each sample rather than incrementing it.
 - **Width is the only remaining large knob in the bottom grid** — LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3 (aligned with Plate / Row 3). The grid anchor `row6AbsY + row6TotalH_ + 70` is unchanged.

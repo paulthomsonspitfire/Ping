@@ -133,9 +133,11 @@ private:
     juce::Image           bgTexture;
     juce::Image           spitfireLogoImage;
     juce::Image           pingLogoImage;
+    juce::Image           pingSubtitleImage;
     juce::Rectangle<int> headerPanelRect;
     juce::Rectangle<int> spitfireBounds;
     juce::Rectangle<int> pingBounds;
+    juce::Rectangle<int> pingSubtitleBounds;
     juce::Rectangle<int> irInputGroupBounds;    // area above the "IR Input" knob pair (text + line)
     juce::Rectangle<int> irControlsGroupBounds; // area above the "IR Controls" knob triple (text + line)
     juce::Rectangle<int> erCrossfadeGroupBounds;   // area above the ER Crossfade pair

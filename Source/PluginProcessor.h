@@ -101,11 +101,9 @@ private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
     IRManager irManager;
-    juce::dsp::Convolution erConvolver;
-    juce::dsp::Convolution tailConvolver;
+    juce::dsp::Convolution tailConvolver;   // combined-tail IR for waveform display; audio uses ts* convolvers
     juce::dsp::Convolution tsErConvLL, tsErConvRL, tsErConvLR, tsErConvRR;
     juce::dsp::Convolution tsTailConvLL, tsTailConvRL, tsTailConvLR, tsTailConvRR;
-    bool useTrueStereo = false;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> predelayLine;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> chorusDelayLine;
     // Stereo decorrelation: 2-stage allpass on R only (7.13 ms, 14.27 ms), incommensurate with FDN
@@ -164,15 +162,20 @@ private:
     // Pre-convolution granular delay engine. Reads Hann-windowed grains at
     // random positions in a 3-second circular capture buffer.
     //
-    // DENSITY (cloudRate 0.1–4.0) controls grain length and spawn interval:
-    //   Low density → long sparse grains (400–1000 ms, 500–1000 ms apart)
-    //   High density → short dense grains (25–75 ms, 10–50 ms apart)
-    // SIZE (cloudSize 0.25–4.0) is a global multiplier on grain length.
+    // DENSITY (cloudRate 0.1–4.0) controls spawn interval via exponential curve:
+    //   t=0  → 205–410 ms apart (~0 grains overlapping at 200 ms LENGTH)
+    //   t=0.5 → 33–67 ms apart (~4 grains at 200 ms LENGTH)
+    //   t=1.0 →  9–18 ms apart (~14 grains at 200 ms LENGTH)
+    // LENGTH (cloudSize 25–1000 ms) sets grain length directly.
+    // Grains scatter across the FULL 3-second buffer (not just 1–2 grain lengths back)
+    //   so concurrent grains draw from different time positions → cloud texture, not delay.
     // WIDTH (cloudDepth 0–1): stereo spread + probability of reverse grains.
     // FEEDBACK (cloudFeedback 0–0.7): grain output mixed back into capture.
+    // 4-stage all-pass diffusion applied to grain sum (Clouds-style TEXTURE smearing).
     // cloudVolume: added post-dry/wet blend (audible at any wet level).
-    static constexpr int   kNumCloudGrains    = 16;     // max simultaneous grain voices
-    static constexpr float kCloudCaptureBufMs = 3000.0f; // 3 s for longest grains + headroom
+    static constexpr int   kNumCloudGrains       = 40;     // max simultaneous grain voices (Clouds-style density)
+    static constexpr float kCloudCaptureBufMs    = 3000.0f; // 3 s for longest grains + headroom
+    static constexpr int   kNumCloudDiffuseStages = 4;    // all-pass diffusion cascade (Clouds TEXTURE-style)
 
     struct CloudGrain {
         float readPos  = 0.f;   // fractional read position in capture buffer
@@ -191,22 +194,42 @@ private:
     uint32_t                                cloudSpawnSeed     = 12345u;
     std::array<float, 2>                    cloudFbSamples     { 0.f, 0.f }; // feedback state
 
+    // 4-stage all-pass diffusion cascade applied to grain output (Clouds-style TEXTURE smearing).
+    // Delays: 13.7 / 7.3 / 4.1 / 1.7 ms (prime-spaced, sub-15 ms to avoid echo perception).
+    // g = 0.65f on all stages. effLen = 0 (uses buf.size()). Allocated in prepareToPlay.
+    std::array<std::array<SimpleAllpass, kNumCloudDiffuseStages>, 2> cloudDiffuseAPs; // [ch][stage]
+
     // Same-block bridge: written pre-conv, read post-blend.
     juce::AudioBuffer<float> cloudBuffer;
 
     // ── Shimmer ───────────────────────────────────────────────────────────────
-    // Two signal paths:
-    //   shimVoices     — IR Feed: reads pre-conv dry (delayed by shimDelay ms), injects × shimIRFeed
-    //   shimVoicesVol  — Feedback: reads post-conv wet, pitch-shifts, stores in shimFeedbackBuf.
-    //                    shimFeedbackBuf injected × shimFeedback into convolver next block.
-    //                    Loop: wet → pitch-shift (+N st) → convolver → wet (stacks octaves each pass).
+    // 8-voice harmonic shimmer cloud. Every voice reads the CLEAN pre-conv dry
+    // signal and injects a pitch-shifted copy into the convolver input (× shimIRFeed).
+    // There is NO feedback path — the IR provides all smearing and repetition.
     //
-    // Grain size (shimSize): 50–500 ms — large grains for smooth, stable shimmer
-    // Delay (shimDelay): 0–1000 ms — how far back in the grain buffer to start reading
-    //   (controls how long before the shimmer octave appears after a note)
-    // kShimBufLen must hold: max grain (500 ms) + max delay (1000 ms) + headroom ≈ 2.5 s = 120000
-    static constexpr int kShimGrainLen = 9600;    // default 200 ms at 48 kHz (legacy; not used in DSP)
-    static constexpr int kShimBufLen   = 131072;  // 2.73 s at 48 kHz — covers grain + delay range
+    // Voice pitch layout (shimPitch = user interval N semitones):
+    //   Voice 0:  0 st               — unshifted (body / unison reverb tail)
+    //   Voice 1: +N st               — fundamental shimmer interval
+    //   Voice 2: +2N st              — 2nd harmonic upward
+    //   Voice 3: −N st               — 1st harmonic downward
+    //   Voice 4: +3N st              — 3rd harmonic upward
+    //   Voice 5: −2N st              — 2nd harmonic downward
+    //   Voice 6:  0 st + 3 cents     — chorus double of voice 0  (fixed detune)
+    //   Voice 7: +N st + 6 cents     — chorus double of voice 1  (fixed wider detune)
+    //
+    // shimFeedback (0–0.7) = LFO modulation depth on per-voice grain delay:
+    //   at 0   → all voices use 300 ms fixed delay
+    //   at 0.7 → per-voice LFO sweeps delay 300–750 ms at 0.5 Hz
+    // Per-voice LFO phases are spread 45° apart (2π/8 per voice) for de-correlation.
+    //
+    // 2-stage per-voice allpass (base delays 7 ms / 14 ms) slowly modulated at
+    // ~0.2 Hz (phases spread independently) for additional spectral smearing.
+    //
+    // ±25% per-grain LCG jitter on delay at each grain boundary gives organic timing.
+    // kShimBufLen holds max grain (500 ms) + max delay (750 ms) + jitter headroom.
+    static constexpr int kNumShimVoices = 8;
+    static constexpr int kShimGrainLen  = 9600;   // 200 ms at 48 kHz (legacy constant)
+    static constexpr int kShimBufLen    = 131072;  // 2.73 s at 48 kHz
 
     struct ShimmerVoice {
         std::vector<float> grainBuf;   // kShimBufLen samples, circular
@@ -217,12 +240,27 @@ private:
         float grainPhaseB = 0.5f;
     };
 
-    std::array<ShimmerVoice, 2> shimVoices;          // [ch] — IR Feed path (pre-conv dry)
-    std::array<ShimmerVoice, 2> shimVoicesVol;       // [ch] — Feedback path (post-conv wet)
-    juce::AudioBuffer<float>    shimBuffer;          // same-block bridge: IR Feed grain output
-    juce::AudioBuffer<float>    shimFeedbackBuf;     // cross-block bridge: feedback grain output → next block's convolver input
-    int                         shimFeedbackLastBlockSize = 0;
-    int                         shimLastBlockSize = 0;
+    // [voice][ch] — 8 harmonic voices × 2 channels
+    std::array<std::array<ShimmerVoice, 2>, kNumShimVoices> shimVoicesHarm;
+    juce::AudioBuffer<float> shimBuffer;    // per-block scratch: sum of all voice outputs
+    uint32_t                 shimRng = 0x92d68ca2u; // LCG for per-grain delay jitter
+
+    // Per-voice LFO state (main delay LFO at 0.5 Hz; allpass LFO at 0.2 Hz).
+    // Phases initialised with 45° (2π/8) offsets so voices are de-correlated.
+    std::array<float, kNumShimVoices> shimLfoPhase   {};   // main delay LFO phases
+    std::array<float, kNumShimVoices> shimApLfoPhase {};   // allpass modulation LFO phases
+
+    // 2-stage allpass per voice × 2 channels: shimAPs[voice][stage][ch]
+    // Stage 0: base 7 ms (allocated 2× = 14 ms); stage 1: base 14 ms (allocated 2× = 28 ms).
+    // g = 0.5f. effLen set each block from allpass LFO.
+    std::array<std::array<std::array<SimpleAllpass, 2>, 2>, kNumShimVoices> shimAPs;
+
+    // Staggered onset: voice vi waits (vi+1) × shimDelay ms before contributing output.
+    // Counters are armed (in samples) when shimOn transitions false→true, then count down.
+    // The grain buffer still fills during the silent period so voices have real content
+    // at onset. Counts down at block granularity; unlock is sample-accurate within a block.
+    std::array<int,  kNumShimVoices> shimOnsetCounters {};
+    bool shimWasEnabled = false;
 
     juce::dsp::Gain<float> dryGain, wetGain;
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> lowBand, midBand, highBand, lowShelfBand, highShelfBand;

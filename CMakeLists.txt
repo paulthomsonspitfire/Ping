@@ -14,7 +14,7 @@ if(APPLE)
     endif()
 endif()
 
-project(Ping VERSION 2.0.11)
+project(Ping VERSION 2.1.3)
 
 # Minimum macOS 13.0 (Ventura) for plugin compatibility
 if(APPLE)
@@ -84,6 +84,7 @@ juce_add_binary_data(PingData
         Resources/reverse_button.png
         Resources/reverse_button_glow.png
         Resources/texture_bg.jpg
+        Resources/pingsubtitle.png
 )
 
 target_sources(Ping

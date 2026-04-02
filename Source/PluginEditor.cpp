@@ -68,8 +68,9 @@ PingEditor::PingEditor (PingProcessor& p)
                         img.setPixelAt (x, y, juce::Colours::transparentBlack);
             return img;
         };
-        spitfireLogoImage = prepLogo (BinaryData::spitfire_logo_png,     BinaryData::spitfire_logo_pngSize);
-        pingLogoImage     = prepLogo (BinaryData::ping_logo_blue_png,    BinaryData::ping_logo_blue_pngSize);
+        spitfireLogoImage   = prepLogo (BinaryData::spitfire_logo_png,     BinaryData::spitfire_logo_pngSize);
+        pingLogoImage       = prepLogo (BinaryData::ping_logo_blue_png,    BinaryData::ping_logo_blue_pngSize);
+        pingSubtitleImage   = prepLogo (BinaryData::pingsubtitle_png,      BinaryData::pingsubtitle_pngSize);
     }
 
     // IR list
@@ -598,6 +599,11 @@ void PingEditor::paint (juce::Graphics& g)
                            pingBounds.getX(), pingBounds.getY(),
                            pingBounds.getWidth(), pingBounds.getHeight(),
                            juce::RectanglePlacement::centred);
+    if (pingSubtitleBounds.getWidth() > 0 && pingSubtitleImage.isValid())
+        g.drawImageWithin (pingSubtitleImage,
+                           pingSubtitleBounds.getX(), pingSubtitleBounds.getY(),
+                           pingSubtitleBounds.getWidth(), pingSubtitleBounds.getHeight(),
+                           juce::RectanglePlacement::centred);
 
     // ── Raised bevel panel: left Rows 1+2 (IR Input / IR Controls / ER & Tail Crossfade) ────────
     // True split-edge emboss: top+left edges drawn in a separate Path from bottom+right edges,
@@ -953,12 +959,28 @@ void PingEditor::resized()
     }
 
     // P!NG logo: centred horizontally, fills the header height (578×182 → ratio 3.176:1)
+    // Raised 5 px to leave room for the subtitle below.
     {
         const int logoH = topRowH - 6;
         const int logoW = (int) (logoH * 578.f / 182.f);
         pingBounds = juce::Rectangle<int> (w / 2 - logoW / 2,
-                                           topRow.getY() + (topRowH - logoH) / 2 - 4,
+                                           topRow.getY() + (topRowH - logoH) / 2 - 9,
                                            logoW, logoH);
+
+        // Subtitle: 2× P!NG logo width, centred at w/2, bottom edge 2 px above header bottom
+        if (pingSubtitleImage.isValid() && pingSubtitleImage.getWidth() > 0)
+        {
+            const int subW = logoW * 2;
+            const int subH = juce::roundToInt (subW * (float) pingSubtitleImage.getHeight()
+                                                     / (float) pingSubtitleImage.getWidth());
+            pingSubtitleBounds = juce::Rectangle<int> (w / 2 - subW / 2,
+                                                        topRow.getBottom() - 2 - subH,
+                                                        subW, subH);
+        }
+        else
+        {
+            pingSubtitleBounds = {};
+        }
     }
 
     // Preset combo + Save button: right-aligned in header

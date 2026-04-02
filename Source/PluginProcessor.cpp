@@ -276,7 +276,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     // Cloud Multi-LFO
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::cloudOn,     "Cloud On",      false));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudDepth,    "Cloud Width",    0.0f,  1.0f,  0.3f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudRate,     "Cloud Density",  0.1f,  4.0f,  1.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudRate,     "Cloud Density",  0.1f,  4.0f,  2.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudSize,     "Cloud Length",   25.0f, 1000.0f, 200.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudVolume,   "Cloud Volume",   0.0f,  1.0f,  0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::cloudFeedback, "Cloud Feedback", 0.0f,  0.7f,  0.3f));
@@ -307,9 +307,7 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     tsErConvLL.prepare (spec); tsErConvRL.prepare (spec); tsErConvLR.prepare (spec); tsErConvRR.prepare (spec);
     tsTailConvLL.prepare (spec); tsTailConvRL.prepare (spec); tsTailConvLR.prepare (spec); tsTailConvRR.prepare (spec);
     spec.numChannels = 2;
-    erConvolver.reset();
     tailConvolver.reset();
-    erConvolver.prepare (spec);
     tailConvolver.prepare (spec);
 
     erLevelSmoothed.reset (sampleRate, 0.02);
@@ -425,31 +423,73 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         cloudFbSamples.fill (0.f);
         cloudBuffer.setSize (2, samplesPerBlock);
         cloudBuffer.clear();
+
+        // 4-stage all-pass diffusion cascade (Clouds TEXTURE-style grain-boundary smearing).
+        // Delays are prime-number spaced and sub-15 ms to avoid audible echo.
+        // Buffers are allocated exactly to the delay size (effLen=0 → uses buf.size()).
+        static constexpr float kCloudDiffDelaysMs[kNumCloudDiffuseStages] = { 13.7f, 7.3f, 4.1f, 1.7f };
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            for (int s = 0; s < kNumCloudDiffuseStages; ++s)
+            {
+                const int delaySamps = juce::jmax (1,
+                    (int)std::round (kCloudDiffDelaysMs[s] * sampleRate / 1000.0));
+                cloudDiffuseAPs[ch][s].buf.assign ((size_t)delaySamps, 0.f);
+                cloudDiffuseAPs[ch][s].ptr    = 0;
+                cloudDiffuseAPs[ch][s].effLen = 0;  // use buf.size()
+                cloudDiffuseAPs[ch][s].g      = 0.65f;
+            }
+        }
     }
 
-    // Shimmer: two independent grain paths.
-    // shimVoices     = IR Feed path (reads pre-conv dry signal, feeds into convolver).
-    // shimVoicesVol  = Volume path  (reads post-conv wet signal, added to final output).
-    for (int ch = 0; ch < 2; ++ch)
+    // Shimmer: 8-voice harmonic cloud — all voices read pre-conv dry, no loopback.
     {
-        auto initVoice = [](ShimmerVoice& v, int grainLen)
+        // Stage 0: base 7 ms, allocate at 2× to cover modulation sweep.
+        // Stage 1: base 14 ms, allocate at 2×.
+        const int ap0BufLen = juce::roundToInt (14.f * (float)sampleRate / 1000.f);
+        const int ap1BufLen = juce::roundToInt (28.f * (float)sampleRate / 1000.f);
+        const int ap0Base   = ap0BufLen / 2;  // 7 ms in samples
+        const int ap1Base   = ap1BufLen / 2;  // 14 ms in samples
+
+        const float lfoPhaseStep = juce::MathConstants<float>::twoPi / (float)kNumShimVoices;
+
+        for (int v = 0; v < kNumShimVoices; ++v)
         {
-            v.grainBuf.assign (kShimBufLen, 0.f);
-            v.writePtr    = 0;
-            v.readPtrA    = 0.f;
-            v.readPtrB    = (float)(grainLen / 2);
-            v.grainPhaseA = 0.f;
-            v.grainPhaseB = 0.5f;
-        };
-        initVoice (shimVoices[ch],    kShimGrainLen);
-        initVoice (shimVoicesVol[ch], kShimGrainLen);
+            // Grain voices
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                auto& voice = shimVoicesHarm[v][ch];
+                voice.grainBuf.assign (kShimBufLen, 0.f);
+                voice.writePtr    = 0;
+                voice.readPtrA    = 0.f;
+                voice.readPtrB    = (float)(kShimGrainLen / 2);
+                voice.grainPhaseA = 0.f;
+                voice.grainPhaseB = 0.5f;
+
+                // Allpass stage 0
+                shimAPs[v][0][ch].buf.assign (ap0BufLen, 0.f);
+                shimAPs[v][0][ch].ptr    = 0;
+                shimAPs[v][0][ch].effLen = ap0Base;
+                shimAPs[v][0][ch].g      = 0.5f;
+
+                // Allpass stage 1
+                shimAPs[v][1][ch].buf.assign (ap1BufLen, 0.f);
+                shimAPs[v][1][ch].ptr    = 0;
+                shimAPs[v][1][ch].effLen = ap1Base;
+                shimAPs[v][1][ch].g      = 0.5f;
+            }
+
+            // LFO phases: spread 2π/8 = 45° apart per voice.
+            // Allpass LFO uses an offset multiplier (1.3×) to decorrelate from main LFO.
+            shimLfoPhase[v]   = (float)v * lfoPhaseStep;
+            shimApLfoPhase[v] = (float)v * lfoPhaseStep * 1.3f;
+        }
     }
     shimBuffer.setSize (2, samplesPerBlock);
     shimBuffer.clear();
-    shimFeedbackBuf.setSize (2, samplesPerBlock);
-    shimFeedbackBuf.clear();
-    shimFeedbackLastBlockSize = 0;
-    shimLastBlockSize = 0;
+    shimRng = 0x92d68ca2u;
+    shimOnsetCounters.fill (0);
+    shimWasEnabled = false;
 
     updateGains();
     updatePredelay();
@@ -689,12 +729,19 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     // Cloud Granular Delay: variable-length Hann-windowed grains read from
     // a 3-second circular capture buffer of the dry input.
     //
-    // DENSITY (cloudRate) controls only spawn interval:
-    //   t=0 (low)  → spawned every 500–1000 ms (sparse)
-    //   t=1 (high) → spawned every   10–50 ms  (dense)
+    // DENSITY (cloudRate 0.1–4.0) controls spawn interval via exponential curve:
+    //   t=0 (low)  → spawned every 205–410 ms  (0–1 grains at default LENGTH)
+    //   t=0.5 (mid) → spawned every  33–67 ms  (~4 grains at 200 ms LENGTH)
+    //   t=1 (high) → spawned every    9–18 ms  (~14 grains at 200 ms LENGTH)
+    //   Formula: minMs = 200×0.02^t + 5, maxMs = 400×0.02^t + 10 (exponential)
+    //
     // LENGTH (cloudSize) sets grain length directly in ms (25–1000 ms).
+    // Grains read from random positions spread across the FULL 3-second buffer
+    //   (not just 1–2 grain lengths behind write head), creating time-decorrelated
+    //   textures rather than a phase-locked delay.
     // WIDTH (cloudDepth) controls stereo spread + reverse grain probability.
     // FEEDBACK (cloudFeedback) mixes grain output back into the capture buffer.
+    // 4-stage all-pass diffusion (Clouds-style) applied to grain sum before output.
     // cloudVolume: added post-blend (applied below alongside bloomVolume).
     // ——————————————————————————————————————————————————————————————————
     if (apvts.getRawParameterValue (IDs::cloudOn)->load() > 0.5f)
@@ -716,15 +763,20 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         const int   capBufSamps = (int)cloudCaptureBufs[0].size();
         const float sr          = (float)currentSampleRate;
 
-        // DENSITY → normalised t (0 = sparse, 1 = dense) — affects spawn interval only
+        // DENSITY → normalised t (0 = sparse, 1 = dense) — affects spawn interval only.
+        // Exponential curve: mid-knob gives meaningful grain overlap; full range is useful.
         const float t = (crate - 0.1f) / (4.0f - 0.1f);
 
         // Grain length: directly from LENGTH knob (ms)
         const float grainLengthMs = csize;
 
-        // Spawn interval window (ms), driven by DENSITY
-        const float minSpawnMs = 500.f * (1.f - t) + 10.f  * t;
-        const float maxSpawnMs = 1000.f * (1.f - t) + 50.f  * t;
+        // Spawn interval window (ms) — exponential curve so overlap is useful across full knob:
+        //   t=0  → 205–410 ms  (~0 grains overlapping at 200 ms LENGTH)
+        //   t=0.5 → 33–67 ms  (~4 grains at 200 ms)
+        //   t=1.0 →  9–18 ms  (~14 grains at 200 ms)
+        const float tPow       = std::pow (0.02f, t);   // 1.0 at t=0 → 0.02 at t=1
+        const float minSpawnMs = 200.f * tPow + 5.f;
+        const float maxSpawnMs = 400.f * tPow + 10.f;
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -749,11 +801,17 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                                            (int)(capBufSamps * 0.9f),
                                            (int)std::round (grainLengthMs * sr / 1000.f));
 
-                // ── Random read position: 1–2 grain lengths behind write head ─
+                // ── Random read position: spread across the full 3-second buffer ──────
+                // Minimum lookback = grainLen (causality); maximum = 90% of buffer.
+                // Scattering across the full history is the key difference from a delay:
+                // grains from very different points in time overlap, creating spectral
+                // richness and time-smear instead of phase-locked repetition.
                 cloudSpawnSeed = cloudSpawnSeed * 1664525u + 1013904223u;
-                const float r2 = (float)(cloudSpawnSeed >> 8) / (float)(1u << 24);
+                const float r2          = (float)(cloudSpawnSeed >> 8) / (float)(1u << 24);
+                const float minLookback = (float)grainLen;
+                const float maxLookback = (float)capBufSamps * 0.9f;
                 float startPos = (float)cloudCaptureWritePtrs[0]
-                                 - (float)grainLen * (1.f + r2);
+                                 - (minLookback + r2 * (maxLookback - minLookback));
                 while (startPos < 0.f) startPos += (float)capBufSamps;
 
                 // ── Random direction (WIDTH drives reverse probability) ────────
@@ -840,9 +898,26 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
                 ++activeCount;
             }
 
-            const float scale = (activeCount > 0) ? 1.f / (float)activeCount : 0.f;
-            const float outL  = grainSumL * scale;
-            const float outR  = (numChannels > 1) ? grainSumR * scale : outL;
+            // sqrt(N) normalisation: maintains consistent perceived loudness as density changes
+            // (1/N would make dense settings very quiet; sqrt(N) is the perceptually correct power law)
+            const float scale = (activeCount > 0) ? 1.f / std::sqrt ((float)activeCount) : 0.f;
+            float outL = grainSumL * scale;
+            float outR = (numChannels > 1) ? grainSumR * scale : outL;
+
+            // 4-stage all-pass diffusion (Clouds-style TEXTURE smearing).
+            // Applied per-sample to grain sum before output; smears grain-boundary
+            // discontinuities at signal level without adding reverb tail or latency artefacts.
+            outL = cloudDiffuseAPs[0][0].process (outL);
+            outL = cloudDiffuseAPs[0][1].process (outL);
+            outL = cloudDiffuseAPs[0][2].process (outL);
+            outL = cloudDiffuseAPs[0][3].process (outL);
+            if (numChannels > 1)
+            {
+                outR = cloudDiffuseAPs[1][0].process (outR);
+                outR = cloudDiffuseAPs[1][1].process (outR);
+                outR = cloudDiffuseAPs[1][2].process (outR);
+                outR = cloudDiffuseAPs[1][3].process (outR);
+            }
 
             cloudBuffer.setSample (0, i, outL);
             if (numChannels > 1) cloudBuffer.setSample (1, i, outR);
@@ -867,108 +942,204 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 
     // ——————————————————————————————————————————————————————————————————
-    // Shimmer: two signal paths sharing the same pitch-shift grain engine.
+    // Shimmer: 8-voice harmonic cloud (no feedback loop).
     //
-    // IR Feed path (shimVoices, same-block):
-    //   dry → pitch-shift → inject × shimIRFeed into convolver input.
-    //   One-way; shimVoices reads the CLEAN dry buffer before any feedback injection.
+    // Every voice reads the CLEAN pre-conv dry signal and injects a
+    // pitch-shifted, allpass-smeared copy into the convolver input × shimIRFeed.
+    // The convolver IR provides all decay and repetition.
     //
-    // Feedback loop (shimVoicesVol, cross-block — classic Lexicon shimmer):
-    //   post-conv wet → pitch-shift → tanh soft-clip → shimFeedbackBuf.
-    //   NEXT block: shimFeedbackBuf × shimFeedback injected AFTER shimVoices runs,
-    //   so feedback is pitched only once (by shimVoicesVol), not a second time here.
-    //   Loop: wet → pitch-shift (+N st) → convolver → wet (repeats, stacking pitch each pass).
+    // Voice layout (shimPitch = N semitones):
+    //   Voice 0:  0 st               — unshifted (body / unison reverb tail)
+    //   Voice 1: +N st               — fundamental shimmer interval
+    //   Voice 2: +2N st              — 2nd harmonic up
+    //   Voice 3: −N st               — 1st harmonic down
+    //   Voice 4: +3N st              — 3rd harmonic up
+    //   Voice 5: −2N st              — 2nd harmonic down
+    //   Voice 6:  0 st + 3 cents     — fixed-detune chorus double of voice 0
+    //   Voice 7: +N st + 6 cents     — fixed-detune chorus double of voice 1
+    //
+    // shimFeedback (0–0.7) = LFO depth for per-voice grain delay:
+    //   at 0   → all voices fixed at 300 ms delay
+    //   at 0.7 → 0.5 Hz LFO sweeps per-voice delay 300–750 ms
+    // Phases spread 45° per voice for de-correlation.
+    // Each voice also has a 2-stage allpass (7 ms / 14 ms) slowly modulated at
+    // ~0.2 Hz (independent phase offsets) for additional spectral wash.
     // ——————————————————————————————————————————————————————————————————
+    {
+        // Onset stagger: detect shimOn false→true transition and arm per-voice counters.
+        // Voice vi waits (vi+1) × shimDelay ms before contributing any output.
+        const bool shimIsOn = apvts.getRawParameterValue (IDs::shimOn)->load() > 0.5f;
+        if (shimIsOn && !shimWasEnabled)
+        {
+            const int staggerSamps = juce::roundToInt (
+                apvts.getRawParameterValue (IDs::shimDelay)->load()
+                * (float)currentSampleRate / 1000.f);
+            for (int v = 0; v < kNumShimVoices; ++v)
+                shimOnsetCounters[v] = (v + 1) * staggerSamps;
+        }
+        shimWasEnabled = shimIsOn;
+    }
+
     if (apvts.getRawParameterValue (IDs::shimOn)->load() > 0.5f)
     {
         const float shimPitchSt = apvts.getRawParameterValue (IDs::shimPitch)->load();
-        const float pitchRatio  = std::pow (2.f, shimPitchSt / 12.f);
-        // shimSize is now in milliseconds (50–500 ms)
         const int   effGrainLen = juce::jmax (1, juce::roundToInt (
                                     apvts.getRawParameterValue (IDs::shimSize)->load()
                                     * (float)currentSampleRate / 1000.f));
-        // shimDelay: how far behind the write head the grain read start is (on top of effGrainLen)
-        const int   delaySamps  = juce::roundToInt (
-                                    apvts.getRawParameterValue (IDs::shimDelay)->load()
-                                    * (float)currentSampleRate / 1000.f);
         const float shimIRFd    = apvts.getRawParameterValue (IDs::shimIRFeed)->load();
-        const float shimFb      = juce::jlimit (0.f, 0.7f,
-                                    apvts.getRawParameterValue (IDs::shimFeedback)->load());
+
+        // shimFeedback → LFO depth: [0, 0.7] → normDepth [0, 1].
+        // Base delay 300 ms, sweep up to +450 ms at full depth (300–750 ms range).
+        const float normDepth       = juce::jlimit (0.f, 1.f,
+                                        apvts.getRawParameterValue (IDs::shimFeedback)->load()
+                                        / 0.7f);
+        const int   baseDelaySamps  = juce::roundToInt (300.f * (float)currentSampleRate / 1000.f);
+        const int   sweepDelaySamps = juce::roundToInt (normDepth * 450.f
+                                        * (float)currentSampleRate / 1000.f);
+
+        // LFO phase increments per sample.
+        const float mainLfoInc = juce::MathConstants<float>::twoPi * 0.5f
+                                   / (float)currentSampleRate;   // 0.5 Hz
+        const float apLfoInc   = juce::MathConstants<float>::twoPi * 0.2f
+                                   / (float)currentSampleRate;   // 0.2 Hz
+
+        // Voice pitch layout.
+        // semiOff: fixed additional offset in semitones (3 cents = 3/100 st, 6 cents = 6/100 st).
+        static constexpr int   semiMult[kNumShimVoices] = { 0, 1, 2, -1, 3, -2, 0, 1 };
+        static constexpr float semiOff[kNumShimVoices]  = { 0.f, 0.f, 0.f, 0.f, 0.f, 0.f,
+                                                             3.f / 100.f, 6.f / 100.f };
 
         if (numSamples > shimBuffer.getNumSamples())
             shimBuffer.setSize (2, numSamples, false, true, true);
+        shimBuffer.clear();
 
         auto hannW = [](float p) -> float {
             return 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * p);
         };
 
-        // ── IR Feed path: pitch-shift the clean dry signal ────────────────────
-        // shimVoices reads buffer BEFORE any feedback injection so that the
-        // feedback signal is never double-pitched through this path.
-        for (int ch = 0; ch < numChannels; ++ch)
+        // ── Per-voice setup: update allpass effLen from allpass LFO (once per block) ──
+        for (int vi = 0; vi < kNumShimVoices; ++vi)
         {
-            auto& v           = shimVoices[ch];
-            const float* src  = buffer.getReadPointer (ch);   // clean pre-conv dry
-            float*       shim = shimBuffer.getWritePointer (ch);
-
-            for (int i = 0; i < numSamples; ++i)
-            {
-                v.grainBuf[(size_t)v.writePtr] = src[i];
-
-                auto readAt = [&](float rp) -> float {
-                    int   ri   = ((int)std::floor (rp) % kShimBufLen + kShimBufLen) % kShimBufLen;
-                    float frac = rp - std::floor (rp);
-                    return v.grainBuf[(size_t)ri]                       * (1.f - frac)
-                         + v.grainBuf[(size_t)((ri + 1) % kShimBufLen)] * frac;
-                };
-
-                shim[i] = (readAt (v.readPtrA) * hannW (v.grainPhaseA)
-                         + readAt (v.readPtrB) * hannW (v.grainPhaseB)) * 0.5f;
-
-                v.readPtrA    += pitchRatio;
-                v.readPtrB    += pitchRatio;
-                v.grainPhaseA += pitchRatio / (float)effGrainLen;
-                v.grainPhaseB += pitchRatio / (float)effGrainLen;
-
-                if (v.readPtrA >= (float)kShimBufLen) v.readPtrA -= (float)kShimBufLen;
-                if (v.readPtrB >= (float)kShimBufLen) v.readPtrB -= (float)kShimBufLen;
-
-                const int resetOffset = effGrainLen + delaySamps;
-                if (v.grainPhaseA >= 1.f)
-                {
-                    v.grainPhaseA -= 1.f;
-                    v.readPtrA = (float)((v.writePtr - resetOffset + kShimBufLen * 2) % kShimBufLen);
-                }
-                if (v.grainPhaseB >= 1.f)
-                {
-                    v.grainPhaseB -= 1.f;
-                    v.readPtrB = (float)((v.writePtr - resetOffset + kShimBufLen * 2) % kShimBufLen);
-                }
-
-                v.writePtr = (v.writePtr + 1) % kShimBufLen;
-            }
-
-            // Inject pitched dry into convolver input (one-way, no loop)
-            if (shimIRFd > 0.001f)
-            {
-                float* data = buffer.getWritePointer (ch);
-                for (int i = 0; i < numSamples; ++i)
-                    data[i] += shim[i] * shimIRFd;
-            }
-        }
-
-        // ── Feedback path: inject previous block's pitched wet into convolver ─
-        // Injected AFTER shimVoices so the feedback signal is only pitched once
-        // (by shimVoicesVol post-conv), not a second time by shimVoices.
-        if (shimFb > 0.f && shimFeedbackLastBlockSize > 0)
-        {
-            const int injectN = juce::jmin (numSamples, shimFeedbackLastBlockSize);
+            // Allpass LFO maps sin() ∈ [−1, 1] → delay sweep around base.
+            // Stage 0: 7 ms ± 3 ms → range 4–10 ms.
+            // Stage 1: 14 ms ± 5 ms → range 9–19 ms.
+            const float apLv   = std::sin (shimApLfoPhase[vi]);
+            const int   ap0Len = juce::roundToInt ((7.f + 3.f * apLv)
+                                     * (float)currentSampleRate / 1000.f);
+            const int   ap1Len = juce::roundToInt ((14.f + 5.f * apLv)
+                                     * (float)currentSampleRate / 1000.f);
             for (int ch = 0; ch < numChannels; ++ch)
             {
-                float*       buf = buffer.getWritePointer (ch);
-                const float* fb  = shimFeedbackBuf.getReadPointer (ch);
-                for (int i = 0; i < injectN; ++i)
-                    buf[i] += fb[i] * shimFb;
+                shimAPs[vi][0][ch].effLen = juce::jlimit (1,
+                    (int)shimAPs[vi][0][ch].buf.size(), ap0Len);
+                shimAPs[vi][1][ch].effLen = juce::jlimit (1,
+                    (int)shimAPs[vi][1][ch].buf.size(), ap1Len);
+            }
+            // Advance allpass LFO by block duration.
+            shimApLfoPhase[vi] += apLfoInc * (float)numSamples;
+            if (shimApLfoPhase[vi] >= juce::MathConstants<float>::twoPi)
+                shimApLfoPhase[vi] -= juce::MathConstants<float>::twoPi;
+        }
+
+        // ── Run all 8 voices, accumulating into shimBuffer ────────────────────
+        for (int vi = 0; vi < kNumShimVoices; ++vi)
+        {
+            const float stTotal    = (float)semiMult[vi] * shimPitchSt + semiOff[vi];
+            const float pitchRatio = std::pow (2.f, stTotal / 12.f);
+
+            // Sample the main LFO once per block per voice (grain resets within a block
+            // all use the same delay — sufficient because blocks are ~10 ms at 48 kHz).
+            const float mainLv        = 0.5f * (1.f + std::sin (shimLfoPhase[vi]));  // [0,1]
+            const int   voiceDelaySamps = baseDelaySamps
+                                         + juce::roundToInt ((float)sweepDelaySamps * mainLv);
+
+            // Staggered onset: voice vi is silent until its counter reaches 0.
+            // onsetStartSample is the first sample in this block at which this voice outputs.
+            // The grain engine still runs (buffer writes + read-pointer advances) during silence
+            // so that voices have real content and stable state when they do come in.
+            const int onsetStartSample = juce::jmin (numSamples, shimOnsetCounters[vi]);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                auto&        v   = shimVoicesHarm[vi][ch];
+                const float* src = buffer.getReadPointer (ch);   // clean pre-conv dry
+                float*       out = shimBuffer.getWritePointer (ch);
+
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    v.grainBuf[(size_t)v.writePtr] = src[i];
+
+                    auto readAt = [&](float rp) -> float {
+                        int   ri   = ((int)std::floor (rp) % kShimBufLen + kShimBufLen) % kShimBufLen;
+                        float frac = rp - std::floor (rp);
+                        return v.grainBuf[(size_t)ri]                        * (1.f - frac)
+                             + v.grainBuf[(size_t)((ri + 1) % kShimBufLen)] * frac;
+                    };
+
+                    // Two crossfading Hann grains, then 2-stage allpass for spectral smearing.
+                    float grainOut = (readAt (v.readPtrA) * hannW (v.grainPhaseA)
+                                   + readAt (v.readPtrB) * hannW (v.grainPhaseB)) * 0.5f;
+                    grainOut = shimAPs[vi][0][ch].process (grainOut);
+                    grainOut = shimAPs[vi][1][ch].process (grainOut);
+                    // Only add to output once the onset window for this voice has passed.
+                    if (i >= onsetStartSample)
+                        out[i] += grainOut;
+
+                    v.readPtrA    += pitchRatio;
+                    v.readPtrB    += pitchRatio;
+                    v.grainPhaseA += pitchRatio / (float)effGrainLen;
+                    v.grainPhaseB += pitchRatio / (float)effGrainLen;
+
+                    if (v.readPtrA >= (float)kShimBufLen) v.readPtrA -= (float)kShimBufLen;
+                    if (v.readPtrB >= (float)kShimBufLen) v.readPtrB -= (float)kShimBufLen;
+
+                    // ±25% LCG jitter on the voice delay at each grain boundary.
+                    if (v.grainPhaseA >= 1.f)
+                    {
+                        v.grainPhaseA -= 1.f;
+                        shimRng = shimRng * 1664525u + 1013904223u;
+                        const int jitter = (int)(((float)(shimRng & 0xffff) / 65535.f - 0.5f)
+                                                   * 0.5f * (float)voiceDelaySamps);
+                        v.readPtrA = (float)((v.writePtr
+                                              - (effGrainLen + voiceDelaySamps + jitter)
+                                              + kShimBufLen * 2) % kShimBufLen);
+                    }
+                    if (v.grainPhaseB >= 1.f)
+                    {
+                        v.grainPhaseB -= 1.f;
+                        shimRng = shimRng * 1664525u + 1013904223u;
+                        const int jitter = (int)(((float)(shimRng & 0xffff) / 65535.f - 0.5f)
+                                                   * 0.5f * (float)voiceDelaySamps);
+                        v.readPtrB = (float)((v.writePtr
+                                              - (effGrainLen + voiceDelaySamps + jitter)
+                                              + kShimBufLen * 2) % kShimBufLen);
+                    }
+
+                    v.writePtr = (v.writePtr + 1) % kShimBufLen;
+                }
+            }
+
+            // Count down onset timer (clamp at zero so it stays inactive once elapsed).
+            shimOnsetCounters[vi] = juce::jmax (0, shimOnsetCounters[vi] - numSamples);
+
+            // Advance main LFO by block duration after both channels are processed.
+            shimLfoPhase[vi] += mainLfoInc * (float)numSamples;
+            if (shimLfoPhase[vi] >= juce::MathConstants<float>::twoPi)
+                shimLfoPhase[vi] -= juce::MathConstants<float>::twoPi;
+        }
+
+        // ── Inject the summed cloud into the convolver input ──────────────────
+        // 1/√8 normalisation keeps perceived loudness consistent with a single voice.
+        if (shimIRFd > 0.001f)
+        {
+            static constexpr float kVoiceNorm = 1.f / 2.828427125f;  // 1/√8
+            const float gain = shimIRFd * kVoiceNorm;
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                float*       dst = buffer.getWritePointer (ch);
+                const float* shm = shimBuffer.getReadPointer (ch);
+                for (int i = 0; i < numSamples; ++i)
+                    dst[i] += shm[i] * gain;
             }
         }
     }
@@ -982,7 +1153,8 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     erLevelSmoothed.setTargetValue (juce::Decibels::decibelsToGain (erDb));
     tailLevelSmoothed.setTargetValue (juce::Decibels::decibelsToGain (tailDb));
 
-    if (useTrueStereo)
+    // All IRs use the unified true-stereo 8-convolver path (stereo file IRs are expanded to
+    // 4-channel with zero cross-channels at load time in loadIRFromBuffer).
     {
         juce::AudioBuffer<float> lIn (1, numSamples), rIn (1, numSamples);
         lIn.copyFrom (0, 0, buffer, 0, 0, numSamples);
@@ -1064,8 +1236,9 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             }
         }
 
-        // True-stereo IRs (from IR Synth) are not peak-normalised; level follows 1/r.
-        // Apply compensation so wet level is in a usable range at default ER/Tail settings.
+        // All IRs use the true-stereo 8-convolver path. Synthesised IRs are not peak-normalised
+        // (level follows 1/r); ×2.0 brings them to a usable range. Stereo file IRs are pre-scaled
+        // ×0.5 at load time (in loadIRFromBuffer) so their net gain here is ×1.0.
         const float trueStereoWetGain = 2.0f;
         float erPkL = 0.f, erPkR = 0.f, tailPkL = 0.f, tailPkR = 0.f;
         for (int i = 0; i < numSamples; ++i)
@@ -1083,83 +1256,6 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             buffer.setSample (0, i, eL + tL);
             buffer.setSample (1, i, eR + tR);
         }
-        updatePeak (erLevelPeakL,   erPkL);
-        updatePeak (erLevelPeakR,   erPkR);
-        updatePeak (tailLevelPeakL, tailPkL);
-        updatePeak (tailLevelPeakR, tailPkR);
-    }
-    else
-    {
-        juce::AudioBuffer<float> tailBuffer (numChannels, numSamples);
-        for (int ch = 0; ch < numChannels; ++ch)
-            tailBuffer.copyFrom (ch, 0, buffer, ch, 0, numSamples);
-
-        juce::dsp::AudioBlock<float> erBlock (buffer);
-        juce::dsp::AudioBlock<float> tailBlock (tailBuffer);
-        erConvolver.process (juce::dsp::ProcessContextReplacing<float> (erBlock));
-        tailConvolver.process (juce::dsp::ProcessContextReplacing<float> (tailBlock));
-
-        if (apvts.getRawParameterValue (IDs::erCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
-        {
-            float delayMs = apvts.getRawParameterValue (IDs::erCrossfeedDelayMs)->load();
-            float attDb = apvts.getRawParameterValue (IDs::erCrossfeedAttDb)->load();
-            int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1, (int)std::round (delayMs * (float)currentSampleRate / 1000.0f));
-            float gain = juce::Decibels::decibelsToGain (attDb);
-            float* lPtr = buffer.getWritePointer (0);
-            float* rPtr = buffer.getWritePointer (1);
-            for (int i = 0; i < numSamples; ++i)
-            {
-                int readRtoL = (crossfeedErWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
-                int readLtoR = (crossfeedErWriteLtoR - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
-                float l = lPtr[i], r = rPtr[i];
-                lPtr[i] += gain * crossfeedErBufRtoL[(size_t)readRtoL];
-                rPtr[i] += gain * crossfeedErBufLtoR[(size_t)readLtoR];
-                crossfeedErBufRtoL[(size_t)crossfeedErWriteRtoL] = r;
-                crossfeedErBufLtoR[(size_t)crossfeedErWriteLtoR] = l;
-                crossfeedErWriteRtoL = (crossfeedErWriteRtoL + 1) % crossfeedMaxSamples;
-                crossfeedErWriteLtoR = (crossfeedErWriteLtoR + 1) % crossfeedMaxSamples;
-            }
-        }
-        if (apvts.getRawParameterValue (IDs::tailCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
-        {
-            float delayMs = apvts.getRawParameterValue (IDs::tailCrossfeedDelayMs)->load();
-            float attDb = apvts.getRawParameterValue (IDs::tailCrossfeedAttDb)->load();
-            int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1, (int)std::round (delayMs * (float)currentSampleRate / 1000.0f));
-            float gain = juce::Decibels::decibelsToGain (attDb);
-            float* lPtr = tailBuffer.getWritePointer (0);
-            float* rPtr = tailBuffer.getWritePointer (1);
-            for (int i = 0; i < numSamples; ++i)
-            {
-                int readRtoL = (crossfeedTailWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
-                int readLtoR = (crossfeedTailWriteLtoR - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
-                float l = lPtr[i], r = rPtr[i];
-                lPtr[i] += gain * crossfeedTailBufRtoL[(size_t)readRtoL];
-                rPtr[i] += gain * crossfeedTailBufLtoR[(size_t)readLtoR];
-                crossfeedTailBufRtoL[(size_t)crossfeedTailWriteRtoL] = r;
-                crossfeedTailBufLtoR[(size_t)crossfeedTailWriteLtoR] = l;
-                crossfeedTailWriteRtoL = (crossfeedTailWriteRtoL + 1) % crossfeedMaxSamples;
-                crossfeedTailWriteLtoR = (crossfeedTailWriteLtoR + 1) % crossfeedMaxSamples;
-            }
-        }
-
-        float erPkL = 0.f, erPkR = 0.f, tailPkL = 0.f, tailPkR = 0.f;
-        for (int i = 0; i < numSamples; ++i)
-        {
-            float erG = erLevelSmoothed.getNextValue();
-            float tailG = tailLevelSmoothed.getNextValue();
-            // Compute per-channel values for metering and mix
-            float eL = buffer.getSample (0, i) * erG * 0.5f;
-            float eR = (numChannels > 1) ? buffer.getSample (1, i) * erG * 0.5f : 0.f;
-            float tL = tailBuffer.getSample (0, i) * tailG * 0.5f;
-            float tR = (numChannels > 1) ? tailBuffer.getSample (1, i) * tailG * 0.5f : 0.f;
-            erPkL   = juce::jmax (erPkL,   std::abs (eL));
-            erPkR   = juce::jmax (erPkR,   std::abs (eR));
-            tailPkL = juce::jmax (tailPkL, std::abs (tL));
-            tailPkR = juce::jmax (tailPkR, std::abs (tR));
-            buffer.setSample (0, i, eL + tL);
-            if (numChannels > 1) buffer.setSample (1, i, eR + tR);
-        }
-        // Note: the 0.5f trim is now folded into eL/eR/tL/tR above; no separate applyGain needed.
         updatePeak (erLevelPeakL,   erPkL);
         updatePeak (erLevelPeakR,   erPkR);
         updatePeak (tailLevelPeakL, tailPkL);
@@ -1245,103 +1341,8 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     // (Cloud Insertion 2 removed — Cloud now runs pre-convolution above.
     //  cloudVolume is applied post-blend below, alongside bloomVolume.)
 
-    // ——————————————————————————————————————————————————————————————————
-    // Shimmer Feedback capture: pitch-shift the post-conv wet signal and
-    // store in shimFeedbackBuf. Applied on the NEXT block as convolver input.
-    // tanh soft-saturation prevents runaway feedback at high settings.
-    // Always runs when shimOn so grain state stays warm even at shimFeedback=0.
-    // ——————————————————————————————————————————————————————————————————
-    if (apvts.getRawParameterValue (IDs::shimOn)->load() > 0.5f)
-    {
-        const float shimPitchSt  = apvts.getRawParameterValue (IDs::shimPitch)->load();
-        const float pitchRatio   = std::pow (2.f, shimPitchSt / 12.f);
-        // shimSize in milliseconds — same grain length as IR Feed path
-        const int   effGrainLen  = juce::jmax (1, juce::roundToInt (
-                                     apvts.getRawParameterValue (IDs::shimSize)->load()
-                                     * (float)currentSampleRate / 1000.f));
-        const int   delaySamps   = juce::roundToInt (
-                                     apvts.getRawParameterValue (IDs::shimDelay)->load()
-                                     * (float)currentSampleRate / 1000.f);
-
-        if (numSamples > shimFeedbackBuf.getNumSamples())
-            shimFeedbackBuf.setSize (2, numSamples, false, true, true);
-
-        auto hannW = [](float p) -> float {
-            return 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * p);
-        };
-
-        for (int ch = 0; ch < numChannels; ++ch)
-        {
-            auto& v          = shimVoicesVol[ch];
-            const float* wet = buffer.getReadPointer (ch);
-            float*       fb  = shimFeedbackBuf.getWritePointer (ch);
-
-            for (int i = 0; i < numSamples; ++i)
-            {
-                v.grainBuf[(size_t)v.writePtr] = wet[i];
-
-                auto readAt = [&](float rp) -> float {
-                    int   ri   = ((int)std::floor (rp) % kShimBufLen + kShimBufLen) % kShimBufLen;
-                    float frac = rp - std::floor (rp);
-                    return v.grainBuf[(size_t)ri]                       * (1.f - frac)
-                         + v.grainBuf[(size_t)((ri + 1) % kShimBufLen)] * frac;
-                };
-
-                float out = (readAt (v.readPtrA) * hannW (v.grainPhaseA)
-                           + readAt (v.readPtrB) * hannW (v.grainPhaseB)) * 0.5f;
-
-                // Soft-clip to prevent runaway loop gain
-                fb[i] = std::tanh (out);
-
-                v.readPtrA    += pitchRatio;
-                v.readPtrB    += pitchRatio;
-                v.grainPhaseA += pitchRatio / (float)effGrainLen;
-                v.grainPhaseB += pitchRatio / (float)effGrainLen;
-
-                if (v.readPtrA >= (float)kShimBufLen) v.readPtrA -= (float)kShimBufLen;
-                if (v.readPtrB >= (float)kShimBufLen) v.readPtrB -= (float)kShimBufLen;
-
-                const int resetOffset = effGrainLen + delaySamps;
-                if (v.grainPhaseA >= 1.f)
-                {
-                    v.grainPhaseA -= 1.f;
-                    v.readPtrA = (float)((v.writePtr - resetOffset + kShimBufLen * 2) % kShimBufLen);
-                }
-                if (v.grainPhaseB >= 1.f)
-                {
-                    v.grainPhaseB -= 1.f;
-                    v.readPtrB = (float)((v.writePtr - resetOffset + kShimBufLen * 2) % kShimBufLen);
-                }
-
-                v.writePtr = (v.writePtr + 1) % kShimBufLen;
-            }
-        }
-        // ── Peak ceiling: keep shimFeedbackBuf below a safe level so the
-        // loop gain (shimFb × grain_gain≈0.5 × IR_gain) stays < 1.
-        // Without this, IRs with significant gain (e.g. synth IRs with the
-        // built-in +15 dB boost) push the loop above unity and every pitch
-        // rise stacks more energy than the previous one.
-        // kFbCeiling=0.35 keeps the loop stable for IR gains up to ~8×.
-        {
-            static constexpr float kFbCeiling = 0.35f;
-            float fbPeak = 0.f;
-            for (int ch = 0; ch < numChannels; ++ch)
-            {
-                const float* fb = shimFeedbackBuf.getReadPointer (ch);
-                for (int i = 0; i < numSamples; ++i)
-                    fbPeak = juce::jmax (fbPeak, std::abs (fb[i]));
-            }
-            if (fbPeak > kFbCeiling)
-                shimFeedbackBuf.applyGain (kFbCeiling / fbPeak);
-        }
-
-        shimFeedbackLastBlockSize = numSamples;
-    }
-    else
-    {
-        shimFeedbackBuf.clear();
-        shimFeedbackLastBlockSize = 0;
-    }
+    // (Shimmer post-conv feedback capture removed: the new 8-voice cloud architecture
+    //  is entirely pre-conv with no loopback. The IR provides all smearing / decay.)
 
     // Wet output gain (boost/cut the whole wet signal, like input gain for output)
     float outGainDb = apvts.getRawParameterValue (IDs::outputGain)->load();
@@ -1408,9 +1409,8 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         }
     }
 
-    // (shimVolume direct-output path removed — shimmer output now flows exclusively
-    //  through the feedback loop: post-conv wet → pitch-shift → shimFeedbackBuf
-    //  → next block's convolver input × shimFeedback.)
+    // (shimVolume and shimFeedback loopback paths removed — shimmer is now a pure
+    //  pre-conv 8-voice harmonic cloud. The IR provides all smearing and decay.)
 
     // Output level metering
     float peakL = 0.0f, peakR = 0.0f;
@@ -1701,9 +1701,26 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         }
     }
 
-    currentIRBuffer = buffer;
+    currentIRBuffer = buffer;   // store original data for waveform display before any channel expansion
     int numCh = buffer.getNumChannels();
     int fullLen = buffer.getNumSamples();
+
+    // Expand mono/stereo IR to true-stereo 4-channel so all IRs share the same signal path.
+    // Cross-channels (iRL, iLR) are zero: a plain stereo file has no cross-channel IR content.
+    // Non-zero channels are scaled ×0.5 to cancel the ×2.0 trueStereoWetGain applied in
+    // processBlock, keeping output level consistent with the former stereo path.
+    if (numCh < 4)
+    {
+        juce::AudioBuffer<float> expanded (4, fullLen);
+        expanded.clear();                                                 // zeroes iRL (ch1) and iLR (ch2)
+        expanded.copyFrom (0, 0, buffer, 0, 0, fullLen);                  // iLL = IR_L
+        expanded.applyGain (0, 0, fullLen, 0.5f);
+        const int srcRCh = (numCh >= 2) ? 1 : 0;                         // use ch0 for mono sources
+        expanded.copyFrom (3, 0, buffer, srcRCh, 0, fullLen);             // iRR = IR_R (or IR_L for mono)
+        expanded.applyGain (3, 0, fullLen, 0.5f);
+        buffer = std::move (expanded);
+        numCh  = 4;
+    }
 
     const bool synthErOnly = fromSynth && lastIRSynthParams.er_only;
     const double crossoverSeconds = fromSynth ? 0.085 : 0.080;
@@ -1713,7 +1730,6 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
 
     if (numCh >= 4)
     {
-        useTrueStereo = true;
         auto makeMonoEr = [&] (int ch)
         {
             int erLen = fullLen <= crossoverSamples ? fullLen : crossoverSamples + fadeLength;
@@ -1770,52 +1786,8 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 juce::dsp::Convolution::Normalise::no);
         }
     }
-    else
-    {
-        useTrueStereo = false;
-        bool isStereo = numCh >= 2;
-        juce::AudioBuffer<float> erIR;
-        juce::AudioBuffer<float> tailIR;
-
-        if (synthErOnly || fullLen <= crossoverSamples)
-        {
-            erIR = std::move (buffer);
-            tailIR = juce::AudioBuffer<float> (numCh, juce::jmax (64, fadeLength * 2));
-            tailIR.clear();
-        }
-        else
-        {
-            int erLen = crossoverSamples + fadeLength;
-            erIR = juce::AudioBuffer<float> (numCh, erLen);
-            for (int ch = 0; ch < numCh; ++ch)
-                erIR.copyFrom (ch, 0, buffer, ch, 0, juce::jmin (erLen, fullLen));
-            for (int i = 0; i < fadeLength && (crossoverSamples + i) < erIR.getNumSamples(); ++i)
-            {
-                float gain = 1.0f - (float) i / (float) fadeLength;
-                erIR.applyGain (crossoverSamples + i, 1, gain);
-            }
-
-            int tailLen = fullLen - crossoverSamples;
-            tailIR = juce::AudioBuffer<float> (numCh, tailLen);
-            for (int ch = 0; ch < numCh; ++ch)
-                tailIR.copyFrom (ch, 0, buffer, ch, crossoverSamples, tailLen);
-            for (int i = 0; i < juce::jmin (fadeLength, tailLen); ++i)
-            {
-                float gain = (float) i / (float) fadeLength;
-                tailIR.applyGain (i, 1, gain);
-            }
-        }
-
-        erConvolver.loadImpulseResponse (std::move (erIR), bufferSampleRate,
-                                        isStereo ? juce::dsp::Convolution::Stereo::yes : juce::dsp::Convolution::Stereo::no,
-                                        juce::dsp::Convolution::Trim::no,
-                                        juce::dsp::Convolution::Normalise::no);
-        tailConvolver.loadImpulseResponse (std::move (tailIR), bufferSampleRate,
-                                           isStereo ? juce::dsp::Convolution::Stereo::yes : juce::dsp::Convolution::Stereo::no,
-                                           juce::dsp::Convolution::Trim::no,
-                                           juce::dsp::Convolution::Normalise::no);
-    }
 }
+
 
 static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent)
 {
@@ -2126,19 +2098,11 @@ void PingProcessor::setReverseTrim (float v)
 
 double PingProcessor::getTailLengthSeconds() const
 {
-    int irSize = 0;
-    if (useTrueStereo)
-    {
-        int erMax = juce::jmax (tsErConvLL.getCurrentIRSize(), tsErConvRL.getCurrentIRSize(),
-                               tsErConvLR.getCurrentIRSize(), tsErConvRR.getCurrentIRSize());
-        int tailMax = juce::jmax (tsTailConvLL.getCurrentIRSize(), tsTailConvRL.getCurrentIRSize(),
-                                 tsTailConvLR.getCurrentIRSize(), tsTailConvRR.getCurrentIRSize());
-        irSize = juce::jmax (erMax, tailMax);
-    }
-    else
-    {
-        irSize = juce::jmax (erConvolver.getCurrentIRSize(), tailConvolver.getCurrentIRSize());
-    }
+    int erMax = juce::jmax (tsErConvLL.getCurrentIRSize(), tsErConvRL.getCurrentIRSize(),
+                            tsErConvLR.getCurrentIRSize(), tsErConvRR.getCurrentIRSize());
+    int tailMax = juce::jmax (tsTailConvLL.getCurrentIRSize(), tsTailConvRL.getCurrentIRSize(),
+                              tsTailConvLR.getCurrentIRSize(), tsTailConvRR.getCurrentIRSize());
+    int irSize = juce::jmax (erMax, tailMax);
     if (currentSampleRate > 0 && irSize > 0)
         return irSize / currentSampleRate;
     return 0.0;
