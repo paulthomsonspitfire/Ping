@@ -963,17 +963,17 @@ void PingEditor::resized()
         const int logoH = topRowH - 6;
         const int logoW = (int) (logoH * 578.f / 182.f);
         pingBounds = juce::Rectangle<int> (w / 2 - logoW / 2,
-                                           topRow.getY() + (topRowH - logoH) / 2 - 6,
+                                           topRow.getY() + (topRowH - logoH) / 2 - 9,
                                            logoW, logoH);
 
         // Subtitle: fixed 15 px tall, width derived from natural aspect ratio,
-        // vertical centre = logo vertical centre + 22 px.
+        // vertical centre = logo vertical centre + 25 px.
         if (pingSubtitleImage.isValid() && pingSubtitleImage.getWidth() > 0)
         {
             const int subH = 15;
             const int subW = juce::roundToInt (subH * (float) pingSubtitleImage.getWidth()
                                                      / (float) pingSubtitleImage.getHeight());
-            const int subCentreY = pingBounds.getCentreY() + 22;
+            const int subCentreY = pingBounds.getCentreY() + 25;
             pingSubtitleBounds = juce::Rectangle<int> (w / 2 - subW / 2,
                                                         subCentreY - subH / 2,
                                                         subW, subH);

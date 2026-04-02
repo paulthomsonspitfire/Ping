@@ -464,12 +464,12 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `cloudFeedback` | Cloud Feedback (UI: FEEDBACK) | 0–0.7 | 0.3 |
 | `cloudIRFeed` | Cloud IR Feed (UI: IR FEED) | 0–1 | 0.5 |
 | `shimOn` | Shimmer On | bool | false |
-| `shimPitch` | Shimmer Pitch | −24–+24 semitones (integer steps) | +7 |
-| `shimSize` | Shimmer Length (ms) | 50–500 | 200 |
-| `shimDelay` | Shimmer Delay / Onset Stagger (ms) | 0–1000 | 0 |
+| `shimPitch` | Shimmer Pitch | −24–+24 semitones (integer steps) | +12 |
+| `shimSize` | Shimmer Length (ms) | 50–500 | 300 |
+| `shimDelay` | Shimmer Delay / Onset Stagger (ms) | 0–1000 | 500 |
 | `shimIRFeed` | Shimmer IR Feed | 0–1 | 0.5 |
 | `shimVolume` | Shimmer Volume (unused — reserved) | 0–1 | 0 |
-| `shimFeedback` | Shimmer Decay Time | 0–0.7 | 0.3 |
+| `shimFeedback` | Shimmer Decay Time | 0–0.7 | 0.45 |
 | `reversetrim` | Reverse Trim | 0–0.95 | 0 |
 | `b3freq/b3gain/b3q` | Low Shelf EQ | 20–1200 Hz / ±12 dB / slope 0.3–2.0 | 200 Hz, 0 dB, 0.707 |
 | `b0freq/b0gain/b0q` | Peak 1 EQ | 50–16k Hz / ±12 dB / Q 0.3–10 | 400 Hz, 0 dB, 0.707 |
@@ -847,7 +847,7 @@ There is no post-conv shimmer block.
 
 ### Voice layout
 
-`shimPitch` = N semitones (integer steps, e.g. +7 = perfect fifth).
+`shimPitch` = N semitones (integer steps, e.g. +12 = one octave).
 
 | Voice | Pitch | Role |
 |---|---|---|
@@ -974,12 +974,12 @@ bool shimWasEnabled = false;
 | Parameter ID | Range | Default | Effect |
 |---|---|---|---|
 | `shimOn` | bool | false | Enables Shimmer; zero overhead when off |
-| `shimPitch` | −24–+24 st (integer steps) | +7 | Semitone interval N applied to voices 1–5 and 7. +7 = perfect fifth. Integer NormalisableRange. |
-| `shimSize` | 50–500 ms | 200 ms | LENGTH — grain length in ms. Longer = smoother, more sustained pitch with less smear. |
-| `shimDelay` | 0–1000 ms | 0 ms | DELAY — dual role: (1) stagger interval for voice onsets (voice vi waits (vi+1) × delay ms after shimOn enabled); (2) sets the per-voice delay line period. At DELAY=0 the delay period falls back to `effGrainLen`. |
+| `shimPitch` | −24–+24 st (integer steps) | +12 | Semitone interval N applied to voices 1–5 and 7. +12 = one octave. Integer NormalisableRange. |
+| `shimSize` | 50–500 ms | 300 ms | LENGTH — grain length in ms. Longer = smoother, more sustained pitch with less smear. |
+| `shimDelay` | 0–1000 ms | 500 ms | DELAY — dual role: (1) stagger interval for voice onsets (voice vi waits (vi+1) × delay ms after shimOn enabled); (2) sets the per-voice delay line period. At DELAY=0 the delay period falls back to `effGrainLen`. |
 | `shimIRFeed` | 0–1 | **0.5** | IR FEED — `shimBuffer × shimIRFeed × (1/√8)` injected into convolver input (same-block, one-way). Default 0.5 — audible immediately on enable. |
 | `shimVolume` | 0–1 | 0 | Reserved / unused. APVTS entry kept for preset backward-compatibility. |
-| `shimFeedback` | 0–0.7 | 0.3 | FEEDBACK — decay time control for the per-voice delay lines. Exponential mapping: `T = 2 × (7.5)^(raw/0.7)`. At 0: T≈2 s. At 0.3 (default): T≈5.5 s. At 0.7: T=15 s. Feedback coefficient per voice: `shimFb = exp(-3 × period / sr / T)`, always < 1. |
+| `shimFeedback` | 0–0.7 | 0.45 | FEEDBACK — decay time control for the per-voice delay lines. Exponential mapping: `T = 2 × (7.5)^(raw/0.7)`. At 0: T≈2 s. At 0.45 (default): T≈8.7 s. At 0.7: T=15 s. Feedback coefficient per voice: `shimFb = exp(-3 × period / sr / T)`, always < 1. |
 
 ### UI layout (Row R2 — "Shimmer")
 
@@ -997,7 +997,7 @@ Steps applied in order:
 1. **Reverse** (if `reverse == true`) — sample order flipped per channel. Reverse Trim then skips `trimFrac × length` samples from the start of the reversed IR.
 2. **Stretch** — linear-interpolation time-scale to `stretchFactor × originalLength`.
 3. **Decay envelope** — exponential fade: `env(t) = exp(−decayParam × 6 × t)`, where `decayParam = 1 − UI_decay`.
-4. **Mono/stereo → 4-channel expansion** (file IRs only, skipped for synth IRs which arrive as 4-channel) — a 2-channel stereo (or 1-channel mono) buffer is padded to 4 channels: iLL = ch0, iRR = ch1 (or ch0 for mono), cross-channels iRL/iLR zeroed. The two non-zero channels are scaled ×0.5 (cancels the `trueStereoWetGain = 2.0f` in `processBlock`). An additional **−9 dB** scalar (`juce::Decibels::decibelsToGain(-9.0f)`) is applied to the whole expanded buffer to compensate for the observed level excess of file-based IRs relative to synthesised IRs. Synth IRs bypass this block entirely because they arrive with `numCh == 4`.
+4. **Mono/stereo → 4-channel expansion** (file IRs only, skipped for synth IRs which arrive as 4-channel) — a 2-channel stereo (or 1-channel mono) buffer is padded to 4 channels: iLL = ch0, iRR = ch1 (or ch0 for mono), cross-channels iRL/iLR zeroed. The two non-zero channels are scaled ×0.5 (cancels the `trueStereoWetGain = 2.0f` in `processBlock`). An additional **−12 dB** scalar (`juce::Decibels::decibelsToGain(-12.0f)`) is applied to the whole expanded buffer to compensate for the observed level excess of file-based IRs relative to synthesised IRs. Synth IRs bypass this block entirely because they arrive with `numCh == 4`.
 5. **ER / Tail split at 80 ms** — crossover at `0.080 × sr` samples, with a 10 ms fade-out on ER and 10 ms fade-in on Tail. Each half is loaded into its respective convolver pair.
 
 > **Known inconsistency:** The file-load IR split uses **80 ms** but the IR Synth engine's internal crossover uses **85 ms** (`ec = 0.085 × sr`). These should ideally be unified. Don't introduce a third value.
@@ -1156,7 +1156,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Preset and IR save overwrite prompts are selection-based** — Save actions only prompt when the typed name matches the currently selected existing item in the corresponding editable combo (`presetCombo` or IR synth `irCombo`) and the target file already exists. Typing a different name saves directly as a new file. Use async JUCE dialogs (`AlertWindow::showAsync`) in plugin UI; avoid blocking modal loops.
 - **`rawSynthBuffer` stores the pre-processing synth IR — do not save it after any transforms** — It must be saved as the very first thing inside the `fromSynth` block of `loadIRFromBuffer`, before reverse/trim/stretch/decay are applied. If it were saved after transforms, `reloadSynthIR()` would double-apply them on every Reverse or Trim interaction.
 - **+15 dB output trim is intentional** — `synthIR()` applies a fixed `+15 dB` scalar (`gain15dB = pow(10, 15/20)`) to all four IR channels as the very last step, correcting for the observed output level shortfall. Do not remove this. It does not affect the synthesis calculations, RT60, ER/tail balance, or FDN gain calibration — it is a pure post-process scalar applied after everything else.
-- **−9 dB file IR trim is intentional** — During the mono/stereo → 4-channel expansion step in `loadIRFromBuffer`, a `juce::Decibels::decibelsToGain(-9.0f)` scalar is applied to the whole expanded buffer immediately after the ×0.5 per-channel compensation. This corrects the observed ~9 dB level excess of file-based IRs relative to synthesised IRs on the shared true-stereo convolution path. It is a post-expansion scalar and does not affect the ×0.5 compensation logic or `trueStereoWetGain`. Synth IRs bypass this entirely (they arrive with `numCh == 4` and skip the expansion block). If tuning is needed, adjust the single `-9.0f` constant in the expansion block — do not touch `trueStereoWetGain` or the ×0.5 gains.
+- **−12 dB file IR trim is intentional** — During the mono/stereo → 4-channel expansion step in `loadIRFromBuffer`, a `juce::Decibels::decibelsToGain(-12.0f)` scalar is applied to the whole expanded buffer immediately after the ×0.5 per-channel compensation. This corrects the observed ~12 dB level excess of file-based IRs relative to synthesised IRs on the shared true-stereo convolution path. It is a post-expansion scalar and does not affect the ×0.5 compensation logic or `trueStereoWetGain`. Synth IRs bypass this entirely (they arrive with `numCh == 4` and skip the expansion block). If tuning is needed, adjust the single `-12.0f` constant in the expansion block — do not touch `trueStereoWetGain` or the ×0.5 gains.
 - **Plate pre-diffuser is a pure convolver pre-feed** — The Plate DSP runs in `processBlock` after the saturator. It processes the post-saturator signal through the allpass cascade and colour LP, storing the result in `plateBuffer`. **IR FEED** adds `plateBuffer * irFeed` to the convolver input before convolution — the diffused signal feeds the IR alongside the main signal. The only output is via the convolver; there is no direct parallel output. At irFeed=0 the plate has no effect. Plate parameters never trigger an IR recalculation. The IR output (and therefore all IR_01–IR_11 test golden values) is unchanged.
 - **Plate `effLen` and `g` are set per block, not per sample** — `plateSize` is read once, the 6 effective delay lengths are computed, and all `effLen` fields written before the sample loop. `plateDiffusion` is also read once and written to all `plateAPs[ch][s].g` before the sample loop. This avoids redundant computation while keeping the sample loop tight.
 - **Plate `plateColour` is a 1-pole lowpass, not a high-shelf** — A simple 1-pole lowpass applied to the diffused signal before feeding to the convolver. At `colour = 0` the cutoff is 2 kHz (warm, dark — EMT 140 character); at `colour = 1` it is 8 kHz (bright — AMS RMX16 character). Do not replace it with a true biquad shelf — the 1-pole is intentional.
@@ -1185,7 +1185,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Cloud grain reset reads from source channel (WIDTH-driven)** — `srcCh = -1` means read from the same channel as the output; `srcCh = 0` reads exclusively from L; `srcCh = 1` reads exclusively from R. WIDTH probability determines the likelihood of a cross-channel grain. Reverse grains (`reverse = true`) decrement the read position each sample rather than incrementing it.
 - **Width is the only remaining large knob in the bottom grid** — LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3 (aligned with Plate / Row 3). The grid anchor `row6AbsY + row6TotalH_ + 70` is unchanged.
 - **Shimmer is a pure pre-conv 8-voice harmonic cloud — no post-conv loopback** — All 8 `shimVoicesHarm[vi][ch]` read the clean pre-conv dry signal. `shimBuffer` is a same-block bridge written pre-conv and injected into the convolver within the same block (× `shimIRFeed × 1/√8`). There is no `shimFeedbackBuf`, no post-conv capture, and no cross-block feedback path. Pitch never stacks beyond the fixed 8-voice harmonic layout regardless of any parameter. The previous loopback architecture (shimVoices / shimVoicesVol / shimFeedbackBuf / kFbCeiling) has been completely removed.
-- **`shimFeedback` controls decay time of the per-voice delay lines** — exponential mapping: `T = 2 × (7.5)^(raw/0.7)`. At 0: T≈2 s, at 0.3 (default): T≈5.5 s, at 0.7: T=15 s. Feedback coefficient per voice: `shimFb = exp(-3 × voicePeriodSamps / sr / T)`, always < 1. Do not revert to LFO-depth or shimSelfFbBuf approaches.
+- **`shimFeedback` controls decay time of the per-voice delay lines** — exponential mapping: `T = 2 × (7.5)^(raw/0.7)`. At 0: T≈2 s, at 0.45 (default): T≈8.7 s, at 0.7: T=15 s. Feedback coefficient per voice: `shimFb = exp(-3 × voicePeriodSamps / sr / T)`, always < 1. Do not revert to LFO-depth or shimSelfFbBuf approaches.
 - **`shimDelay` has a dual role** — (1) onset stagger: on shimOn false→true, `shimOnsetCounters[vi] = (vi+1) × shimDelaySamps` arms each voice; (2) delay line period: each voice applies its own prime-derived multiplier (`kShimVoiceMultiplier[vi]`, 0.4–1.6×) to `shimDelaySamps`, then takes `max(effGrainLen, voiceDelayPeriod)`. At DELAY=0 onset stagger is simultaneous and all voices fall back to `effGrainLen` (no spreading). Do not revert to a shared `basePeriod` with a small `kShimVoiceSpread` — that caused audible pulsing at long delay settings because all voices echoed at nearly the same period.
 - **`shimWasEnabled` detects the false→true transition** — stored as a member bool, updated each processBlock call after arming the counters. This means the staggered onset re-fires on every Shimmer enable. Do not move the transition check inside the `shimOn == true` branch — it must run unconditionally so `shimWasEnabled` is updated even when `shimOn` is false.
 - **Shimmer per-voice LFO phases are spread 45° apart** — `shimLfoPhase[vi] = vi × 2π/8`. Allpass LFO phases use `shimApLfoPhase[vi] = vi × 2π/8 × 1.3` — the 1.3× multiplier decorrelates the allpass modulation from the main delay modulation so the two sweeps don't beat in sync. Both phase arrays advance by `numSamples × lfoInc` once per voice per block (after both channels finish), not per-sample.

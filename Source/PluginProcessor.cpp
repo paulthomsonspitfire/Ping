@@ -284,12 +284,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     // Shimmer
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::shimOn,     "Shimmer On",      false));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimPitch,  "Shimmer Pitch",
-                    juce::NormalisableRange<float> (-24.f, 24.f, 1.f), 7.f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimSize,  "Shimmer Grain",  50.0f,  500.0f, 200.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimDelay, "Shimmer Delay",   0.0f, 1000.0f,   0.0f));
+                    juce::NormalisableRange<float> (-24.f, 24.f, 1.f), 12.f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimSize,  "Shimmer Grain",  50.0f,  500.0f, 300.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimDelay, "Shimmer Delay",   0.0f, 1000.0f, 500.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimIRFeed,   "Shimmer IR Feed",   0.0f, 1.0f, 0.5f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimVolume,   "Shimmer Volume",    0.0f, 1.0f, 0.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimFeedback, "Shimmer Feedback",  0.0f, 0.7f, 0.3f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimFeedback, "Shimmer Feedback",  0.0f, 0.7f, 0.45f));
     return layout;
 }
 
@@ -1782,7 +1782,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         const int srcRCh = (numCh >= 2) ? 1 : 0;                         // use ch0 for mono sources
         expanded.copyFrom (3, 0, buffer, srcRCh, 0, fullLen);             // iRR = IR_R (or IR_L for mono)
         expanded.applyGain (3, 0, fullLen, 0.5f);
-        expanded.applyGain (juce::Decibels::decibelsToGain (-9.0f));      // −9 dB: file IR level trim
+        expanded.applyGain (juce::Decibels::decibelsToGain (-12.0f));     // −12 dB: file IR level trim
         buffer = std::move (expanded);
         numCh  = 4;
     }
