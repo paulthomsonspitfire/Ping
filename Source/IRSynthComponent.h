@@ -11,6 +11,9 @@
  * UI component for the IR Synthesiser. Provides controls for room geometry,
  * materials, placement, and synthesis options. Runs synthesis on a background
  * thread and reports progress.
+ *
+ * Single-page layout (no tabs): left column holds all acoustic-character and
+ * room-geometry controls; right column shows the FloorPlanComponent at all times.
  */
 class IRSynthComponent : public juce::Component,
                          private juce::Timer,
@@ -72,8 +75,9 @@ private:
     void onDone();
     void updateRT60Display();
     void updateProgress (double fraction, const juce::String& message);
-    void layoutCharacterTab (juce::Rectangle<int> bounds);
-    void layoutPlacementTab (juce::Rectangle<int> bounds);
+
+    /** Lay out all controls within the left column. Stores section header bounds for paint(). */
+    void layoutControls (juce::Rectangle<int> leftBounds);
 
     OnCompleteFn onComplete;
     std::function<void()> onDoneFn;
@@ -81,39 +85,41 @@ private:
     std::function<void (int)> onLoadIRFn;
     std::function<std::pair<float, float>()> bakeLevelsGetter;
 
-    juce::TabbedComponent tabbedComponent { juce::TabbedButtonBar::TabsAtTop };
-    juce::Component characterTab;
-    juce::Component placementTab;
-    juce::Viewport characterViewport;
-    juce::Viewport placementViewport;
-    juce::Component characterContent;
-    juce::Component placementContent;
+    // Background texture (same brushed-steel image as the main plugin UI)
+    juce::Image bgTexture;
+
+    // Section header bounds – set in layoutControls(), read back in paint()
+    juce::Rectangle<int> surfacesHeaderBounds, contentsHeaderBounds,
+                         interiorHeaderBounds,  optionsHeaderBounds,
+                         roomHeaderBounds;
+
+    // Right-column floor-plan visualiser (always visible, not tab-gated)
     FloorPlanComponent floorPlanComponent;
 
-    // Room (Placement tab)
+    // Room geometry (previously "Placement" tab)
     juce::ComboBox shapeCombo;
     juce::Slider widthSlider, depthSlider, heightSlider;
     juce::Label widthLabel, depthLabel, heightLabel;
     juce::Label widthValueLabel, depthValueLabel, heightValueLabel;  // Editable number only
 
-    // Surfaces (Character tab)
+    // Surfaces (previously "Character" tab)
     juce::ComboBox floorCombo, ceilingCombo, wallCombo;
     juce::Label floorLabel, ceilingLabel, wallLabel;
     juce::Slider windowsSlider;
     juce::Label windowsLabel, windowsReadout;
 
-    // Contents (Character tab)
+    // Contents
     juce::Slider audienceSlider, diffusionSlider;
     juce::Label audienceLabel, diffusionLabel;
     juce::Label audienceReadout, diffusionReadout;
 
-    // Interior (Character tab)
+    // Interior
     juce::ComboBox vaultCombo;
     juce::Slider organSlider, balconiesSlider;
     juce::Label vaultLabel, organLabel, balconiesLabel;
     juce::Label organReadout, balconiesReadout;
 
-    // Options (Character tab)
+    // Options
     juce::ComboBox micPatternCombo, sampleRateCombo;
     juce::ToggleButton erOnlyButton { "Early reflections only" };
     juce::TextButton bakeBalanceButton { "Bake ER/Tail Balance" };

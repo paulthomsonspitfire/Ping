@@ -1,4 +1,5 @@
 #include "IRSynthComponent.h"
+#include "PingBinaryData.h"
 
 namespace
 {
@@ -55,7 +56,11 @@ IRSynthComponent::IRSynthComponent()
 {
     setOpaque (true);
 
-    // Room (Placement tab)
+    // Load background texture (same brushed-steel image as the main plugin UI)
+    bgTexture = juce::ImageCache::getFromMemory (BinaryData::texture_bg_jpg,
+                                                  BinaryData::texture_bg_jpgSize);
+
+    // Room geometry (previously "Placement" tab)
     addOptions (shapeCombo, shapeOptions, 6);
     shapeCombo.setSelectedId (1, juce::dontSendNotification);
 
@@ -94,7 +99,7 @@ IRSynthComponent::IRSynthComponent()
     setupDimRow (depthLabel, depthValueLabel, depthSlider, "Depth");
     setupDimRow (heightLabel, heightValueLabel, heightSlider, "Height");
 
-    // Surfaces (Character tab)
+    // Surfaces
     addOptions (floorCombo, materialOptions, 14);
     addOptions (ceilingCombo, materialOptions, 14);
     addOptions (wallCombo, materialOptions, 14);
@@ -112,6 +117,7 @@ IRSynthComponent::IRSynthComponent()
     windowsSlider.setColour (juce::Slider::thumbColourId, accent);
     windowsSlider.setColour (juce::Slider::trackColourId, panelBorder);
     windowsLabel.setText ("Windows", juce::dontSendNotification);
+
     // Contents
     audienceSlider.setRange (0.0, 1.0, 0.01);
     diffusionSlider.setRange (0.0, 1.0, 0.01);
@@ -124,8 +130,6 @@ IRSynthComponent::IRSynthComponent()
         s->setColour (juce::Slider::thumbColourId, accent);
         s->setColour (juce::Slider::trackColourId, panelBorder);
     }
-    addAndMakeVisible (audienceLabel);
-    addAndMakeVisible (diffusionLabel);
     audienceLabel.setText ("Audience", juce::dontSendNotification);
     diffusionLabel.setText ("Diffusion", juce::dontSendNotification);
 
@@ -160,66 +164,52 @@ IRSynthComponent::IRSynthComponent()
     micPatternLabel.setText ("Mic Pattern", juce::dontSendNotification);
     sampleRateLabel.setText ("Sample Rate", juce::dontSendNotification);
 
-    // Viewports for scrollable tab content (HTML design: sections with fixed row heights)
-    characterTab.addAndMakeVisible (characterViewport);
-    characterViewport.setViewedComponent (&characterContent, false);
-    characterViewport.setScrollBarsShown (true, false);
-    characterViewport.getVerticalScrollBar().setColour (juce::ScrollBar::thumbColourId, panelBorder);
-
-    placementTab.addAndMakeVisible (placementViewport);
-    placementViewport.setViewedComponent (&placementContent, false);
-    placementViewport.setScrollBarsShown (true, false);
-    placementViewport.getVerticalScrollBar().setColour (juce::ScrollBar::thumbColourId, panelBorder);
-
-    // Add controls to content (Character tab — matches HTML .sec sections)
-    characterContent.addAndMakeVisible (floorCombo);
-    characterContent.addAndMakeVisible (ceilingCombo);
-    characterContent.addAndMakeVisible (wallCombo);
-    characterContent.addAndMakeVisible (floorLabel);
-    characterContent.addAndMakeVisible (ceilingLabel);
-    characterContent.addAndMakeVisible (wallLabel);
-    characterContent.addAndMakeVisible (windowsSlider);
-    characterContent.addAndMakeVisible (windowsLabel);
-    characterContent.addAndMakeVisible (windowsReadout);
-    characterContent.addAndMakeVisible (audienceSlider);
-    characterContent.addAndMakeVisible (diffusionSlider);
-    characterContent.addAndMakeVisible (audienceLabel);
-    characterContent.addAndMakeVisible (diffusionLabel);
-    characterContent.addAndMakeVisible (audienceReadout);
-    characterContent.addAndMakeVisible (diffusionReadout);
-    characterContent.addAndMakeVisible (vaultCombo);
-    characterContent.addAndMakeVisible (organSlider);
-    characterContent.addAndMakeVisible (balconiesSlider);
-    characterContent.addAndMakeVisible (vaultLabel);
-    characterContent.addAndMakeVisible (organLabel);
-    characterContent.addAndMakeVisible (balconiesLabel);
-    characterContent.addAndMakeVisible (organReadout);
-    characterContent.addAndMakeVisible (balconiesReadout);
-    characterContent.addAndMakeVisible (micPatternCombo);
-    characterContent.addAndMakeVisible (sampleRateCombo);
-    characterContent.addAndMakeVisible (erOnlyButton);
-    characterContent.addAndMakeVisible (bakeBalanceButton);
-    characterContent.addAndMakeVisible (micPatternLabel);
-    characterContent.addAndMakeVisible (sampleRateLabel);
-
-    placementContent.addAndMakeVisible (shapeCombo);
-    placementContent.addAndMakeVisible (widthSlider);
-    placementContent.addAndMakeVisible (depthSlider);
-    placementContent.addAndMakeVisible (heightSlider);
-    placementContent.addAndMakeVisible (widthLabel);
-    placementContent.addAndMakeVisible (depthLabel);
-    placementContent.addAndMakeVisible (heightLabel);
-    placementContent.addAndMakeVisible (widthValueLabel);
-    placementContent.addAndMakeVisible (depthValueLabel);
-    placementContent.addAndMakeVisible (heightValueLabel);
-    placementContent.addAndMakeVisible (floorPlanComponent);
+    // Add all controls directly (no tabs / viewports)
+    addAndMakeVisible (floorPlanComponent);
     floorPlanComponent.setParamsGetter ([this] { return getParams(); });
 
-    tabbedComponent.addTab ("Character", juce::Colour (0xff1e1e1e), &characterTab, false);
-    tabbedComponent.addTab ("Placement", juce::Colour (0xff1e1e1e), &placementTab, false);
-    addAndMakeVisible (tabbedComponent);
+    addAndMakeVisible (shapeCombo);
+    addAndMakeVisible (widthSlider);
+    addAndMakeVisible (depthSlider);
+    addAndMakeVisible (heightSlider);
+    addAndMakeVisible (widthLabel);
+    addAndMakeVisible (depthLabel);
+    addAndMakeVisible (heightLabel);
+    addAndMakeVisible (widthValueLabel);
+    addAndMakeVisible (depthValueLabel);
+    addAndMakeVisible (heightValueLabel);
 
-    // Bottom bar: RT60 | Preview (centre) | Progress (right) | Accept Cancel
+    addAndMakeVisible (floorCombo);
+    addAndMakeVisible (ceilingCombo);
+    addAndMakeVisible (wallCombo);
+    addAndMakeVisible (floorLabel);
+    addAndMakeVisible (ceilingLabel);
+    addAndMakeVisible (wallLabel);
+    addAndMakeVisible (windowsSlider);
+    addAndMakeVisible (windowsLabel);
+    addAndMakeVisible (windowsReadout);
+    addAndMakeVisible (audienceSlider);
+    addAndMakeVisible (diffusionSlider);
+    addAndMakeVisible (audienceLabel);
+    addAndMakeVisible (diffusionLabel);
+    addAndMakeVisible (audienceReadout);
+    addAndMakeVisible (diffusionReadout);
+    addAndMakeVisible (vaultCombo);
+    addAndMakeVisible (organSlider);
+    addAndMakeVisible (balconiesSlider);
+    addAndMakeVisible (vaultLabel);
+    addAndMakeVisible (organLabel);
+    addAndMakeVisible (balconiesLabel);
+    addAndMakeVisible (organReadout);
+    addAndMakeVisible (balconiesReadout);
+    addAndMakeVisible (micPatternCombo);
+    addAndMakeVisible (sampleRateCombo);
+    addAndMakeVisible (erOnlyButton);
+    addAndMakeVisible (bakeBalanceButton);
+    addAndMakeVisible (micPatternLabel);
+    addAndMakeVisible (sampleRateLabel);
+
+    // Bottom bar: RT60 | IR combo + Save | Preview | Progress | Done
     const char* const rt60Freqs[] = { "125", "250", "500", "1k", "2k", "4k" };
     addAndMakeVisible (rt60Label);
     rt60Label.setText ("RT60", juce::dontSendNotification);
@@ -277,36 +267,66 @@ IRSynthComponent::IRSynthComponent()
 
 void IRSynthComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff141414));
+    // ── Background: brushed-steel texture + dark body overlay ──────────────
+    if (bgTexture.isValid())
+        g.drawImage (bgTexture, getLocalBounds().toFloat(),
+                     juce::RectanglePlacement::fillDestination);
+    else
+        g.fillAll (juce::Colour (0xff141414));
+
+    // Dark overlay so controls remain readable (slightly lighter than main UI
+    // body so the texture gives a subtle warm metallic hint)
+    g.setColour (juce::Colour (0xd4141414));
+    g.fillRect (getLocalBounds());
+
+    // ── Section headers (small-caps text + underline separator) ─────────────
+    // Matches the main plugin's drawGroupHeader style: textDim colour, 10pt,
+    // left-aligned text, 1px horizontal rule at the bottom of the header rect.
+    g.setFont (juce::FontOptions (10.0f));
+
+    auto drawSectionHeader = [&] (const juce::Rectangle<int>& bounds, const juce::String& text)
+    {
+        if (bounds.getWidth() <= 0) return;
+        // Dim text label
+        g.setColour (textDim);
+        g.drawText (text.toUpperCase(),
+                    bounds.getX(), bounds.getY(),
+                    bounds.getWidth(), bounds.getHeight() - 3,
+                    juce::Justification::centredLeft, false);
+        // Separator line
+        g.setColour (juce::Colour (0xff2e2e2e));
+        g.drawLine ((float) bounds.getX(),
+                    (float) bounds.getBottom() - 1.0f,
+                    (float) bounds.getRight(),
+                    (float) bounds.getBottom() - 1.0f,
+                    1.0f);
+    };
+
+    drawSectionHeader (surfacesHeaderBounds, "Surfaces");
+    drawSectionHeader (contentsHeaderBounds, "Contents");
+    drawSectionHeader (interiorHeaderBounds, "Interior");
+    drawSectionHeader (optionsHeaderBounds,  "Options");
+    drawSectionHeader (roomHeaderBounds,     "Room Geometry");
 }
 
 void IRSynthComponent::resized()
 {
     auto b = getLocalBounds().reduced (12);
     const int barH = 52;
-    auto tabArea = b.removeFromTop (b.getHeight() - barH);
+    auto contentArea = b.removeFromTop (b.getHeight() - barH);
     auto barArea = b;
 
-    tabbedComponent.setBounds (tabArea);
+    // ── Left / right column split ───────────────────────────────────────────
+    // Left column: all acoustic-character + room-geometry controls (~35% width).
+    // Right column: FloorPlanComponent, always visible (remaining ~65% width).
+    const int leftW = juce::jmax (280, (int) (0.35f * contentArea.getWidth()));
+    auto leftCol  = contentArea.removeFromLeft (leftW);
+    auto rightCol = contentArea;   // remaining width
 
-    // Tab content area (TabbedComponent gives each tab the area below the tab bar)
-    const int tabBarH = 26;
-    const int contentW = juce::jmax (280, tabArea.getWidth());
-    const int contentH = juce::jmax (200, tabArea.getHeight() - tabBarH);
-    // Viewports fill their parent (characterTab/placementTab), which is the content area
-    characterViewport.setBounds (0, 0, contentW, contentH);
-    placementViewport.setBounds (0, 0, contentW, contentH);
+    layoutControls (leftCol);
+    floorPlanComponent.setBounds (rightCol.reduced (8));
 
-    // Content panels
-    const int characterContentH = contentH;
-    const int placementContentH = contentH;
-    characterContent.setSize (contentW, characterContentH);
-    placementContent.setSize (contentW, placementContentH);
-
-    layoutCharacterTab (juce::Rectangle<int> (0, 0, contentW, characterContentH));
-    layoutPlacementTab (juce::Rectangle<int> (0, 0, contentW, placementContentH));
-
-    // Bottom bar: [RT60 + freq labels + values] | [Preview centre] | [Progress right] | [Accept] [Cancel]
+    // ── Bottom bar ──────────────────────────────────────────────────────────
     const int barY = barArea.getY();
     const int barW = barArea.getWidth();
     const int barCentreX = barArea.getX() + barW / 2;
@@ -326,13 +346,13 @@ void IRSynthComponent::resized()
     }
     const int rt60EndX = x;
 
-    // IR save/load combo (left of centre)
-    const int irComboW = juce::jmin (140, (int)(0.18f * barW));
+    // IR save/load combo
+    const int irComboW = juce::jmin (140, (int) (0.18f * barW));
     int leftX = rt60EndX + 16;
     irCombo.setBounds (leftX, barY + 6, irComboW, 24);
     leftX += irComboW + 16;
 
-    // Save button at centre (where Preview was)
+    // Save button at centre
     const int saveIRW = 50;
     saveIRButton.setBounds (barCentreX - saveIRW / 2, barY + 6, saveIRW, 24);
     leftX = barCentreX + saveIRW / 2 + 12;
@@ -354,100 +374,96 @@ void IRSynthComponent::resized()
     progressLabel.setBounds (rightX - progW, barY + 26, progW, 14);
 }
 
-void IRSynthComponent::layoutCharacterTab (juce::Rectangle<int> b)
+void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
 {
-    const int rowH = 22;
-    const int labelW = 84;
+    const int rowH     = 22;
+    const int labelW   = 78;
     const int readoutW = 40;
-    const int gap = 8;
-    const int secPad = 14;
+    const int gap      = 6;
+    const int secGap   = 10;   // vertical gap between sections
+    const int headerH  = 16;   // section header height (text + underline)
+    const int inset    = 10;   // left / right inset within the left column
 
-    // Combos and sliders: 1/3 of available control width
-    const int availForCombo = b.getWidth() - secPad * 2 - labelW - gap;
-    const int availForSlider = availForCombo - readoutW - gap;
-    const int comboW = juce::jmax (70, availForCombo / 3);
-    const int sliderW = juce::jmax (50, availForSlider / 3);
+    const int x0    = b.getX() + inset;
+    const int ctrlW = b.getWidth() - inset * 2;
+    const int comboW  = juce::jmax (80, ctrlW - labelW - gap);
+    const int sliderW = juce::jmax (60, comboW - readoutW - gap);
 
-    auto rowCombo = [&] (int y, juce::Component& label, juce::Component& ctrl)
+    // Helper: label + combo on one row
+    auto rowCombo = [&] (int y, juce::Label& lbl, juce::ComboBox& ctrl)
     {
-        label.setBounds (secPad, y, labelW, rowH);
-        ctrl.setBounds (secPad + labelW + gap, y, comboW, rowH);
-    };
-    auto rowSlider = [&] (int y, juce::Component& label, juce::Slider& ctrl, juce::Label& readout)
-    {
-        label.setBounds (secPad, y, labelW, rowH);
-        ctrl.setBounds (secPad + labelW + gap, y, sliderW, rowH);
-        readout.setBounds (secPad + labelW + gap + sliderW + gap, y, readoutW, rowH);
+        lbl.setBounds  (x0,                y, labelW, rowH);
+        ctrl.setBounds (x0 + labelW + gap, y, comboW, rowH);
     };
 
-    int y = secPad;
-
-    // Surfaces — narrow combos
-    rowCombo (y, floorLabel, floorCombo);    y += rowH;
-    rowCombo (y, ceilingLabel, ceilingCombo); y += rowH;
-    rowCombo (y, wallLabel, wallCombo);      y += rowH;
-    rowSlider (y, windowsLabel, windowsSlider, windowsReadout); y += rowH + secPad;
-
-    // Contents — narrow sliders
-    rowSlider (y, audienceLabel, audienceSlider, audienceReadout);  y += rowH;
-    rowSlider (y, diffusionLabel, diffusionSlider, diffusionReadout); y += rowH + secPad;
-
-    // Interior
-    rowCombo (y, vaultLabel, vaultCombo);    y += rowH;
-    rowSlider (y, organLabel, organSlider, organReadout);   y += rowH;
-    rowSlider (y, balconiesLabel, balconiesSlider, balconiesReadout); y += rowH + secPad;
-
-    // Right column: Mic Pattern, Sample Rate, Early reflections (stacked) — offset by 1/8 width to avoid slider readouts
-    const int rightColX = secPad + labelW + gap + sliderW + gap + readoutW + (b.getWidth() / 8);
-    const int rightColW = juce::jmin (140, b.getWidth() - rightColX - secPad);
-    int ry = secPad;
-
-    micPatternLabel.setBounds (rightColX, ry, rightColW, rowH);
-    ry += rowH + 2;
-    micPatternCombo.setBounds (rightColX, ry, rightColW, rowH);
-    ry += rowH + secPad;
-
-    sampleRateLabel.setBounds (rightColX, ry, rightColW, rowH);
-    ry += rowH + 2;
-    sampleRateCombo.setBounds (rightColX, ry, juce::jmin (100, rightColW), rowH);
-    ry += rowH + secPad;
-
-    erOnlyButton.setBounds (rightColX, ry, rightColW + 60, rowH);
-    ry += rowH + 8;
-    bakeBalanceButton.setBounds (rightColX, ry, juce::jmax (150, rightColW + 40), rowH + 2);
-}
-
-void IRSynthComponent::layoutPlacementTab (juce::Rectangle<int> b)
-{
-    const int rowH = 22;
-    const int gap = 8;
-    const int secPad = 14;
-
-    const int leftColW = juce::jmax (180, (int) (0.28f * b.getWidth()));
-    const int leftColX = secPad;
-    const int floorPlanX = leftColW + gap;
-    const int floorPlanW = b.getWidth() - floorPlanX - secPad;
-    const int floorPlanH = b.getHeight() - secPad * 2;
-
-    int y = secPad;
-
-    shapeCombo.setBounds (leftColX, y, leftColW - secPad, rowH);
-    y += rowH + gap;
-
-    const int valueBoxW = 48;
-    auto dimRow = [&] (juce::Label& nameLabel, juce::Label& valueLabel, juce::Slider& slider)
+    // Helper: label + slider + readout on one row
+    auto rowSlider = [&] (int y, juce::Label& lbl, juce::Slider& ctrl, juce::Label& readout)
     {
-        nameLabel.setBounds (leftColX, y, 52, rowH);
-        valueLabel.setBounds (leftColX + 54, y, valueBoxW, rowH);
+        lbl.setBounds     (x0,                               y, labelW,  rowH);
+        ctrl.setBounds    (x0 + labelW + gap,                y, sliderW, rowH);
+        readout.setBounds (x0 + labelW + gap + sliderW + gap, y, readoutW, rowH);
+    };
+
+    int y = b.getY() + 6;
+
+    // ── SURFACES ────────────────────────────────────────────────────────────
+    surfacesHeaderBounds = { x0, y, ctrlW, headerH };
+    y += headerH + 2;
+    rowCombo  (y, floorLabel,   floorCombo);                         y += rowH;
+    rowCombo  (y, ceilingLabel, ceilingCombo);                       y += rowH;
+    rowCombo  (y, wallLabel,    wallCombo);                          y += rowH;
+    rowSlider (y, windowsLabel, windowsSlider, windowsReadout);      y += rowH + secGap;
+
+    // ── CONTENTS ────────────────────────────────────────────────────────────
+    contentsHeaderBounds = { x0, y, ctrlW, headerH };
+    y += headerH + 2;
+    rowSlider (y, audienceLabel,  audienceSlider,  audienceReadout);  y += rowH;
+    rowSlider (y, diffusionLabel, diffusionSlider, diffusionReadout); y += rowH + secGap;
+
+    // ── INTERIOR ────────────────────────────────────────────────────────────
+    interiorHeaderBounds = { x0, y, ctrlW, headerH };
+    y += headerH + 2;
+    rowCombo  (y, vaultLabel,     vaultCombo);                        y += rowH;
+    rowSlider (y, organLabel,     organSlider,     organReadout);     y += rowH;
+    rowSlider (y, balconiesLabel, balconiesSlider, balconiesReadout); y += rowH + secGap;
+
+    // ── OPTIONS ─────────────────────────────────────────────────────────────
+    // Mic Pattern and Sample Rate each get a label row + control row (tighter
+    // than a full combo-row, matching the old Character-tab right-column style).
+    optionsHeaderBounds = { x0, y, ctrlW, headerH };
+    y += headerH + 2;
+
+    const int optComboW = juce::jmin (140, comboW);
+
+    micPatternLabel.setBounds (x0, y, ctrlW, rowH - 4);              y += rowH - 2;
+    micPatternCombo.setBounds (x0, y, optComboW, rowH);              y += rowH + secGap / 2;
+
+    sampleRateLabel.setBounds (x0, y, ctrlW, rowH - 4);              y += rowH - 2;
+    sampleRateCombo.setBounds (x0, y, juce::jmin (100, optComboW), rowH); y += rowH + secGap / 2;
+
+    erOnlyButton.setBounds     (x0, y, ctrlW, rowH);                  y += rowH + 4;
+    bakeBalanceButton.setBounds(x0, y, juce::jmax (160, ctrlW - 20), rowH + 2); y += rowH + secGap;
+
+    // ── ROOM GEOMETRY ────────────────────────────────────────────────────────
+    roomHeaderBounds = { x0, y, ctrlW, headerH };
+    y += headerH + 2;
+
+    // Shape combo spans the full control width
+    shapeCombo.setBounds (x0, y, ctrlW, rowH);                       y += rowH + gap;
+
+    // Dimension rows: name label + editable value label, then slider below
+    auto dimRow = [&] (juce::Label& nameLbl, juce::Label& valueLbl, juce::Slider& slider)
+    {
+        const int valueBoxW = 48;
+        nameLbl.setBounds  (x0,        y, 52,         rowH);
+        valueLbl.setBounds (x0 + 54,   y, valueBoxW,  rowH);
         y += rowH + 2;
-        slider.setBounds (leftColX, y, leftColW - secPad, rowH);
+        slider.setBounds   (x0,        y, ctrlW,      rowH);
         y += rowH + gap;
     };
-    dimRow (widthLabel, widthValueLabel, widthSlider);
-    dimRow (depthLabel, depthValueLabel, depthSlider);
+    dimRow (widthLabel,  widthValueLabel,  widthSlider);
+    dimRow (depthLabel,  depthValueLabel,  depthSlider);
     dimRow (heightLabel, heightValueLabel, heightSlider);
-
-    floorPlanComponent.setBounds (floorPlanX, secPad, floorPlanW, juce::jmax (120, floorPlanH));
 }
 
 IRSynthParams IRSynthComponent::getParams() const
@@ -598,7 +614,7 @@ void IRSynthComponent::startSynthesis (bool bakeCurrentBalance)
     bakeBalanceButton.setEnabled (false);
     pendingResult.reset();
     progressValue = 0.0;
-    progressLabel.setText ("Starting…", juce::dontSendNotification);
+    progressLabel.setText ("Starting\xe2\x80\xa6", juce::dontSendNotification);
 
     synthPool.addJob ([this, p]
     {

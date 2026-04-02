@@ -457,13 +457,13 @@ PingEditor::PingEditor (PingProcessor& p)
     bloomTimeLabel.setText      ("TIME",      juce::dontSendNotification);
     bloomIRFeedLabel.setText    ("IR FEED",   juce::dontSendNotification);
     bloomVolumeLabel.setText    ("VOLUME",    juce::dontSendNotification);
-    cloudDepthLabel.setText  ("DEPTH",   juce::dontSendNotification);
-    cloudRateLabel.setText   ("RATE",    juce::dontSendNotification);
+    cloudDepthLabel.setText  ("SCATTER", juce::dontSendNotification);
+    cloudRateLabel.setText   ("DENSITY", juce::dontSendNotification);
     cloudSizeLabel.setText   ("SIZE",    juce::dontSendNotification);
     cloudIRFeedLabel.setText ("IR FEED", juce::dontSendNotification);
     cloudVolumeLabel.setText ("VOLUME",  juce::dontSendNotification);
     shimPitchLabel.setText   ("PITCH",   juce::dontSendNotification);
-    shimSizeLabel.setText    ("SIZE",    juce::dontSendNotification);
+    shimSizeLabel.setText    ("GRAIN",   juce::dontSendNotification);
     shimColourLabel.setText  ("COLOUR",  juce::dontSendNotification);
     shimIRFeedLabel.setText  ("IR FEED", juce::dontSendNotification);
     shimVolumeLabel.setText  ("VOLUME",  juce::dontSendNotification);
@@ -598,6 +598,55 @@ void PingEditor::paint (juce::Graphics& g)
                            pingBounds.getX(), pingBounds.getY(),
                            pingBounds.getWidth(), pingBounds.getHeight(),
                            juce::RectanglePlacement::centred);
+
+    // ── Raised bevel panel: left Rows 1+2 (IR Input / IR Controls / ER & Tail Crossfade) ────────
+    // True split-edge emboss: top+left edges drawn in a separate Path from bottom+right edges,
+    // each stroked with its own colour.  No fill — background texture is fully preserved.
+    // Top-left corner belongs to the highlight path; bottom-right corner to the shadow path.
+    if (irInputGroupBounds.getWidth() > 0)
+    {
+        const float padH = 14.f, padV = 12.f;
+        const auto panel = juce::Rectangle<float> (
+            (float) irInputGainSlider.getX()           - padH,
+            (float) irInputGroupBounds.getY()          - padV,
+            (float) stretchSlider.getRight()            + padH - ((float) irInputGainSlider.getX() - padH),
+            (float) tailCrossfeedAttReadout.getBottom() + padV - ((float) irInputGroupBounds.getY() - padV)
+        );
+
+        // Use addRoundedRectangle for a geometrically perfect outline, then draw it twice
+        // with diagonal clip regions so the top+left half is highlight and bottom+right is shadow.
+        // This avoids all manual arc calculations and curved-join slope artefacts.
+        const float lw  = 3.0f;
+        const float hlw = lw * 0.5f;
+        const float cr  = 9.0f;
+
+        juce::Path outline;
+        outline.addRoundedRectangle (panel.reduced (hlw), cr - hlw);
+
+        // Highlight — top and left edges: clip to the upper-left triangle
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getX(),     panel.getY(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0xbfffffff));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+
+        // Shadow — bottom and right edges: clip to the lower-right triangle
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            juce::Path clipTri;
+            clipTri.addTriangle (panel.getRight(), panel.getBottom(),
+                                 panel.getRight(), panel.getY(),
+                                 panel.getX(),     panel.getBottom());
+            g.reduceClipRegion (clipTri);
+            g.setColour (juce::Colour (0xbf000000));
+            g.strokePath (outline, juce::PathStrokeType (lw));
+        }
+    }
 
     // Group headers: label text above a horizontal line; active sections glow orange
     g.setFont (juce::FontOptions (10.0f));
@@ -925,11 +974,11 @@ void PingEditor::resized()
         tailCrossfeedAttSlider.getRight() - tailCrossfeedDelaySlider.getX(),
         groupLabelH);
 
-    // Toggles: pill, right-aligned in their group header line (3× wide, same height as LED)
+    // Toggles: power-button icon, right-aligned in their group header line (square, same as other rows)
     {
-        const int ledH = groupLabelH - 4;   // fits snugly inside the 14 px header strip
-        const int ledW = ledH * 2;
-        const int ledY = row2AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
+        const int ledH = groupLabelH;        // full header height for power-button icon
+        const int ledW = ledH;               // square
+        const int ledY = row2AbsY - rowShiftUp + (groupLabelH - ledH) / 2 - 1;
         erCrossfeedOnButton.setBounds   (erCrossfadeGroupBounds.getRight()   - ledW, ledY, ledW, ledH);
         tailCrossfeedOnButton.setBounds (tailCrossfadeGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
@@ -962,7 +1011,7 @@ void PingEditor::resized()
     {
         const int ledH = groupLabelH;   // full header height for power-button icon
         const int ledW = ledH;           // square
-        const int ledY = row3AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
+        const int ledY = row3AbsY - rowShiftUp + (groupLabelH - ledH) / 2 - 1;
         plateOnButton.setBounds (plateGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
@@ -995,7 +1044,7 @@ void PingEditor::resized()
     {
         const int ledH = groupLabelH;   // full header height for power-button icon
         const int ledW = ledH;           // square
-        const int ledY = row4AbsY - rowShiftUp + (groupLabelH - ledH) / 2;
+        const int ledY = row4AbsY - rowShiftUp + (groupLabelH - ledH) / 2 - 1;
         bloomOnButton.setBounds (bloomGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
@@ -1036,7 +1085,7 @@ void PingEditor::resized()
     {
         const int ledH = groupLabelH;   // full header height for power-button icon
         const int ledW = ledH;           // square
-        const int ledY = cloudGroupBounds.getY() + (groupLabelH - ledH) / 2;
+        const int ledY = cloudGroupBounds.getY() + (groupLabelH - ledH) / 2 - 1;
         cloudOnButton.setBounds (cloudGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 
@@ -1055,7 +1104,7 @@ void PingEditor::resized()
     {
         const int ledH = groupLabelH;   // full header height for power-button icon
         const int ledW = ledH;           // square
-        const int ledY = shimGroupBounds.getY() + (groupLabelH - ledH) / 2;
+        const int ledY = shimGroupBounds.getY() + (groupLabelH - ledH) / 2 - 1;
         shimOnButton.setBounds (shimGroupBounds.getRight() - ledW, ledY, ledW, ledH);
     }
 

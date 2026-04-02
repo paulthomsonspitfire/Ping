@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.0.4 (see `CMakeLists.txt`)
+**Current version:** 2.0.6 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -214,10 +214,10 @@ Single **"Bloom hybrid"** group: SIZE, FEEDBACK, TIME, IR FEED, VOLUME, power-bu
 All right-side rows share `placeRightRowKnob` / `placeR3Knob` lambdas. Knobs are placed right-to-left from `rightRowEdge = b.getRight() - 5` (5 px inset from the content-area right edge): `cx = rightRowEdge - (4 - idx) * rowStep - rowKnobSize / 2`. The rightmost knob's right edge aligns with `rightRowEdge`.
 
 **Row R1 — Cloud multi-LFO (5 knobs + 1 switch)** — vertically aligned with Row 1 (`rowY`).
-Single **"Clouds post convolution"** group: DEPTH, RATE, SIZE, IR FEED, VOLUME, power-button switch `cloudOnButton`. Group header Y = `topKnobRow.getY() - 10 - rowShiftUp`. Group header bounds: `cloudGroupBounds`.
+Single **"Clouds post convolution"** group: SCATTER, DENSITY, SIZE, IR FEED, VOLUME, power-button switch `cloudOnButton`. Group header Y = `topKnobRow.getY() - 10 - rowShiftUp`. Group header bounds: `cloudGroupBounds`.
 
 **Row R2 — Shimmer (5 knobs + 1 switch)** — vertically aligned with Row 2 (`row2KnobY`).
-Single **"Shimmer"** group: PITCH, SIZE, COLOUR, IR FEED, VOLUME, power-button switch `shimOnButton`. Group header Y = `row2AbsY - rowShiftUp`. Group header bounds: `shimGroupBounds`.
+Single **"Shimmer"** group: PITCH, GRAIN, COLOUR, IR FEED, VOLUME, power-button switch `shimOnButton`. Group header Y = `row2AbsY - rowShiftUp`. Group header bounds: `shimGroupBounds`.
 
 **Row R3 — Tail AM mod + Tail Frq mod (5 knobs, no switch)** — vertically aligned with Row 3 (`row3KnobY`).
 A 5 px extra gap before index 2 splits into two groups (mirroring the IR Input / IR Controls split):
@@ -457,14 +457,14 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `bloomIRFeed` | Bloom IR Feed | 0–1 | 0 |
 | `bloomVolume` | Bloom Volume | 0–1 | 0 |
 | `cloudOn` | Cloud On | bool | false |
-| `cloudDepth` | Cloud Depth | 0–1 | 0.3 |
-| `cloudRate` | Cloud Rate | 0.1–4.0 | 1.0 |
+| `cloudDepth` | Cloud Scatter (UI: SCATTER) | 0–1 | 0.3 |
+| `cloudRate` | Cloud Density (UI: DENSITY) | 0.1–4.0 | 1.0 |
 | `cloudSize` | Cloud Size (ms) | 1–40 | 5.0 |
 | `cloudVolume` | Cloud Volume | 0–1 | 0 |
 | `cloudIRFeed` | Cloud IR Feed | 0–1 | 0 |
 | `shimOn` | Shimmer On | bool | false |
 | `shimPitch` | Shimmer Pitch | −24–+24 semitones (integer steps) | +12 |
-| `shimSize` | Shimmer Size | 0.5–4.0 | 1.0 |
+| `shimSize` | Shimmer Grain (UI: GRAIN) | 0.5–4.0 | 1.0 |
 | `shimColour` | Shimmer Colour | 0–1 | 0.7 |
 | `shimIRFeed` | Shimmer IR Feed | 0–1 | 0.5 |
 | `shimVolume` | Shimmer Volume | 0–1 | 0 |
@@ -514,8 +514,9 @@ Harmonic Saturator (cubic soft-clip: x − x³/3, inflection ±√3, drive mix +
   │   1-block deferred: cloudBuffer written at Insertion 2, read here next block
   │
   ▼
-[Shimmer Insertion 1: previous block's shimBuffer × shimIRFeed injected into main signal]  (if shimOn && shimIRFeed > 0)
-  │   1-block deferred: shimBuffer written at Insertion 2, read here next block
+[Shimmer IR Feed: reads pre-conv dry signal, pitch-shifts (shimVoices), injects × shimIRFeed into convolver input]  (if shimOn)
+  │   shimBuffer ← grain output × shimColour LP (same-block bridge — IR Feed path only)
+  │   Architecture: dry → pitch-shift → convolver → wet (one-way, no feedback loop)
   │
   ▼
 Convolution  ── see "Convolution modes" below
@@ -541,9 +542,7 @@ Tail Chorus Modulation (optional — variable delay ±depthMs, skipped for ER-on
   │   LFO phases advanced per-sample; R channel uses π phase offset for decorrelation
   │
   ▼
-[Shimmer Insertion 2: two-grain Hann-windowed pitch shifter on wet signal]  (if shimOn)
-  │   shimBuffer ← grain output × shimColour LP; wet signal += shimBuffer × shimVolume (if shimVolume > 0)
-  │   Pitch ratio = 2^(shimPitch/12); grain length = kShimGrainLen × shimSize
+[Shimmer Volume path: reads post-conv wet signal, pitch-shifts (shimVoicesVol), stores shimBufferVol]  (if shimOn && shimVolume > 0)
   │
   ▼
 Output Gain (dB, smoothed)
@@ -556,6 +555,12 @@ Dry/Wet blend: out = wet × √(mix) + dry × √(1−mix)   [constant-power cro
   │
   ▼
 [Bloom Volume: bloomBuffer × bloomVolume added here]  (if bloomOn — independent of dry/wet control)
+  │
+  ▼
+[Cloud Volume: cloudBuffer × cloudVolume added here]  (if cloudOn — independent of dry/wet control)
+  │
+  ▼
+[Shimmer Volume: shimBufferVol × shimVolume added here]  (if shimOn — pitch-shifted wet, independent of dry/wet)
   │
   ▼
 Output (stereo) + L/R peak meter update
@@ -778,14 +783,17 @@ Immediately after Row 4 (Bloom), same `rowKnobSize`/`rowStep`/`rowStartX` consta
 
 ### What it does
 
-A two-grain Hann-windowed pitch shifter applied to the post-convolution wet signal. Pitch-shifted output is fed back into the convolver input (via the same 1-block deferred bridge pattern as Cloud), producing the characteristic harmonically-rising shimmer wash associated with the Eventide H3000. A 1-pole lowpass (`shimColour`) controls warmth. Unlike Bloom and Cloud, `shimIRFeed` defaults to **0.5** — the effect is immediately audible when enabled.
+A two-grain Hann-windowed pitch shifter with two independent signal paths. `shimIRFeed` injects pitch-shifted dry signal one-way into the convolver (classic Lexicon shimmer: dry → pitch-shift → reverb), inherently stable with any IR. `shimVolume` adds pitch-shifted wet signal directly to the output after the dry/wet blend (pitch-shifted reverb tail in parallel). A 1-pole lowpass (`shimColour`) controls warmth on both paths. Unlike Bloom and Cloud, `shimIRFeed` defaults to **0.5** — the effect is immediately audible when enabled.
 
 ### Architecture
 
-Identical bridge pattern to Cloud: `shimBuffer` persists between `processBlock` calls.
+Unlike Cloud, both `shimBuffer` and `shimBufferVol` are **same-block bridges**: written and consumed within the same `processBlock` call. No cross-block state. No feedback loops in either path.
 
-- **Shimmer Insertion 1** (pre-convolution, after Cloud Insertion 1): reads previous block's `shimBuffer` × `shimIRFeed`, injects into main signal before convolver.
-- **Shimmer Insertion 2** (post-Cloud Insertion 2, before Output Gain): runs two-grain pitch shifter on wet signal, applies `shimColour` 1-pole LP, stores in `shimBuffer`. Adds `× shimVolume` to wet signal if `shimVolume > 0`.
+Two independent signal paths, each with its own grain voices:
+
+- **Pre-conv Shimmer block** (after Cloud Insertion 1, before convolver): reads the pre-convolution dry signal using `shimVoices`, applies `shimColour` 1-pole LP (`shimColourState`), stores in `shimBuffer`. Injects `shimBuffer × shimIRFeed` into the convolver input (one-way: dry → pitch-shift → reverb).
+- **Post-conv Shimmer Volume block** (after tail chorus, before output gain): reads the fully-processed post-conv wet signal using `shimVoicesVol`, applies `shimColour` 1-pole LP (`shimColourStateVol`), stores in `shimBufferVol`. Only runs when `shimVolume > 0`.
+- **Post-blend Shimmer Volume** (after dry/wet blend, alongside bloomVolume and cloudVolume): adds `shimBufferVol × shimVolume` to the final output. This is the pitch-shifted reverb tail — independent of dry/wet.
 
 ### Grain engine
 
@@ -851,9 +859,9 @@ Synthesises physically-modelled room IRs. Called from a background thread; repor
 
 **Default ceiling material:** `"Painted plaster"` (low absorption, RT60 ≈ 12 s for the default room). Changed from the previous `"Acoustic ceiling tile"` default which was far too absorptive for a realistic room.
 
-### Character tab defaults
+### IR Synth acoustic-character defaults
 
-The following defaults are applied consistently in three places: `IRSynthComponent.cpp` (UI combo/slider initial values), `IRSynthParams` in `IRSynthEngine.h` (struct member defaults), and `PluginProcessor.cpp` (XML/sidecar load fallbacks). When adding or changing a Character tab default, update all three locations.
+The following defaults are applied consistently in three places: `IRSynthComponent.cpp` (UI combo/slider initial values), `IRSynthParams` in `IRSynthEngine.h` (struct member defaults), and `PluginProcessor.cpp` (XML/sidecar load fallbacks). When adding or changing a default, update all three locations.
 
 | Parameter | Old default | New default | Notes |
 |-----------|-------------|-------------|-------|
@@ -867,7 +875,7 @@ The following defaults are applied consistently in three places: `IRSynthCompone
 
 Floor, ceiling, room shape, room dimensions, and all other parameters are unchanged from their previous defaults.
 
-**Placement tab defaults** (kept in sync in three places: `FloorPlanComponent.h` `TransducerState::cx`, `IRSynthEngine.h` `IRSynthParams`, and `PluginProcessor.cpp` XML/sidecar fallbacks): **Speakers** at room centre in depth (y = 0.5), **25% and 75%** across the width (facing down). **Microphones** at 1/5 up from bottom (y = 0.8), **35% and 65%** across the width; L mic faces up-left (−135°), R mic faces up-right (−45°).
+**Speaker/mic placement defaults** (kept in sync in three places: `FloorPlanComponent.h` `TransducerState::cx`, `IRSynthEngine.h` `IRSynthParams`, and `PluginProcessor.cpp` XML/sidecar fallbacks): **Speakers** at room centre in depth (y = 0.5), **25% and 75%** across the width (facing down). **Microphones** at 1/5 up from bottom (y = 0.8), **35% and 65%** across the width; L mic faces up-left (−135°), R mic faces up-right (−45°).
 
 Pipeline:
 1. **calcRT60** — Eyring formula at 8 octave bands (125 Hz – 16 kHz) + air absorption correction.
@@ -962,8 +970,9 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 
 ## Key design decisions to be aware of
 
-- **Character tab defaults live in three places** — `IRSynthComponent.cpp` (UI initial values), `IRSynthEngine.h` (`IRSynthParams` struct defaults), and `PluginProcessor.cpp` (XML/sidecar load fallbacks). All three must be kept in sync. Missing a location means the UI shows the right default but a freshly constructed `IRSynthParams` (or a preset missing the attribute) will use the old value.
-- **Placement tab defaults (speaker/mic positions) live in three places** — `FloorPlanComponent.h` (`TransducerState::cx`), `IRSynthEngine.h` (`IRSynthParams` source_* / receiver_*), and `PluginProcessor.cpp` (XML `getDoubleAttribute` fallbacks for slx/sly/srx/sry, rlx/rly/rrx/rry). Speakers at **25% and 75%** (y = 0.5), mics at **35% and 65%** (y = 0.8). Keep all three in sync when changing placement defaults.
+- **IR Synth is a single-page layout — no tabs** — `IRSynthComponent` no longer uses `TabbedComponent`. All acoustic-character controls (Surfaces, Contents, Interior, Options) and the room-geometry controls (Shape, Width/Depth/Height) are stacked in a left column (~35% width). `FloorPlanComponent` occupies the right column (~65% width) and is visible at all times — users can see speaker/mic placement while editing room character. `layoutControls(Rectangle<int> leftBounds)` handles the entire left column; section header bounds (`surfacesHeaderBounds` … `roomHeaderBounds`) are stored as members and drawn in `paint()` using the same small-caps + underline style as the main plugin's group headers. The background is the same `texture_bg.jpg` brushed-steel image as the main UI, with a `0xd4141414` dark overlay for readability.
+- **IR Synth acoustic-character defaults live in three places** — `IRSynthComponent.cpp` (UI initial values), `IRSynthEngine.h` (`IRSynthParams` struct defaults), and `PluginProcessor.cpp` (XML/sidecar load fallbacks). All three must be kept in sync. Missing a location means the UI shows the right default but a freshly constructed `IRSynthParams` (or a preset missing the attribute) will use the old value.
+- **Speaker/mic placement defaults live in three places** — `FloorPlanComponent.h` (`TransducerState::cx`), `IRSynthEngine.h` (`IRSynthParams` source_* / receiver_*), and `PluginProcessor.cpp` (XML `getDoubleAttribute` fallbacks for slx/sly/srx/sry, rlx/rly/rrx/rry). Speakers at **25% and 75%** (y = 0.5), mics at **35% and 65%** (y = 0.8). Keep all three in sync when changing placement defaults.
 - **`/Library` install path** — Intentional. The .pkg installer deploys system-wide. Don't change copy dirs to `~/Library`.
 - **Speaker directivity in image-source** — `spkG()` is applied using the real source→receiver angle, not the image-source position. This is deliberate: image-source positions aren't physical emitters and using them would give wrong distance-dependent directivity results.
 - **Deferred allpass diffusion** — The allpass starts at 65 ms (not sample 0) to prevent early-reflection spikes from creating audible 17ms-interval echoes in the tail.
@@ -1025,11 +1034,11 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Cloud has no self-feedback loop** — unlike Bloom, Cloud's delay lines do not feed back into themselves. The only recirculation path is via `cloudIRFeed` → convolver → wet signal → Cloud Insertion 2. The convolver is inherently attenuating for real room IRs, so loop gain < 1 for any physical IR. Very high-gain IR presets with boosted `outputGain` are the only edge case to be aware of.
 - **Cloud `cloudDepth` scales `kCloudBaseDepthMs = 3.0f`** — the maximum ±3 ms swing was chosen to keep modulation below the ~5 ms threshold where pitch variation becomes audible as vibrato on sustained tones. At `cloudDepth = 0` the delay lines are static (no modulation), which gives a comb-filter character rather than shimmer.
 - **Width is the only remaining large knob in the bottom grid** — LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3 (aligned with Plate / Row 3). The grid anchor `row6AbsY + row6TotalH_ + 70` is unchanged.
-- **Shimmer uses the same 1-block deferred bridge pattern as Cloud** — `shimBuffer` persists between `processBlock` calls. Insertion 2 writes; Insertion 1 of the next block reads. Do not clear `shimBuffer` at block start. `shimLastBlockSize` tracks the previous block's sample count.
+- **Shimmer uses a same-block bridge, NOT a cross-block deferred bridge** — `shimBuffer` is written pre-convolution and read post-blend within the same `processBlock` call. There is no cross-block state and no `shimLastBlockSize` needed. This is a fundamental architectural difference from Cloud: Shimmer reads the pre-conv dry signal and feeds it forward through the convolver (dry → pitch-shift → convolver → wet), so no feedback loop exists and the effect is stable with any IR. Do NOT revert to a cross-block architecture where shimBuffer is read the following block — that puts the convolver inside a feedback loop and causes runaway feedback with high-gain stereo IRs.
 - **Shimmer grain engine matches DSP_07–DSP_09 exactly** — two grains at phase 0 and 0.5, Hann windowed, read pointer advances `pitchRatio` per sample, grain reset snaps to `writePtr − effGrainLen`. Fixed buffers: `kShimGrainLen = 512`, `kShimBufLen = 8192`. The production code must stay in sync with these test specs.
 - **`shimPitch` uses integer NormalisableRange (step=1)** — fractional semitones produce detuned output not aligned to musical intervals. The parameter layout uses `juce::NormalisableRange<float>(-24.f, 24.f, 1.f)`.
 - **`shimIRFeed` defaults to 0.5** — unlike every other IR-feed parameter (Plate, Bloom, Cloud all default to 0), Shimmer defaults to 0.5 so the effect is immediately audible when enabled. This matches expected shimmer plugin UX: you enable it and it shimmers.
-- **`shimColour` is a 1-pole LP on the grain shifter output** — cutoff = `2000 + shimColour × 18000` Hz. Applied per-sample inside Insertion 2 before storing to `shimBuffer`. `shimColourState[ch]` holds the per-channel filter state; reset to zero in `prepareToPlay`.
+- **`shimColour` is a 1-pole LP applied independently on both grain paths** — cutoff = `2000 + shimColour × 18000` Hz. `shimColourState[ch]` is used by the IR Feed path (`shimVoices`); `shimColourStateVol[ch]` is used by the Volume path (`shimVoicesVol`). Both reset to zero in `prepareToPlay`.
 - **EQ response curve is display-only** — `getResponseAt()` is an approximation. The actual audio uses JUCE biquad coefficients. The two will not match exactly at steep slopes or very high/low frequencies, but are visually representative for a mixing EQ.
 - **EQ knob labels must have `setInterceptsMouseClicks(false, false)`** — JUCE `Label` components default to intercepting mouse events (`setInterceptsMouseClicks(true, true)`). In `EQGraphComponent`, labels are added after sliders and therefore sit in front (higher Z-order). Without the click-through flag, labels silently swallow mouse-down events and the knob beneath never receives them. This applied to all three label types: `knobLabels[b][k]`, `knobReadouts[b][k]`, and `bandNameLabel[b]`. The FREQ readout overlapped the upper portion of the GAIN knob; GAIN readout/label overlapped the Q knob area. Fix: call `setInterceptsMouseClicks(false, false)` on all three label arrays in the `EQGraphComponent` constructor.
 - **Group header title font is 10.0f** — `drawGroupHeader` in `PluginEditor.cpp paint()` uses `g.setFont(juce::FontOptions(10.0f))` (increased from 9.0f). This applies to all group title labels: IR Input, IR Controls, ER Crossfade, Tail Crossfade, Plate pre-diffuser, Bloom hybrid, Clouds post convolution, Shimmer, Tail AM mod, Tail Frq mod, and the IR Preset label. Do not revert to 9.0f.

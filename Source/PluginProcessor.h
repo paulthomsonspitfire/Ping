@@ -160,27 +160,31 @@ private:
     // injection (pre-conv) and the volume injection (post-conv) read the same values.
     juce::AudioBuffer<float> bloomBuffer;
 
-    // ── Cloud Multi-LFO ──────────────────────────────────────────────────────
-    // 8 LFO-modulated delay lines applied to the wet reverb tail (post-Tail Chorus).
-    // LFO rates span 0.04–0.35 Hz geometrically — no two share a rational beat frequency.
-    // R channel applies a π phase offset on all LFOs for stereo decorrelation.
-    // cloudBuffer persists between processBlock calls: Insertion 1 (pre-conv) reads the
-    // previous block's output; Insertion 2 (post-Tail Chorus) overwrites it.
-    static constexpr int   kNumCloudLines    = 8;
-    static constexpr float kCloudBaseDepthMs = 3.0f;   // max per-line LFO swing at cloudDepth=1
-    static constexpr float kCloudSizeMaxMs   = 40.0f;  // UI cloudSize upper bound
-    static constexpr float kCloudBufMs       = 45.0f;  // sizeMax + depthMax + 2 ms margin
+    // ── Cloud Granular Scatter ─────────────────────────────────────────────────
+    // Pre-convolution granular engine. Reads Hann-windowed grains at random
+    // positions in a circular dry-input capture buffer.
+    // cloudIRFeed: one-way injection into the convolver (dry source — no loop back).
+    // cloudVolume: added post-dry/wet blend (like bloomVolume, audible at any wet level).
+    // cloudBuffer is written and read within the same processBlock (no cross-block bridge).
+    static constexpr int   kNumCloudGrains    = 16;    // max simultaneous grain voices
+    static constexpr float kCloudSizeMaxMs    = 40.0f; // grain length UI upper bound
+    static constexpr float kCloudCaptureBufMs = 85.0f; // 2 × sizeMax + margin
 
-    std::array<std::array<std::vector<float>, kNumCloudLines>, 2> cloudBufs;      // [ch][line]
-    std::array<std::array<int,               kNumCloudLines>, 2> cloudWritePtrs {};
+    struct CloudGrain {
+        float readPos  = 0.f;  // fractional read position in capture buffer
+        int   grainLen = 0;    // grain length in samples
+        float phase    = 1.f;  // 0..1 through grain; ≥ 1.0 = inactive
+    };
 
-    std::array<float, kNumCloudLines> cloudLfoPhases    {};   // 0..2π per line
-    std::array<float, kNumCloudLines> cloudLfoBaseRates {};   // rad/sample at rate=1×
+    std::array<std::vector<float>, 2>       cloudCaptureBufs;        // [ch] circular dry input
+    std::array<int, 2>                      cloudCaptureWritePtrs {}; // per-channel write heads
+    std::array<CloudGrain, kNumCloudGrains> cloudGrains;
+    float                                   cloudSpawnPhase    = 0.f;
+    int                                     cloudNextGrainSlot = 0;   // round-robin index
+    uint32_t                                cloudSpawnSeed     = 12345u;
 
-    // Bridge buffer: Insertion 2 writes current-block Cloud output;
-    // Insertion 1 in the *next* block reads it for IR-feed injection.
+    // Same-block bridge: written pre-conv, read post-blend.
     juce::AudioBuffer<float> cloudBuffer;
-    int                      cloudLastBlockSize = 0;
 
     // ── Shimmer ───────────────────────────────────────────────────────────────
     // Two-grain Hann-windowed pitch shifter applied to the post-convolution wet
@@ -198,9 +202,12 @@ private:
         float grainPhaseB = 0.5f;
     };
 
-    std::array<ShimmerVoice, 2> shimVoices;       // [ch]
-    std::array<float, 2>        shimColourState { 0.f, 0.f };  // 1-pole LP state per channel
-    juce::AudioBuffer<float>    shimBuffer;        // bridge: Insertion 2 → Insertion 1 (next block)
+    std::array<ShimmerVoice, 2> shimVoices;          // [ch] — IR Feed path: reads pre-conv dry signal
+    std::array<ShimmerVoice, 2> shimVoicesVol;       // [ch] — Volume path:   reads post-conv wet signal
+    std::array<float, 2>        shimColourState    { 0.f, 0.f };  // 1-pole LP state for IR Feed path
+    std::array<float, 2>        shimColourStateVol { 0.f, 0.f };  // 1-pole LP state for Volume path
+    juce::AudioBuffer<float>    shimBuffer;    // same-block bridge: pre-conv IR Feed output
+    juce::AudioBuffer<float>    shimBufferVol; // same-block bridge: post-conv Volume output
     int                         shimLastBlockSize = 0;
 
     juce::dsp::Gain<float> dryGain, wetGain;

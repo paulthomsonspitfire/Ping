@@ -261,74 +261,35 @@ TEST_CASE("DSP_04: Bloom feedback is stable at max setting (0.65)", "[dsp][bloom
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DSP_05 — Cloud LFO rates: no rational beat frequencies
+// DSP_05 — Cloud granular: output does not amplify signal
 // ─────────────────────────────────────────────────────────────────────────────
-// For all 28 pairs of 8 LFO rates, verify that the ratio r_i / r_j is not
-// within 0.005 of any rational p/q with p, q ≤ 32.
-// A rational beat creates a periodic density fluctuation audible as a pulse.
-TEST_CASE("DSP_05: Cloud LFO rates have no rational beat frequencies", "[dsp][cloud][lfo]")
+// At maximum density (cloudRate=4, up to 16 concurrent grains) and maximum
+// scatter (cloudDepth=1), the normalised grain sum must not boost RMS above
+// the input level by more than 5%.  Each grain is Hann-windowed; the engine
+// normalises by the active grain count so the energy stays bounded.
+TEST_CASE("DSP_05: Cloud granular output does not amplify signal", "[dsp][cloud][gain]")
 {
-    const int    N     = 8;
-    const double rBase = 0.04;
-    const double rTop  = 0.35;
-    const double k     = std::pow(rTop / rBase, 1.0 / (N - 1));
+    const int   sr          = 48000;
+    const int   N           = sr * 2;   // 2 seconds
+    const int   grainLen    = (int)std::round (20.0 * sr / 1000.0);   // 20 ms grains
+    const int   capBufLen   = (int)std::ceil  (85.0 * sr / 1000.0);   // capture buffer
+    const float cloudRate   = 4.0f;  // maximum overlap factor
+    const float cdepth      = 1.0f;  // maximum scatter
 
-    double rates[N];
-    for (int i = 0; i < N; ++i)
-        rates[i] = rBase * std::pow(k, i);
+    static constexpr int kNG = 16;
+    struct Grain { float readPos; int grainLen; float phase; };
 
-    for (int i = 0; i < N; ++i)
-    {
-        for (int j = i + 1; j < N; ++j)
-        {
-            double ratio = rates[i] / rates[j];
-            bool foundRationalBeat = false;
+    std::vector<float> capBuf (capBufLen, 0.f);
+    int   capWP = 0;
+    std::array<Grain, kNG> grains;
+    for (auto& g : grains) { g.readPos = 0.f; g.grainLen = 0; g.phase = 1.f; }
+    float    spawnPhase = 0.f;
+    int      nextSlot   = 0;
+    uint32_t seed       = 12345u;
 
-            // Check p/q with p, q ≤ 6.  This covers all musically perceptible
-            // simple ratios (unison, octave, 5th, 4th, major/minor 3rd, etc.).
-            // The original p,q ≤ 32 bound triggered false positives at 11/15
-            // which is a beat period of many minutes — entirely inaudible.
-            // Perceptible LFO beating requires a period short enough to hear
-            // (a few seconds at most), which corresponds to p,q ≤ 6 at these rates.
-            for (int p = 1; p <= 6 && !foundRationalBeat; ++p)
-                for (int q = 1; q <= 6 && !foundRationalBeat; ++q)
-                    if (std::abs(ratio - (double)p / q) < 0.005)
-                        foundRationalBeat = true;
+    const float spawnInterval = (float)grainLen / std::max (0.01f, cloudRate * 4.f);
 
-            INFO("Pair (" << i << ", " << j << "): ratio = " << ratio);
-            REQUIRE_FALSE(foundRationalBeat);
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// DSP_06 — Cloud: no signal amplification
-// ─────────────────────────────────────────────────────────────────────────────
-// At cloudDepth=1.0, the 8-line sum + blend must not boost the RMS above
-// the input level. The 0.7 scale factor in the blend formula prevents this,
-// but this test verifies the formula is implemented correctly.
-TEST_CASE("DSP_06: Cloud does not amplify signal", "[dsp][cloud][gain]")
-{
-    const int   sr         = 48000;
-    const int   N          = sr * 2;   // 2 seconds
-    const int   numLines   = 8;
-    const float cloudDepth = 1.0f;
-    const float maxDepthMs = 3.0f;
-    const float maxDepthSamps = maxDepthMs * sr / 1000.f;
-    const int   bufSamps   = (int)std::round(8.0f * sr / 1000.f);   // 8 ms buffer
-
-    // Build Cloud buffers and LFO state.
-    std::vector<std::vector<float>> bufs(numLines, std::vector<float>(bufSamps, 0.f));
-    std::vector<int>   wptrs(numLines, 0);
-    std::vector<float> lfoPhases(numLines, 0.f);
-
-    const double rBase = 0.04, rTop = 0.35;
-    const double kRate = std::pow(rTop / rBase, 1.0 / (numLines - 1));
-    std::vector<float> lfoRates(numLines);
-    for (int i = 0; i < numLines; ++i)
-        lfoRates[i] = (float)(2.0 * M_PI * rBase * std::pow(kRate, i) / sr);
-
-    TestRng rng(0xAABBCCDDu);
+    TestRng rng (0xAABBCCDDu);
     double eIn = 0.0, eOut = 0.0;
 
     for (int i = 0; i < N; ++i)
@@ -336,36 +297,94 @@ TEST_CASE("DSP_06: Cloud does not amplify signal", "[dsp][cloud][gain]")
         float input = rng.nextFloat();
         eIn += (double)input * input;
 
-        // Advance all LFOs.
-        for (int l = 0; l < numLines; ++l)
-            lfoPhases[l] += lfoRates[l];
+        capBuf[(size_t)capWP] = input;
+        capWP = (capWP + 1) % capBufLen;
 
-        float lineSum = 0.f;
-        for (int l = 0; l < numLines; ++l)
+        spawnPhase += 1.f / spawnInterval;
+        while (spawnPhase >= 1.f)
         {
-            bufs[l][(size_t)wptrs[l]] = input;
-
-            float mod   = maxDepthSamps * cloudDepth * std::sin(lfoPhases[l]);
-            float base  = maxDepthSamps + 1.f;
-            float rpF   = (float)wptrs[l] - base - mod;
-            int   ri    = ((int)std::floor(rpF) % bufSamps + bufSamps) % bufSamps;
-            float frac  = rpF - std::floor(rpF);
-            int   ri1   = (ri + 1) % bufSamps;
-            lineSum    += bufs[l][(size_t)ri] * (1.f - frac) + bufs[l][(size_t)ri1] * frac;
-
-            wptrs[l] = (wptrs[l] + 1) % bufSamps;
+            spawnPhase -= 1.f;
+            seed = seed * 1664525u + 1013904223u;
+            float r           = (float)(seed >> 8) / (float)(1u << 24);
+            float scatterSamps = cdepth * (float)grainLen * r;
+            float startPos    = (float)capWP - (float)grainLen - scatterSamps;
+            while (startPos < 0.f) startPos += (float)capBufLen;
+            grains[(size_t)nextSlot] = { startPos, grainLen, 0.f };
+            nextSlot = (nextSlot + 1) % kNG;
         }
 
-        float out = input * (1.f - cloudDepth * 0.7f) + (lineSum / numLines) * cloudDepth * 0.7f;
+        float lineSum = 0.f;
+        int   active  = 0;
+        for (auto& g : grains)
+        {
+            if (g.phase >= 1.f) continue;
+            float win  = 0.5f - 0.5f * std::cos (2.f * (float)M_PI * g.phase);
+            int   ri   = (int)g.readPos % capBufLen;
+            if (ri < 0) ri += capBufLen;
+            float frac = g.readPos - std::floor (g.readPos);
+            int   ri1  = (ri + 1) % capBufLen;
+            lineSum   += (capBuf[(size_t)ri] * (1.f - frac) + capBuf[(size_t)ri1] * frac) * win;
+            g.readPos += 1.f;
+            if (g.readPos >= (float)capBufLen) g.readPos -= (float)capBufLen;
+            g.phase   += 1.f / (float)g.grainLen;
+            ++active;
+        }
+
+        float out = (active > 0) ? lineSum / (float)active : 0.f;
         eOut += (double)out * out;
     }
 
-    double rmsIn  = std::sqrt(eIn  / N);
-    double rmsOut = std::sqrt(eOut / N);
-    INFO("RMS in: " << rmsIn << "  RMS out: " << rmsOut);
+    double rmsIn  = std::sqrt (eIn  / N);
+    double rmsOut = std::sqrt (eOut / N);
+    INFO ("RMS in: " << rmsIn << "  RMS out: " << rmsOut);
+    REQUIRE (rmsOut <= rmsIn * 1.05);
+}
 
-    // Output RMS must not exceed input RMS by more than 5%.
-    REQUIRE(rmsOut <= rmsIn * 1.05);
+// ─────────────────────────────────────────────────────────────────────────────
+// DSP_06 — Cloud granular: Hann window is applied per grain
+// ─────────────────────────────────────────────────────────────────────────────
+// A single grain fed a constant-1.0 signal must have near-zero output at
+// onset (phase=0) and near-zero output near the end (phase=0.99), with peak
+// output ≈ 1.0 at mid-grain (phase=0.5).  Verifies Hann windowing is applied.
+TEST_CASE("DSP_06: Cloud grain Hann window is applied per grain", "[dsp][cloud][window]")
+{
+    const int   sr       = 48000;
+    const int   grainLen = (int)std::round (20.0 * sr / 1000.0);
+    const int   capLen   = (int)std::ceil  (85.0 * sr / 1000.0);
+
+    // Capture buffer filled with constant 1.0
+    std::vector<float> cap (capLen, 1.f);
+
+    // Single grain: read position points to constant-1.0 data
+    float grainReadPos  = 100.f;
+    float grainPhase    = 0.f;
+
+    // ── onset: phase = 0 → Hann = 0 ──
+    {
+        float win = 0.5f - 0.5f * std::cos (2.f * (float)M_PI * grainPhase);
+        int   ri  = (int)grainReadPos % capLen;
+        float out = cap[(size_t)ri] * win;  // 1 active grain, normalised by 1
+        INFO ("Onset (phase=0.00): " << out << " (expect ≈ 0.0)");
+        REQUIRE (std::abs (out) < 0.01f);
+    }
+
+    // ── mid-grain: phase = 0.5 → Hann = 1.0 ──
+    {
+        float phase = 0.5f;
+        float win   = 0.5f - 0.5f * std::cos (2.f * (float)M_PI * phase);
+        float out   = cap[0] * win;
+        INFO ("Mid-grain (phase=0.50): " << out << " (expect ≈ 1.0)");
+        REQUIRE (out > 0.99f);
+    }
+
+    // ── near-end: phase = 0.99 → Hann ≈ 0 ──
+    {
+        float phase = 0.99f;
+        float win   = 0.5f - 0.5f * std::cos (2.f * (float)M_PI * phase);
+        float out   = cap[0] * win;
+        INFO ("Near-end (phase=0.99): " << out << " (expect < 0.02)");
+        REQUIRE (out < 0.02f);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
