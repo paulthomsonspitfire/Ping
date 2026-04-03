@@ -344,7 +344,7 @@ PingEditor::PingEditor (PingProcessor& p)
     plateIRFeedSlider.setRange   (0.0,  1.0,  0.01);
     plateDiffusionSlider.setRange (0.30, 0.88, 0.01);
     plateColourSlider.setRange   (0.0,  1.0,  0.01);
-    plateSizeSlider.setRange     (0.5,  4.0,  0.01);
+    plateSizeSlider.setRange     (0.5,  14.0, 0.01);
     bloomSizeSlider.setRange (0.25, 2.0, 0.01);
     bloomFeedbackSlider.setRange  (0.0,  0.65, 0.01);
     bloomTimeSlider.setRange      (50.0, 500.0, 1.0);

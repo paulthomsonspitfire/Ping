@@ -133,7 +133,7 @@ Paste the printed `onset_offset` and `golden_iLL[30]` values into `IR_11` in `Pi
 - **DSP_05 rational-beat bound** — p,q ≤ 6 covers all perceptible simple LFO beat ratios. The original p,q ≤ 32 flagged 11/15, whose beat period at these rates would be many minutes — completely inaudible.
 - **DSP_10 first-return peak test** — allpass filters are IIR and never fully "drain," so drain-energy comparisons are unsuitable for testing `effLen`. Instead, DSP_10 exploits the fact that a single allpass of delay d, fed an impulse, produces its first large positive output exactly at sample d: `out[d] = 1 - g² ≈ 0.51`. At `plateSize=2.0`, d doubles from 691 to 1382 samples, making the peak position a direct, unambiguous observable of the `effLen` mechanism.
 - **DSP_11 short bloomTime is the worst case** — At 50 ms (minimum bloomTime) there are ~20 feedback round-trips per second. More trips per second means more opportunities for energy to accumulate if the loop gain is near 1. DSP_04 (300 ms) and DSP_11 (50 ms) together bound the stability guarantee across the full 50–500 ms range.
-- **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Plate stages set `effLen` each block via `plateSize` (4× alloc, range 0.5–4.0). Bloom stages also now set `effLen` each block via `bloomSize` (2× alloc, range 0.25–2.0). Plate buffers at 4× base primes; Bloom buffers at 2× base primes.
+- **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Plate stages set `effLen` each block via `plateSize` (14× alloc, range 0.5–14.0). Bloom stages also now set `effLen` each block via `bloomSize` (2× alloc, range 0.25–2.0). Plate buffers at 14× base primes; Bloom buffers at 2× base primes.
 
 ---
 
@@ -448,13 +448,13 @@ All parameters live in `PingProcessor::apvts` (an `AudioProcessorValueTreeState`
 | `plateOn` | Plate On | bool | false |
 | `plateDiffusion` | Plate Diffusion | 0.30–0.88 | 0.40 |
 | `plateColour` | Plate Colour | 0–1 | 0.5 |
-| `plateSize` | Plate Size | 0.5–4.0 | 1.0 |
+| `plateSize` | Plate Size | 0.5–14.0 | 1.0 |
 | `plateIRFeed` | Plate IR Feed | 0–1 | 0 |
 | `bloomOn` | Bloom On | bool | false |
-| `bloomSize` | Bloom Size | 0.25–2.0 | 1.0 |
-| `bloomFeedback` | Bloom Feedback | 0–0.65 | 0.25 |
-| `bloomTime` | Bloom Time (ms) | 50–500 | 200 |
-| `bloomIRFeed` | Bloom IR Feed | 0–1 | 0 |
+| `bloomSize` | Bloom Size | 0.25–2.0 | 0.77 |
+| `bloomFeedback` | Bloom Feedback | 0–0.65 | 0.49 |
+| `bloomTime` | Bloom Time (ms) | 50–500 | 290 |
+| `bloomIRFeed` | Bloom IR Feed | 0–1 | 0.4 |
 | `bloomVolume` | Bloom Volume | 0–1 | 0 |
 | `cloudOn` | Cloud On | bool | false |
 | `cloudDepth` | Cloud Width (UI: WIDTH) | 0–1 | 0.3 |
@@ -617,7 +617,7 @@ The `SimpleAllpass` struct in `PingDSPTests.cpp` must stay **exactly in sync** w
 
 ### `prepareToPlay`
 
-Base prime delays at 48 kHz: `{ 24, 71, 157, 293, 431, 691 }` samples. Buffers allocated at **4× base primes** so the full `plateSize` 0.5–4.0 range needs no reallocation. All g values set to 0.70. `plateShelfState` filled to zero. `plateBuffer` sized to `(2, samplesPerBlock)` and cleared.
+Base prime delays at 48 kHz: `{ 24, 71, 157, 293, 431, 691 }` samples. Buffers allocated at **14× base primes** so the full `plateSize` 0.5–14.0 range needs no reallocation (~200 ms max on prime 691). All g values set to 0.70. `plateShelfState` filled to zero. `plateBuffer` sized to `(2, samplesPerBlock)` and cleared.
 
 ### `processBlock` insertion point
 
@@ -632,7 +632,7 @@ After the saturator, **before** the convolution block. At `density = 0` the blen
 | `plateOn` | bool | false | Enables the cascade; zero overhead when off |
 | `plateDiffusion` | 0.30–0.88 | 0.70 | Allpass g coefficient applied to all 6 stages each block; lower = gentle scatter, higher = very dense diffusion |
 | `plateColour` | 0–1 | 0.5 | 1-pole LP cutoff applied to the diffused signal: 0 → 2 kHz (warm), 1 → 8 kHz (bright). Readout displays the actual cutoff in kHz. |
-| `plateSize` | 0.5–4.0 | 1.0 | Scales all 6 allpass delays; readout shows the largest delay time in ms (prime 691 × size / 48000 × 1000). At size=1.0 → ~14.4 ms, size=4.0 → ~57.6 ms. Buffers allocated at 4× base primes to cover the full range without reallocation. |
+| `plateSize` | 0.5–14.0 | 1.0 | Scales all 6 allpass delays; readout shows the largest delay time in ms (prime 691 × size / 48000 × 1000). At size=1.0 → ~14.4 ms, size=14.0 → ~201.8 ms. Buffers allocated at 14× base primes to cover the full range without reallocation. |
 | `plateIRFeed` | 0–1 | 0 | Adds the processed plate signal into the IR convolver input (on top of the main signal). At 0: plate has no effect; at 1: full plate signal added to convolver input. |
 
 ---
@@ -650,12 +650,12 @@ Two elements work together:
 
 ### Architecture — Bloom as a self-contained pedal upstream of the reverb
 
-The main signal into the convolver is **not modified** by the cascade itself. The cascade output is stored in `bloomBuffer` and delivered through two independent output paths, both defaulting to 0 (consistent with `plateIRFeed = 0`):
+The main signal into the convolver is **not modified** by the cascade itself. The cascade output is stored in `bloomBuffer` and delivered through two independent output paths:
 
-- **`bloomIRFeed`** — adds `bloomBuffer * irFeed` additively to the convolver input (on top of the main signal). Like plugging a Bloom pedal into the reverb's input jack.
-- **`bloomVolume`** — adds `bloomBuffer * volume` directly to the **final output after the dry/wet blend**, so it is heard regardless of the wet/dry setting.
+- **`bloomIRFeed`** — adds `bloomBuffer * irFeed` additively to the convolver input (on top of the main signal). Like plugging a Bloom pedal into the reverb's input jack. Default: 0.4 — audible immediately when Bloom is enabled.
+- **`bloomVolume`** — adds `bloomBuffer * volume` directly to the **final output after the dry/wet blend**, so it is heard regardless of the wet/dry setting. Default: 0.
 
-At both defaults = 0, Bloom has no audible effect until the user raises at least one output control.
+At `bloomVolume = 0` and `bloomIRFeed = 0` Bloom has no audible effect. With the default `bloomIRFeed = 0.4`, Bloom is audible as soon as it is switched on.
 
 ### DSP state (`PluginProcessor.h`)
 
@@ -691,10 +691,10 @@ Separate L/R prime delay sets at 48 kHz — L: `{ 241, 383, 577, 863, 1297, 1913
 | Parameter ID | Range | Default | Effect |
 |---|---|---|---|
 | `bloomOn` | bool | false | Enables Bloom; zero overhead when off |
-| `bloomSize` | 0.25–2.0 | 1.0 | Scales all 6 allpass delay times (like `plateSize` for Plate). At 1.0 the L delays span ~5–40 ms (textured, dense); at 2.0 they span ~10–80 ms (more spacious); at 0.25 ~1.25–10 ms (very dense, clangorous). Readout shows multiplier (e.g. "1.00×"). |
-| `bloomFeedback` | 0–0.65 | 0.25 | Wet→input feedback amount; safety-clamped at 0.65. Higher = more self-sustaining swell |
-| `bloomTime` | 50–500 ms | 200 ms | Feedback tap delay — how far back in the wet signal the feedback reads. Short = fast rhythmic bloom, long = slow expansive sustain. Readout displays integer ms. |
-| `bloomIRFeed` | 0–1 | 0 | How much bloom cascade output injects additively into the convolver input |
+| `bloomSize` | 0.25–2.0 | 0.77 | Scales all 6 allpass delay times (like `plateSize` for Plate). At 1.0 the L delays span ~5–40 ms (textured, dense); at 2.0 they span ~10–80 ms (more spacious); at 0.25 ~1.25–10 ms (very dense, clangorous). Readout shows multiplier (e.g. "1.00×"). |
+| `bloomFeedback` | 0–0.65 | 0.49 | Wet→input feedback amount; safety-clamped at 0.65. Higher = more self-sustaining swell |
+| `bloomTime` | 50–500 ms | 290 ms | Feedback tap delay — how far back in the wet signal the feedback reads. Short = fast rhythmic bloom, long = slow expansive sustain. Readout displays integer ms. |
+| `bloomIRFeed` | 0–1 | 0.4 | How much bloom cascade output injects additively into the convolver input |
 | `bloomVolume` | 0–1 | 0 | How much bloom cascade output is added to the final output after dry/wet blend (independent of wet/dry) |
 
 ### UI layout (Row 4 — "Bloom hybrid")
@@ -1170,7 +1170,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **`rowShiftUp = 30 - rowKnobSize` — all knob rows are shifted down by one knob height** — `rowShiftUp` is subtracted from every row Y position, so making it smaller (by `rowKnobSize`) pushes all 9 rows (left-side 1–4 and right-side R1–R3) down by exactly `rowKnobSize` pixels simultaneously. The original `rowShiftUp = 30` provided a 30 px upward nudge; the current `30 - rowKnobSize` gives a net downward displacement from the natural `removeFromTop` position. Do not revert to a fixed positive value without updating all group-header Y positions accordingly.
 - **Preset combo + save button are right-aligned in the header panel** — save button at `w - 12 - 48`, preset combo (fixed 200 px wide) immediately to its left, "Preset" label further left. The combo uses the `PingLookAndFeel::drawComboBox` override which renders a semi-transparent fill (`0x18` alpha white), a soft rounded border (`0x38` alpha), and a subtle arrow — no hard JUCE default box. `positionComboBoxText` insets the label 6 px from the left. There is no second placement block lower in `resized()` — the header placement is the only one. Do not add a repositioning block that moves the preset combo below the top bar.
 - **Width is positioned below WET OUT TRIM at `outputGainCenterX, tailKnobY`** — Width (`outputGainKnobSize`) was removed from any large-knob grid. It now stacks directly below "WET OUT TRIM" at the same X (`outputGainCenterX`), sharing the same Y as the Tail knob (`tailKnobY`). LFO Depth, LFO Rate, Tail Mod, Delay Depth, and Tail Rate were moved to right-side Row R3. Do not place Width at `row6AbsY + row6TotalH_ + 70` — that position is now unused.
-- **Bloom has two independent output paths (`bloomIRFeed` and `bloomVolume`), both defaulting to 0** — consistent with `plateIRFeed = 0`. The main signal is not modified by the bloom cascade; only additive injection via `bloomIRFeed` into the convolver and `bloomVolume` into the final output. At both defaults = 0, Bloom has zero effect when switched on.
+- **Bloom has two independent output paths (`bloomIRFeed` and `bloomVolume`)** — `bloomIRFeed` defaults to 0.4 (audible immediately on enable via the convolver); `bloomVolume` defaults to 0. The main signal is not modified by the bloom cascade; only additive injection via `bloomIRFeed` into the convolver and `bloomVolume` into the final output. At `bloomVolume = 0` and `bloomIRFeed = 0` Bloom has zero effect — but with the default `bloomIRFeed = 0.4`, Bloom is audible as soon as it is switched on.
 - **`bloomBuffer` bridges Insertion 1 (pre-conv) and the post-dry/wet Volume injection within the same processBlock call** — it is not a feedback buffer. Populated at Insertion 1, read after the dry/wet blend. `bloomBuffer.clear()` at the top of Insertion 1 ensures no stale data. A reallocation guard (`if (numSamples > bloomBuffer.getNumSamples())`) handles hosts that exceed `maximumExpectedSamplesPerBlock`.
 - **Bloom feedback tap is written inside Insertion 1's per-sample loop** — immediately after computing `diff` (the cascade output), `bloomFbBufs[ch][wp] = diff` is written and the pointer advanced. The convolved wet signal is **never** written to `bloomFbBufs`. This makes the feedback loop entirely self-contained: Bloom → `bloomFbBufs` → Bloom. The old architecture wrote the post-EQ wet signal to `bloomFbBufs` (old Insertion 3), which put the convolver inside the loop and caused feedback explosions with stereo IRs where the LL convolver path had significantly higher gain than the RL/LR paths.
 - **`bloomVolume` is injected after the dry/wet blend** — it is added to the final output buffer after `buffer.addFrom(dryBuffer)`. This means `bloomVolume` is audible at any dry/wet setting, including fully dry. It behaves like the direct output level of a Bloom pedal sitting in parallel with the reverb unit. The old architecture injected before EQ, making it subject to both EQ and the dry/wet control.

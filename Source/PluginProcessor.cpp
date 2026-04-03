@@ -264,14 +264,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::plateOn,        "Plate On",         false));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDiffusion, "Plate Diffusion",  0.30f, 0.88f, 0.40f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateColour,    "Plate Colour",     0.0f, 1.0f,  0.5f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateSize,      "Plate Size",       0.5f, 4.0f,  1.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateSize,      "Plate Size",       0.5f, 14.0f, 1.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateIRFeed,    "Plate IR Feed",    0.0f, 1.0f,  0.0f));
     // Bloom hybrid
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::bloomOn,        "Bloom On",         false));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomSize,      "Bloom Size",       0.25f, 2.0f, 1.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomFeedback,  "Bloom Feedback",   0.0f, 0.65f, 0.25f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomTime,      "Bloom Time",       50.0f, 500.0f, 200.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomIRFeed,    "Bloom IR Feed",    0.0f, 1.0f,   0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomSize,      "Bloom Size",       0.25f, 2.0f, 0.77f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomFeedback,  "Bloom Feedback",   0.0f, 0.65f, 0.49f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomTime,      "Bloom Time",       50.0f, 500.0f, 290.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomIRFeed,    "Bloom IR Feed",    0.0f, 1.0f,   0.4f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomVolume,    "Bloom Volume",     0.0f, 1.0f,   0.0f));
     // Cloud Multi-LFO
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::cloudOn,     "Cloud On",      false));
@@ -353,13 +353,13 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     crossfeedErWriteRtoL = crossfeedErWriteLtoR = crossfeedTailWriteRtoL = crossfeedTailWriteLtoR = 0;
 
     // Plate onset: 6 allpass stages, prime delay times (at 48 kHz base).
-    // Buffers allocated at 2× base primes so plateSize 0.5–2.0 needs no reallocation.
+    // Buffers allocated at 14× base primes so plateSize 0.5–14.0 needs no reallocation (~200 ms max on prime 691).
     {
         static constexpr int platePrimes[kNumPlateStages] = { 24, 71, 157, 293, 431, 691 };
         for (int ch = 0; ch < 2; ++ch)
             for (int s = 0; s < kNumPlateStages; ++s)
             {
-                int d = (int)std::round (platePrimes[s] * sampleRate / 48000.0 * 4.0); // 4× headroom — supports plateSize up to 4.0
+                int d = (int)std::round (platePrimes[s] * sampleRate / 48000.0 * 14.0); // 14× headroom — supports plateSize up to 14.0 (~200 ms on prime 691)
                 plateAPs[ch][s].buf.assign ((size_t)d, 0.f);
                 plateAPs[ch][s].ptr    = 0;
                 plateAPs[ch][s].effLen = 0;
