@@ -263,7 +263,7 @@ void PingLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bo
     g.fillRoundedRectangle (bounds, 4.f);
 
     // Soft border — low-alpha, no hard edge
-    g.setColour (juce::Colour (0x50ffffff));
+    g.setColour (juce::Colour (0x44ffffff));
     g.drawRoundedRectangle (bounds.reduced (0.5f), 4.f, 0.8f);
 
     // Dropdown arrow — centred in button area, subtle

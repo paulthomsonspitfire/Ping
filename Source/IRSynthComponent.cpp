@@ -229,7 +229,7 @@ IRSynthComponent::IRSynthComponent()
 
     addAndMakeVisible (irCombo);
     irCombo.addListener (this);
-    irCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x30ffffff));
+    irCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x1effffff));
     irCombo.setColour (juce::ComboBox::textColourId, textDim);
     irCombo.setColour (juce::ComboBox::arrowColourId, accent);
     irCombo.setEditableText (true);
@@ -239,7 +239,7 @@ IRSynthComponent::IRSynthComponent()
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
                       &vaultCombo, &micPatternCombo, &sampleRateCombo })
     {
-        cb->setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x30ffffff));
+        cb->setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x1effffff));
         cb->setColour (juce::ComboBox::textColourId, textDim);
         cb->setColour (juce::ComboBox::arrowColourId, accent);
     }
@@ -283,10 +283,16 @@ IRSynthComponent::IRSynthComponent()
 
 void IRSynthComponent::paint (juce::Graphics& g)
 {
-    // ── Background: brushed-steel texture + dark body overlay ──────────────
+    // ── Background: right 60% of the brushed-steel texture (brighter region),
+    //    scaled to fill the full component area. ───────────────────────────────
     if (bgTexture.isValid())
-        g.drawImage (bgTexture, getLocalBounds().toFloat(),
-                     juce::RectanglePlacement::fillDestination);
+    {
+        const int srcX = (int) (bgTexture.getWidth() * 0.40f);   // start 40% in
+        const int srcW = bgTexture.getWidth() - srcX;            // remaining 60%
+        g.drawImage (bgTexture,
+                     0, 0, getWidth(), getHeight(),               // dest: full component
+                     srcX, 0, srcW, bgTexture.getHeight());       // source: right 60%
+    }
     else
         g.fillAll (juce::Colour (0xff141414));
 

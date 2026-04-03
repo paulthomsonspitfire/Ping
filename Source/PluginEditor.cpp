@@ -76,7 +76,7 @@ PingEditor::PingEditor (PingProcessor& p)
     // IR list
     addAndMakeVisible (irCombo);
     irCombo.addListener (this);
-    irCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x30ffffff));
+    irCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x1effffff));
     irCombo.setColour (juce::ComboBox::textColourId, textDim);
     irCombo.setColour (juce::ComboBox::arrowColourId, accent);
 
@@ -88,7 +88,7 @@ PingEditor::PingEditor (PingProcessor& p)
 
     addAndMakeVisible (presetCombo);
     presetCombo.addListener (this);
-    presetCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x30ffffff));
+    presetCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x1effffff));
     presetCombo.setColour (juce::ComboBox::textColourId, textCol);
     presetCombo.setColour (juce::ComboBox::arrowColourId, accent);
     presetCombo.addItem ("Default", 1);
