@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.2.4 (see `CMakeLists.txt`)
+**Current version:** 2.2.5 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -1221,3 +1221,278 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **`PingLookAndFeel::drawComboBox` uses `backgroundColourId` for the fill** — the old hardcoded `0x18ffffff` fill has been replaced with `box.findColour(juce::ComboBox::backgroundColourId)`. All combo boxes in the plugin explicitly set `backgroundColourId = 0x1effffff` (12% opaque white) so the fill is consistent everywhere. The border is `0x44ffffff`. Do not hardcode the fill back to a fixed alpha — the per-combo colour is what allows uniform glassy appearance across both the lighter header background and the darker IR Synth page background.
 - **All combo boxes share `backgroundColourId = 0x1effffff`** — set explicitly in both `PluginEditor` (on `presetCombo` and `irCombo`) and `IRSynthComponent` (on `irCombo`, `shapeCombo`, `floorCombo`, `ceilingCombo`, `wallCombo`, `vaultCombo`, `micPatternCombo`, `sampleRateCombo`). Do not revert any of these to the old opaque `0xff2a2a2a` — that value is ignored by `drawComboBox` but setting it back would cause the combos to appear solid dark if `drawComboBox` is ever changed to use JUCE defaults.
 - **`irSynthComponent.setLookAndFeel(&pingLook)` is called explicitly after `setLookAndFeel(&pingLook)`** — belt-and-suspenders propagation that guarantees all child combos inside `IRSynthComponent` use `PingLookAndFeel::drawComboBox`, regardless of construction ordering. The destructor calls `irSynthComponent.setLookAndFeel(nullptr)` before `setLookAndFeel(nullptr)`. Do not remove either call — without the explicit propagation, IRSynthComponent's combos can silently fall back to JUCE's default opaque combo rendering.
+
+---
+
+## Factory content system
+
+### File system layout
+
+```
+/Library/Application Support/Ping/P!NG/   ← installed by .pkg (system-wide, read-only)
+    Factory IRs/
+        Halls/
+            <name>.wav
+            <name>.wav.ping    ← IR Synth sidecar (optional)
+        Large Spaces/
+            ...
+        Rooms/
+        Scoring Stages/
+        Tight Spaces/
+    Factory Presets/
+        Halls/
+            <name>.xml
+        Large Spaces/
+        Rooms/
+        Scoring Stages/
+        Tight Spaces/
+
+~/Documents/P!NG/IRs/               ← user IRs (flat, no subcategories)
+~/Library/Audio/Presets/Ping/P!NG/  ← user presets
+    <name>.xml                       ← presets saved with no folder
+    Vocals/                          ← user-created subfolders (optional)
+        <name>.xml
+```
+
+Subfolder names (one level deep) become the section headings shown in the UI. Both factory and user locations support this structure. Factory content is world-readable but not user-writable.
+
+### Repo structure for factory content
+
+```
+Installer/
+    factory_irs/       ← populate with audio files + sidecars before building installer
+        Halls/
+        Large Spaces/
+        Rooms/
+        Scoring Stages/
+        Tight Spaces/
+    factory_presets/   ← populate with preset XML files
+        Halls/
+        Large Spaces/
+        Rooms/
+        Scoring Stages/
+        Tight Spaces/
+```
+
+**To add more factory content in a future release:** drop new files (or create a new subfolder for a new category) into the appropriate `factory_irs/` or `factory_presets/` directory, bump the version in `CMakeLists.txt` and `Installer/build_installer.sh`, then rebuild the installer. No code changes are needed.
+
+`.gitattributes` marks `*.wav` and `*.aiff` as binary so git doesn't attempt text diffs on audio files.
+
+---
+
+## IRManager — IREntry struct and dual-location scanning
+
+### `IREntry` struct (`IRManager.h`)
+
+The private member changed from `juce::Array<juce::File> irFiles` to `juce::Array<IREntry> irEntries`:
+
+```cpp
+struct IREntry {
+    juce::File   file;
+    juce::String category;    // subfolder name, e.g. "Halls"; empty for root-level or user IRs
+    bool         isFactory = false;
+};
+```
+
+### New API
+
+```cpp
+static juce::File getSystemFactoryIRFolder();
+// → /Library/Application Support/Ping/P!NG/Factory IRs/
+
+const juce::Array<IREntry>& getEntries() const;   // full structured list
+```
+
+All legacy methods (`getDisplayNames`, `getIRFileAt`, `getIRFiles`, `getNumIRs`) are kept intact — they iterate `irEntries` extracting `.file`. `getDisplayNames4Channel()` and `getIRFiles4Channel()` used by `IRSynthComponent` are unaffected.
+
+### Scan order
+
+`scanFolder()` does two passes. Factory entries come first, user entries second:
+
+1. **Factory folder** — root files (no category), then immediate subdirectories sorted alphabetically (each becomes a category name). All entries have `isFactory = true`.
+2. **User folder** — flat (no subcategories). All entries have `isFactory = false`.
+
+The IR Synth panel (`IRSynthComponent`) uses `getDisplayNames4Channel()` which filters `irEntries` by channel count — it therefore automatically includes both factory and user 4-channel IRs.
+
+---
+
+## PluginProcessor — IR state persistence by file path
+
+`selectedIRIndex` (int) has been replaced with `selectedIRFile` (juce::File) throughout:
+
+```cpp
+// PluginProcessor.h
+juce::File selectedIRFile;   // empty = synth IR or nothing loaded
+
+juce::File getSelectedIRFile() const  { return selectedIRFile; }
+void       setSelectedIRFile (const juce::File& f) { selectedIRFile = f; }
+```
+
+`getStateInformation` saves the full path string:
+```cpp
+if (selectedIRFile != juce::File())
+    xml->setAttribute ("irFilePath", selectedIRFile.getFullPathName());
+```
+
+`setStateInformation` reads `irFilePath` first; **backward-compat fallback** reads the old `irIndex` integer and resolves it via `irManager.getIRFileAt(oldIndex)` if `irFilePath` is absent:
+```cpp
+juce::String savedPath = xml->getStringAttribute ("irFilePath", "");
+if (savedPath.isNotEmpty())
+    selectedIRFile = juce::File (savedPath);
+else
+{
+    int oldIndex = xml->getIntAttribute ("irIndex", -1);
+    if (oldIndex >= 0)
+    {
+        auto f = irManager.getIRFileAt (oldIndex);
+        if (f.existsAsFile()) selectedIRFile = f;
+    }
+}
+```
+
+`loadIRFromBuffer` sets `selectedIRFile = juce::File()` (empty) when `fromSynth = true`, same role as the old `selectedIRIndex = -1`.
+
+---
+
+## PluginEditor — sectioned IR combo
+
+### `refreshIRList()` structure
+
+```
+[ID 1]  Synthesized IR
+─── Factory ───              addSectionHeading("Factory")
+  ─ Halls ─                  addSectionHeading("  Halls")
+  [ID 2]  Lyndhurst Hall
+  [ID 3]  ...
+  ─ Large Spaces ─           addSectionHeading("  Large Spaces")
+  [ID 4]  Epic Room
+─── Your IRs ───             addSectionHeading("Your IRs")  (only if user has files)
+  [ID 5]  My Custom IR
+```
+
+Section headings consume no IDs. The index into `getEntries()` is always `selectedId - 2`. Factory entries come first in `irEntries`, so the factory section is built by iterating until `e.isFactory` is false; the user section iterates entries skipping `isFactory == true`.
+
+Selection is restored by file path: `pingProcessor.getSelectedIRFile()` is compared against `entries[i].file`. Falls back to entry index 0 (first available) if the file is not found.
+
+### `loadSelectedIR()`
+
+Uses `getEntries()` directly:
+```cpp
+int idx = irCombo.getSelectedId() - 2;
+const auto& entries = pingProcessor.getIRManager().getEntries();
+if (! juce::isPositiveAndBelow (idx, entries.size())) return;
+auto file = entries[idx].file;
+if (file.existsAsFile()) pingProcessor.loadIRFromFile (file);
+```
+
+### `comboBoxChanged()` / `loadPreset()` / `finishSaveSynthIR()` / `setOnLoadIR` callback
+
+All these call sites previously used `setSelectedIRIndex` / `getSelectedIRIndex` / `getIRFileAt`. They have all been updated to use `setSelectedIRFile(file)` directly, with file looked up from `getEntries()[idx].file`. `getPresetFile()` in `loadPreset()` now searches entries by file path to restore the combo ID after `setStateInformation`.
+
+---
+
+## PresetManager — PresetEntry struct and dual-location scanning
+
+### `PresetEntry` struct (`PresetManager.h`)
+
+Mirrors `IREntry`:
+
+```cpp
+struct PresetEntry {
+    juce::File   file;
+    juce::String category;    // subfolder name, e.g. "Halls"; empty = root level
+    bool         isFactory = false;
+};
+```
+
+### New API
+
+```cpp
+static juce::File getSystemFactoryPresetFolder();
+// → /Library/Application Support/Ping/P!NG/Factory Presets/
+
+static juce::Array<PresetEntry> getEntries();
+```
+
+### Scan order
+
+Same two-pass pattern as `IRManager`:
+
+1. **Factory folder** — root `.xml` files (no category), then immediate subdirs sorted alphabetically.
+2. **User folder** (`~/Library/Audio/Presets/Ping/P!NG/`) — root `.xml` files, then immediate subdirs sorted alphabetically.
+
+### `getPresetFile(name)` updated
+
+Searches `getEntries()` for a matching filename stem before falling back to a new file in the user root:
+```cpp
+for (const auto& e : getEntries())
+    if (e.file.getFileNameWithoutExtension() == name)
+        return e.file;
+return getPresetDirectory().getChildFile (name + ".xml");
+```
+
+This means factory presets can be loaded by name. The fallback is only used when saving a brand-new preset not yet on disk.
+
+---
+
+## PluginEditor — sectioned preset combo and folder save UI
+
+### `refreshPresetList()` structure
+
+```
+─── Factory ───           addSectionHeading("Factory")
+  ─ Halls ─               addSectionHeading("  Halls")
+  [ID n]  Big Hall
+  ─ Large Spaces ─
+  [ID n]  Epic Cello
+─── Your Presets ───      addSectionHeading("Your Presets")  (only if user has any)
+  ─ Vocals ─              addSectionHeading("  Vocals")      (if user has subfolders)
+  [ID n]  My Preset       ← root-level user preset
+```
+
+IDs are assigned `i + 2` across all entries from `getEntries()` in order. Section headings consume no IDs.
+
+`refreshFolderList()` is called at the top of `refreshPresetList()` to keep the folder dropdown in sync.
+
+### Folder save UI (`presetFolderCombo`)
+
+A `juce::ComboBox` with `setEditableText(true)` sits between the "PRESET" label and the preset name combo in the header:
+
+```
+[PRESET label 62px] [folder 100px] [preset name 160px] [Save 48px]
+```
+
+`refreshFolderList()` scans only the **user preset directory** for immediate subdirectories (factory subfolders are excluded — users can't save there). Lists `(no folder)` as ID 1, then existing user subfolders as IDs 2..N.
+
+Since the combo is editable, the user can either:
+- Select an existing subfolder from the dropdown
+- Type a new subfolder name directly
+
+`savePreset()` builds the target path from the folder combo:
+```cpp
+juce::String folderName = presetFolderCombo.getText().trim();
+const bool noFolder = (folderName.isEmpty() || folderName == "(no folder)");
+juce::File targetDir = noFolder
+    ? PresetManager::getPresetDirectory()
+    : PresetManager::getPresetDirectory().getChildFile (folderName);
+targetDir.createDirectory();   // no-op if already exists; creates new subfolder on first use
+auto file = targetDir.getChildFile (trimmedName + ".xml");
+```
+
+Saves always target the **user directory** — never the factory location. After saving, `refreshPresetList()` (which calls `refreshFolderList()`) updates both combos so the new folder/preset appear immediately.
+
+The overwrite prompt fires only when the exact target file (path-aware, not just name-aware) already exists and the typed name matches the currently selected item.
+
+---
+
+## Key design decisions — factory content
+
+- **`/Library/Application Support/` for factory content, not `~/`** — the `.pkg` installer runs as root so can write there; users cannot write there, making factory content permanently read-only. No per-user copying at launch. All users on a multi-user Mac share the same factory content automatically.
+- **`selectedIRFile` (juce::File) replaces `selectedIRIndex` (int)** — integer indices are fragile: they shift whenever the IR list changes (e.g. new factory IRs added in an update). Full file paths survive list changes. Backward-compat fallback (`irIndex` → `getIRFileAt`) handles sessions saved with the old format.
+- **`loadSelectedIR()` is the single entry point for all IR reloads** — `parameterChanged` (Stretch, Decay), the Reverse button, the Trim handle, `comboBoxChanged`, `loadPreset`, `finishSaveSynthIR`, and the `setOnLoadIR` callback all route through `loadSelectedIR()` (or `refreshIRList()` which calls it). Never call `loadIRFromFile()` or `reloadSynthIR()` directly from parameter listeners.
+- **IR combo ID mapping: `selectedId - 2 = index into getEntries()`** — `addSectionHeading()` in JUCE's `ComboBox` does not consume IDs. IDs are therefore a flat 1-based offset: ID 1 = Synth, ID 2 = `entries[0]`, ID 3 = `entries[1]`, etc. This mapping must be maintained exactly — do not use a separate ID counter or the entries array will be misaligned.
+- **Factory entries always come first in `irEntries` / `getEntries()`** — `scanFolder()` does the factory pass before the user pass. `refreshIRList()` and `refreshPresetList()` rely on this ordering: they iterate forward and break/continue on `isFactory` to separate the two sections. Do not interleave factory and user entries.
+- **`presetFolderCombo` is editable but lists only user subfolders** — factory subfolder names are not offered as save targets (you can't write to `/Library/`). If the user types a name that doesn't exist yet, `createDirectory()` in `savePreset()` creates it on first save. After save, `refreshFolderList()` picks it up automatically.
+- **`getPresetFile(name)` searches factory entries too but `savePreset()` bypasses it** — `getPresetFile()` is used by `loadPreset()` (reading) and finds both factory and user presets by name. `savePreset()` constructs the target path directly from `presetFolderCombo` + `getPresetDirectory()`, so it always writes to the user location regardless of what `getPresetFile()` would return.
+- **`.ping` sidecar files are copied alongside `.wav` IRs by `cp -R`** — `build_installer.sh` uses `cp -R "$SCRIPT_DIR/factory_irs/"* "$FACTORY_DEST/Factory IRs/"`, which copies the full subfolder tree including any `.ping` sidecar files. When `IRManager` loads a factory IR selected from the combo, `PluginEditor` checks for a `.ping` sidecar via `file.getSiblingFile(stem + ".ping")` and loads the `IRSynthParams` from it if present. This restores the IR Synth panel state to match how the IR was generated.
+- **No `.DS_Store` files in the installer payload** — macOS creates `.DS_Store` files in any Finder-browsed folder. These must be removed from `Installer/factory_irs/` and `Installer/factory_presets/` before building the installer, or they will be installed to `/Library/Application Support/`. Remove with `find Installer -name '.DS_Store' -delete` before running `cmake --build build --target installer`.
