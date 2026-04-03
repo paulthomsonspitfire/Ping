@@ -76,7 +76,7 @@ PingEditor::PingEditor (PingProcessor& p)
     // IR list
     addAndMakeVisible (irCombo);
     irCombo.addListener (this);
-    irCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff2a2a2a));
+    irCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x30ffffff));
     irCombo.setColour (juce::ComboBox::textColourId, textDim);
     irCombo.setColour (juce::ComboBox::arrowColourId, accent);
 
@@ -88,7 +88,7 @@ PingEditor::PingEditor (PingProcessor& p)
 
     addAndMakeVisible (presetCombo);
     presetCombo.addListener (this);
-    presetCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff2a2a2a));
+    presetCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x30ffffff));
     presetCombo.setColour (juce::ComboBox::textColourId, textCol);
     presetCombo.setColour (juce::ComboBox::arrowColourId, accent);
     presetCombo.addItem ("Default", 1);
@@ -407,6 +407,9 @@ PingEditor::PingEditor (PingProcessor& p)
     shimOnAttach      = std::make_unique<ButtonAttachment> (apvts, "shimOn",      shimOnButton);
 
     setLookAndFeel (&pingLook);
+    // Explicitly propagate to irSynthComponent so its child combos always inherit PingLookAndFeel,
+    // regardless of construction ordering.
+    irSynthComponent.setLookAndFeel (&pingLook);
 
     // Labels
     for (auto* label : { &dryWetLabel, &predelayLabel, &decayLabel, &modDepthLabel,
@@ -441,7 +444,7 @@ PingEditor::PingEditor (PingProcessor& p)
     delayDepthLabel.setText ("DELAY DEPTH", juce::dontSendNotification);
     tailRateLabel.setText ("RATE", juce::dontSendNotification);
     irInputGainLabel.setText ("GAIN", juce::dontSendNotification);
-    outputGainLabel.setText ("Wet Out trim", juce::dontSendNotification);
+    outputGainLabel.setText ("WET OUT TRIM", juce::dontSendNotification);
     irInputDriveLabel.setText ("DRIVE", juce::dontSendNotification);
     erLevelLabel.setText ("ER", juce::dontSendNotification);
     tailLevelLabel.setText ("TAIL", juce::dontSendNotification);
@@ -533,6 +536,7 @@ PingEditor::PingEditor (PingProcessor& p)
 PingEditor::~PingEditor()
 {
     pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
+    irSynthComponent.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
     apvts.removeParameterListener ("stretch", this);
     apvts.removeParameterListener ("decay", this);
@@ -992,7 +996,7 @@ void PingEditor::resized()
         const int pTopY   = topRow.getY() + (topRowH - pComboH) / 2;
         savePresetButton.setBounds (w - 12 - saveButtonW,                        pTopY, saveButtonW,  pComboH);
         presetCombo.setBounds      (savePresetButton.getX() - 6 - presetComboW,  pTopY, presetComboW, pComboH);
-        const int pLabelW = 44;
+        const int pLabelW = 62;
         presetLabel.setBounds      (presetCombo.getX() - pLabelW - 4,            pTopY, pLabelW,      pComboH);
     }
 

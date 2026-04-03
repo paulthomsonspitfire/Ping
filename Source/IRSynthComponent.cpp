@@ -229,10 +229,26 @@ IRSynthComponent::IRSynthComponent()
 
     addAndMakeVisible (irCombo);
     irCombo.addListener (this);
-    irCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff2a2a2a));
+    irCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x30ffffff));
     irCombo.setColour (juce::ComboBox::textColourId, textDim);
     irCombo.setColour (juce::ComboBox::arrowColourId, accent);
     irCombo.setEditableText (true);
+
+    // Apply the same glassy transparent fill to all other combos on this page so they
+    // visually match the main-page preset combo (0x30ffffff = 19 % opaque white).
+    for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
+                      &vaultCombo, &micPatternCombo, &sampleRateCombo })
+    {
+        cb->setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x30ffffff));
+        cb->setColour (juce::ComboBox::textColourId, textDim);
+        cb->setColour (juce::ComboBox::arrowColourId, accent);
+    }
+
+    addAndMakeVisible (irPresetLabel);
+    irPresetLabel.setText ("IR preset", juce::dontSendNotification);
+    irPresetLabel.setJustificationType (juce::Justification::centredRight);
+    irPresetLabel.setColour (juce::Label::textColourId, textDim);
+    irPresetLabel.setFont (juce::FontOptions (10.0f));
 
     addAndMakeVisible (saveIRButton);
     saveIRButton.addListener (this);
@@ -346,32 +362,34 @@ void IRSynthComponent::resized()
     }
     const int rt60EndX = x;
 
-    // IR save/load combo
-    const int irComboW = juce::jmin (140, (int) (0.18f * barW));
-    int leftX = rt60EndX + 16;
-    irCombo.setBounds (leftX, barY + 6, irComboW, 24);
-    leftX += irComboW + 16;
-
     // Save button at centre
     const int saveIRW = 50;
     saveIRButton.setBounds (barCentreX - saveIRW / 2, barY + 6, saveIRW, 24);
-    leftX = barCentreX + saveIRW / 2 + 12;
+    int leftX = barCentreX + saveIRW / 2 + 12;
 
-    // Preview button just to the right of Save
-    const int previewW = 80;
+    // IR combo: placed just to the left of Save button, with gap
+    const int irComboW = juce::jmin (140, (int) (0.18f * barW));
+    irCombo.setBounds (barCentreX - saveIRW / 2 - 6 - irComboW, barY + 6, irComboW, 24);
+
+    // "IR preset" label to the left of the combo
+    const int irPresetLabelW = 56;
+    irPresetLabel.setBounds (irCombo.getX() - irPresetLabelW - 4, barY + 6, irPresetLabelW, 24);
+
+    // Calculate IR button just to the right of Save
+    const int previewW = 100;
     previewButton.setBounds (leftX, barY + 6, previewW, 24);
     leftX += previewW + 16;
 
-    // Done at far right
-    const int doneW = 64;
+    // Main Menu button at far right
+    const int doneW = 84;
     int rightX = barArea.getRight();
     doneButton.setBounds (rightX - doneW, barY + 6, doneW, 24);
     rightX -= doneW + 12;
 
-    // Progress bar right-justified (before Done)
+    // Progress bar right-justified (before Main Menu), shifted 30px left for visual balance
     const int progW = std::min (200, rightX - leftX - 12);
-    progressBar.setBounds (rightX - progW, barY + 8, progW, 16);
-    progressLabel.setBounds (rightX - progW, barY + 26, progW, 14);
+    progressBar.setBounds (rightX - progW - 30, barY + 8, progW, 16);
+    progressLabel.setBounds (rightX - progW - 30, barY + 26, progW, 14);
 }
 
 void IRSynthComponent::layoutControls (juce::Rectangle<int> b)

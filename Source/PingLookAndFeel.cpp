@@ -252,16 +252,18 @@ void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wid
 
 void PingLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bool /*isButtonDown*/,
                                     int buttonX, int /*buttonY*/, int buttonW, int /*buttonH*/,
-                                    juce::ComboBox& /*box*/)
+                                    juce::ComboBox& box)
 {
     auto bounds = juce::Rectangle<float> (0.f, 0.f, (float) width, (float) height);
 
-    // Transparent fill — just a very subtle white tint so text is readable
-    g.setColour (juce::Colour (0x18ffffff));
+    // Use the combo's backgroundColourId so each combo can control its own transparency.
+    // Combos explicitly set 0x30ffffff (19 % opaque white) so the glassy look reads against
+    // both the lighter header background and the darker IR Synth body background.
+    g.setColour (box.findColour (juce::ComboBox::backgroundColourId));
     g.fillRoundedRectangle (bounds, 4.f);
 
     // Soft border — low-alpha, no hard edge
-    g.setColour (juce::Colour (0x38ffffff));
+    g.setColour (juce::Colour (0x50ffffff));
     g.drawRoundedRectangle (bounds.reduced (0.5f), 4.f, 0.8f);
 
     // Dropdown arrow — centred in button area, subtle

@@ -130,12 +130,13 @@ private:
     juce::Label rt60FreqLabels[6];   // 125, 250, 500, 1k, 2k, 4k
     juce::Label rt60Values[6];
     juce::ComboBox irCombo;
+    juce::Label irPresetLabel;
     juce::TextButton saveIRButton { "Save" };
-    juce::TextButton previewButton { "Preview" };
+    juce::TextButton previewButton { "Calculate IR" };
     double progressValue = 0.0;
     juce::ProgressBar progressBar { progressValue };
     juce::Label progressLabel;
-    juce::TextButton doneButton { "Done" };
+    juce::TextButton doneButton { "Main Menu" };
 
     juce::ThreadPool synthPool { 1 };
     std::atomic<bool> synthRunning { false };
