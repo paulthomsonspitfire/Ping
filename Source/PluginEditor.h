@@ -29,6 +29,7 @@ private:
     void parameterChanged (const juce::String& parameterID, float newValue) override;
     void refreshIRList();
     void loadSelectedIR();
+    void updateIRComboSelection();   // sync both irCombo and IRSynth irCombo from selectedIRFile
     void updateWaveform();
     void refreshPresetList();
     void refreshFolderList();

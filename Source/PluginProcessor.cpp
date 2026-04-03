@@ -2047,25 +2047,11 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
         reverse = xml->getBoolAttribute ("reverse", false);
 
-        // Restore selected IR file. New sessions save the full path; old sessions saved an
-        // integer index — fall back to index-based lookup for backward compatibility.
+        // Restore selected IR file from saved path.
         selectedIRFile = juce::File();
         juce::String savedPath = xml->getStringAttribute ("irFilePath", "");
         if (savedPath.isNotEmpty())
-        {
             selectedIRFile = juce::File (savedPath);
-        }
-        else
-        {
-            // Backward compat: resolve old irIndex to a file via the current scan results.
-            int oldIndex = xml->getIntAttribute ("irIndex", -1);
-            if (oldIndex >= 0)
-            {
-                auto f = irManager.getIRFileAt (oldIndex);
-                if (f.existsAsFile())
-                    selectedIRFile = f;
-            }
-        }
         if (auto* ir = xml->getChildByName ("irSynthParams"))
             lastIRSynthParams = irSynthParamsFromXml (ir);
 

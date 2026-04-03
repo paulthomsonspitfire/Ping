@@ -1579,32 +1579,7 @@ void PingEditor::loadPreset (const juce::String& name)
             pingProcessor.setStateInformation (data.getData(), (int) data.getSize());
             reverseButton.setToggleState (pingProcessor.getReverse(), juce::dontSendNotification);
             irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
-
-            // Restore IR combo selection by file path (file-based selection model)
-            if (pingProcessor.isIRFromSynth())
-            {
-                irCombo.setSelectedId (1, juce::sendNotificationSync);
-            }
-            else
-            {
-                auto selectedFile = pingProcessor.getSelectedIRFile();
-                bool found = false;
-                if (selectedFile != juce::File())
-                {
-                    const auto& entries = pingProcessor.getIRManager().getEntries();
-                    for (int i = 0; i < entries.size(); ++i)
-                    {
-                        if (entries[i].file == selectedFile)
-                        {
-                            irCombo.setSelectedId (i + 2, juce::sendNotificationSync);
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-                if (! found)
-                    irCombo.setSelectedId (1, juce::sendNotificationSync);
-            }
+            updateIRComboSelection();
             updateWaveform();
         }
     }
@@ -1965,6 +1940,38 @@ void PingEditor::refreshIRList()
     loadSelectedIR();
 }
 
+void PingEditor::updateIRComboSelection()
+{
+    // Sync both the main irCombo and the IRSynth irCombo to reflect whatever
+    // selectedIRFile / irFromSynth was set by the most recent setStateInformation
+    // or loadIRFromBuffer call.  Uses dontSendNotification — no IR reload, no
+    // re-entrant comboBoxChanged — so this is safe to call from any context.
+
+    if (pingProcessor.isIRFromSynth())
+    {
+        irCombo.setSelectedId (1, juce::dontSendNotification);
+        irSynthComponent.setSelectedIRDisplayName ("");
+        return;
+    }
+
+    const auto selectedFile = pingProcessor.getSelectedIRFile();
+    const auto& entries = pingProcessor.getIRManager().getEntries();
+
+    for (int i = 0; i < entries.size(); ++i)
+    {
+        if (entries[i].file == selectedFile)
+        {
+            irCombo.setSelectedId (i + 2, juce::dontSendNotification);
+            irSynthComponent.setSelectedIRDisplayName (selectedFile.getFileNameWithoutExtension());
+            return;
+        }
+    }
+
+    // File not found in current list (e.g. not installed yet) — clear both combos.
+    irCombo.setSelectedId (0, juce::dontSendNotification);
+    irSynthComponent.setSelectedIRDisplayName ("");
+}
+
 void PingEditor::loadSelectedIR()
 {
     int idx = irCombo.getSelectedId() - 2;  // id 1=Synth (idx -1), id 2+=file
@@ -1972,6 +1979,7 @@ void PingEditor::loadSelectedIR()
     {
         // Synth IR: re-process raw buffer with current reverse/trim/stretch/decay settings
         pingProcessor.reloadSynthIR();
+        irSynthComponent.setSelectedIRDisplayName ("");
         return;
     }
     const auto& entries = pingProcessor.getIRManager().getEntries();
@@ -1979,7 +1987,10 @@ void PingEditor::loadSelectedIR()
         return;
     auto file = entries[idx].file;
     if (file.existsAsFile())
+    {
         pingProcessor.loadIRFromFile (file);
+        irSynthComponent.setSelectedIRDisplayName (file.getFileNameWithoutExtension());
+    }
 }
 
 void PingEditor::updateWaveform()
