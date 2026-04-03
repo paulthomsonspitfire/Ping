@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.2.8 (see `CMakeLists.txt`)
+**Current version:** 2.2.9 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -1418,6 +1418,26 @@ if (selectedFile != juce::File())
 ```
 Without this, returning from the IR Synth panel always reverted to the first entry in the IRSynth IR list (the last synth preset name).
 
+### `setSelectedIRDisplayName` — uses 0-based `getItemText` index
+
+`IRSynthComponent::setSelectedIRDisplayName` searches `irCombo` for a matching name and selects the corresponding item. `ComboBox::getItemText(int index)` takes a **0-based** position index (not an item ID). The loop must use `getItemText(i)`, not `getItemText(i + 1)`:
+
+```cpp
+void IRSynthComponent::setSelectedIRDisplayName (const juce::String& name)
+{
+    int id = -1;
+    for (int i = 0; i < irCombo.getNumItems(); ++i)
+        if (irCombo.getItemText (i) == name)          // 0-based index — do NOT use i+1
+            { id = i + 1; break; }
+    if (id >= 1)
+        irCombo.setSelectedId (id, juce::dontSendNotification);
+    else
+        irCombo.setText (name, juce::dontSendNotification);
+}
+```
+
+Using `i + 1` skips position 0 entirely and causes every match to resolve to the item one position above the intended one — `setSelectedId(k)` selects position `k-1`. This was the root cause of two symptoms: (1) selecting from the IR Synth dropdown loaded the item above the selected one; (2) after loading a preset in the main menu, switching to the IR Synth panel displayed the IR above the correct one.
+
 ### `comboBoxChanged()` / `loadPreset()` / `finishSaveSynthIR()` / `setOnLoadIR` callback
 
 All these call sites use `setSelectedIRFile(file)` directly, with file looked up from `getEntries()[idx].file`. `getPresetFile()` in `loadPreset()` searches entries by file path to restore the combo ID after `setStateInformation`.
@@ -1525,6 +1545,7 @@ The overwrite prompt fires only when the exact target file (path-aware, not just
 - **`loadSelectedIR()` is the single entry point for all IR reloads** — `parameterChanged` (Stretch, Decay), the Reverse button, the Trim handle, `comboBoxChanged`, `loadPreset`, `finishSaveSynthIR`, and the `setOnLoadIR` callback all route through `loadSelectedIR()` (or `refreshIRList()` which calls it). Never call `loadIRFromFile()` or `reloadSynthIR()` directly from parameter listeners. `loadSelectedIR()` always calls `setSelectedIRFile()` in both branches (synth and file) so `selectedIRFile` stays in sync with the actual loaded IR.
 - **`irCombo.clear()` must always use `juce::dontSendNotification`** — `ComboBox::clear()` fires `comboBoxChanged` if the combo previously had a selection, which calls `loadSelectedIR()`, which calls `setSelectedIRFile(juce::File())`, wiping the restored file path before `updateIRComboSelection()` has a chance to use it. Always call `irCombo.clear(juce::dontSendNotification)` in `refreshIRList()`.
 - **`updateIRComboSelection()` is display-only** — it syncs the combo and IRSynth panel display name to `selectedIRFile`/`isIRFromSynth()` using `dontSendNotification`. Call it after `setStateInformation` (from `loadPreset()`). It never triggers an audio load.
+- **`IRSynthComponent::setSelectedIRDisplayName` uses 0-based `getItemText` index** — `ComboBox::getItemText(int index)` takes a 0-based position, not an item ID. The search loop must use `getItemText(i)` — using `getItemText(i + 1)` skips position 0 and causes every match to resolve to the item one position above the intended one, selecting `id = i` via `setSelectedId(i)` which picks position `i-1`. This bug caused the IR Synth dropdown to load the item above the selected one, and caused the IR Synth panel to display the wrong item after loading a preset from the main menu.
 - **IR combo ID mapping: `selectedId - 2 = index into getEntries()`** — `addSectionHeading()` in JUCE's `ComboBox` does not consume IDs. IDs are therefore a flat 1-based offset: ID 1 = Synth, ID 2 = `entries[0]`, ID 3 = `entries[1]`, etc. This mapping must be maintained exactly — do not use a separate ID counter or the entries array will be misaligned.
 - **Factory entries always come first in `irEntries` / `getEntries()`** — `scanFolder()` does the factory pass before the user pass. `refreshIRList()` and `refreshPresetList()` rely on this ordering: they iterate forward and break/continue on `isFactory` to separate the two sections. Do not interleave factory and user entries.
 - **`presetFolderCombo` is editable but lists only user subfolders** — factory subfolder names are not offered as save targets (you can't write to `/Library/`). If the user types a name that doesn't exist yet, `createDirectory()` in `savePreset()` creates it on first save. After save, `refreshFolderList()` picks it up automatically.

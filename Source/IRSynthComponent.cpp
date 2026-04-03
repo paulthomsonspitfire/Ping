@@ -604,7 +604,7 @@ void IRSynthComponent::setSelectedIRDisplayName (const juce::String& name)
 {
     int id = -1;
     for (int i = 0; i < irCombo.getNumItems(); ++i)
-        if (irCombo.getItemText (i + 1) == name)
+        if (irCombo.getItemText (i) == name)
             { id = i + 1; break; }
     if (id >= 1)
         irCombo.setSelectedId (id, juce::dontSendNotification);
