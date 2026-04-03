@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.2.7 (see `CMakeLists.txt`)
+**Current version:** 2.2.8 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -1278,6 +1278,22 @@ Installer/
 
 `.gitattributes` marks `*.wav` and `*.aiff` as binary so git doesn't attempt text diffs on audio files.
 
+### Factory preset binary format
+
+JUCE preset files use a binary format: `[magic 4B][size 4B][XML bytes][null 1B]`. The `size` field must equal the number of XML bytes **not including the null terminator**. `getXmlFromBinary` silently returns nullptr if `size > fileSize - 8`, making the preset completely unparseable.
+
+When saving presets from within the plugin, JUCE's `copyXmlToBinary` sets the size field correctly. If preset files are ever created or edited externally (e.g. via Python scripts), always set `size_field = len(xml_bytes_without_null)`, i.e. `file_size - 9` (subtract 8-byte header and 1-byte null).
+
+**Quick sanity check:**
+```python
+import struct
+data = open('preset.xml', 'rb').read()
+size_field = struct.unpack('<I', data[4:8])[0]
+assert size_field == len(data) - 9, f"Bad size_field: {size_field} vs {len(data)-9}"
+```
+
+If a preset fails to load silently (no parameters change, no error), check the size field first — it's the most common cause.
+
 ---
 
 ## IRManager — IREntry struct and dual-location scanning
@@ -1334,20 +1350,11 @@ if (selectedIRFile != juce::File())
     xml->setAttribute ("irFilePath", selectedIRFile.getFullPathName());
 ```
 
-`setStateInformation` reads `irFilePath` first; **backward-compat fallback** reads the old `irIndex` integer and resolves it via `irManager.getIRFileAt(oldIndex)` if `irFilePath` is absent:
+`setStateInformation` reads `irFilePath`:
 ```cpp
 juce::String savedPath = xml->getStringAttribute ("irFilePath", "");
 if (savedPath.isNotEmpty())
     selectedIRFile = juce::File (savedPath);
-else
-{
-    int oldIndex = xml->getIntAttribute ("irIndex", -1);
-    if (oldIndex >= 0)
-    {
-        auto f = irManager.getIRFileAt (oldIndex);
-        if (f.existsAsFile()) selectedIRFile = f;
-    }
-}
 ```
 
 `loadIRFromBuffer` sets `selectedIRFile = juce::File()` (empty) when `fromSynth = true`, same role as the old `selectedIRIndex = -1`.
@@ -1374,20 +1381,46 @@ Section headings consume no IDs. The index into `getEntries()` is always `select
 
 Selection is restored by file path: `pingProcessor.getSelectedIRFile()` is compared against `entries[i].file`. Falls back to entry index 0 (first available) if the file is not found.
 
+### `refreshIRList()` — must use `dontSendNotification` on `clear()`
+
+`irCombo.clear()` **must** be called as `irCombo.clear(juce::dontSendNotification)`. Without this, clearing the combo fires `comboBoxChanged`, which calls `loadSelectedIR()`, which wipes `selectedIRFile` via `setSelectedIRFile(juce::File())` — destroying the restored file reference before `updateIRComboSelection()` can use it. Same issue applies to any other combo that has a listener wired up.
+
 ### `loadSelectedIR()`
 
-Uses `getEntries()` directly:
+Uses `getEntries()` directly and **always keeps `selectedIRFile` in sync**:
 ```cpp
 int idx = irCombo.getSelectedId() - 2;
+if (idx < 0) {
+    pingProcessor.setSelectedIRFile (juce::File());   // Synth IR
+    pingProcessor.reloadSynthIR();
+    return;
+}
 const auto& entries = pingProcessor.getIRManager().getEntries();
 if (! juce::isPositiveAndBelow (idx, entries.size())) return;
 auto file = entries[idx].file;
+pingProcessor.setSelectedIRFile (file);
 if (file.existsAsFile()) pingProcessor.loadIRFromFile (file);
 ```
 
+`setSelectedIRFile` is called in both branches so `selectedIRFile` always matches the actual loaded IR, making `updateIRComboSelection()` and `getStateInformation` reliable.
+
+### `updateIRComboSelection()`
+
+Syncs the IR combo display (and IRSynth panel display name) to the current `selectedIRFile` / `isIRFromSynth()` state **without** triggering any audio load. Called from `loadPreset()` after `setStateInformation`, and from anywhere the combo needs a display-only refresh. Always uses `dontSendNotification`.
+
+### IR name display when opening the IR Synth panel
+
+`irSynthButton.onClick` restores the currently-loaded file IR name into the IR Synth panel's combo before hiding the main panel:
+```cpp
+auto selectedFile = pingProcessor.getSelectedIRFile();
+if (selectedFile != juce::File())
+    irSynthComponent.setSelectedIRDisplayName (selectedFile.getFileNameWithoutExtension());
+```
+Without this, returning from the IR Synth panel always reverted to the first entry in the IRSynth IR list (the last synth preset name).
+
 ### `comboBoxChanged()` / `loadPreset()` / `finishSaveSynthIR()` / `setOnLoadIR` callback
 
-All these call sites previously used `setSelectedIRIndex` / `getSelectedIRIndex` / `getIRFileAt`. They have all been updated to use `setSelectedIRFile(file)` directly, with file looked up from `getEntries()[idx].file`. `getPresetFile()` in `loadPreset()` now searches entries by file path to restore the combo ID after `setStateInformation`.
+All these call sites use `setSelectedIRFile(file)` directly, with file looked up from `getEntries()[idx].file`. `getPresetFile()` in `loadPreset()` searches entries by file path to restore the combo ID after `setStateInformation`.
 
 ---
 
@@ -1488,8 +1521,10 @@ The overwrite prompt fires only when the exact target file (path-aware, not just
 ## Key design decisions — factory content
 
 - **`/Library/Application Support/` for factory content, not `~/`** — the `.pkg` installer runs as root so can write there; users cannot write there, making factory content permanently read-only. No per-user copying at launch. All users on a multi-user Mac share the same factory content automatically.
-- **`selectedIRFile` (juce::File) replaces `selectedIRIndex` (int)** — integer indices are fragile: they shift whenever the IR list changes (e.g. new factory IRs added in an update). Full file paths survive list changes. Backward-compat fallback (`irIndex` → `getIRFileAt`) handles sessions saved with the old format.
-- **`loadSelectedIR()` is the single entry point for all IR reloads** — `parameterChanged` (Stretch, Decay), the Reverse button, the Trim handle, `comboBoxChanged`, `loadPreset`, `finishSaveSynthIR`, and the `setOnLoadIR` callback all route through `loadSelectedIR()` (or `refreshIRList()` which calls it). Never call `loadIRFromFile()` or `reloadSynthIR()` directly from parameter listeners.
+- **`selectedIRFile` (juce::File) replaces `selectedIRIndex` (int)** — integer indices are fragile: they shift whenever the IR list changes (e.g. new factory IRs added in an update). Full file paths survive list changes.
+- **`loadSelectedIR()` is the single entry point for all IR reloads** — `parameterChanged` (Stretch, Decay), the Reverse button, the Trim handle, `comboBoxChanged`, `loadPreset`, `finishSaveSynthIR`, and the `setOnLoadIR` callback all route through `loadSelectedIR()` (or `refreshIRList()` which calls it). Never call `loadIRFromFile()` or `reloadSynthIR()` directly from parameter listeners. `loadSelectedIR()` always calls `setSelectedIRFile()` in both branches (synth and file) so `selectedIRFile` stays in sync with the actual loaded IR.
+- **`irCombo.clear()` must always use `juce::dontSendNotification`** — `ComboBox::clear()` fires `comboBoxChanged` if the combo previously had a selection, which calls `loadSelectedIR()`, which calls `setSelectedIRFile(juce::File())`, wiping the restored file path before `updateIRComboSelection()` has a chance to use it. Always call `irCombo.clear(juce::dontSendNotification)` in `refreshIRList()`.
+- **`updateIRComboSelection()` is display-only** — it syncs the combo and IRSynth panel display name to `selectedIRFile`/`isIRFromSynth()` using `dontSendNotification`. Call it after `setStateInformation` (from `loadPreset()`). It never triggers an audio load.
 - **IR combo ID mapping: `selectedId - 2 = index into getEntries()`** — `addSectionHeading()` in JUCE's `ComboBox` does not consume IDs. IDs are therefore a flat 1-based offset: ID 1 = Synth, ID 2 = `entries[0]`, ID 3 = `entries[1]`, etc. This mapping must be maintained exactly — do not use a separate ID counter or the entries array will be misaligned.
 - **Factory entries always come first in `irEntries` / `getEntries()`** — `scanFolder()` does the factory pass before the user pass. `refreshIRList()` and `refreshPresetList()` rely on this ordering: they iterate forward and break/continue on `isFactory` to separate the two sections. Do not interleave factory and user entries.
 - **`presetFolderCombo` is editable but lists only user subfolders** — factory subfolder names are not offered as save targets (you can't write to `/Library/`). If the user types a name that doesn't exist yet, `createDirectory()` in `savePreset()` creates it on first save. After save, `refreshFolderList()` picks it up automatically.
