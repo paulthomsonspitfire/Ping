@@ -290,6 +290,16 @@ private:
     juce::File lastLoadedIRFile;
     IRSynthParams lastIRSynthParams;
 
+    // IR load crossfade: prevents partial-swap distortion when switching IRs while audio plays.
+    // The 8 convolvers (tsEr* / tsTail*) load asynchronously via JUCE background threads and
+    // swap in independently during their own process() calls. Between switches, some convolvers
+    // may run the new IR while others still run the old one, producing a wrong-level mixed output
+    // that sounds like distortion. Arming this counter before loadImpulseResponse calls causes
+    // processBlock to fade the wet bus from silence while the swap-in window passes.
+    std::atomic<int> irLoadFadeBlocksRemaining { 0 };
+    static constexpr int kIRLoadFadeBlocks = 64; // ~680 ms at 512 samples / 48 kHz — covers
+                                                  // worst-case background thread prep for long IRs
+
     std::atomic<float> outputLevelPeakL { 0.0f };
     std::atomic<float> outputLevelPeakR { 0.0f };
     std::atomic<float> inputLevelPeakL  { 0.0f };

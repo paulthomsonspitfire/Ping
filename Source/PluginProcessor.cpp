@@ -262,10 +262,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailCrossfeedAttDb, "Tail Crossfeed Att (dB)", -24.0f, 0.0f, -6.0f));
     // Plate onset
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::plateOn,        "Plate On",         false));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDiffusion, "Plate Diffusion",  0.30f, 0.88f, 0.40f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateColour,    "Plate Colour",     0.0f, 1.0f,  0.5f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateSize,      "Plate Size",       0.5f, 14.0f, 1.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateIRFeed,    "Plate IR Feed",    0.0f, 1.0f,  0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateDiffusion, "Plate Diffusion",  0.30f, 0.88f, 0.50f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateColour,    "Plate Colour",     0.0f, 1.0f,  1.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateSize,      "Plate Size",       0.5f, 14.0f, 6.27f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::plateIRFeed,    "Plate IR Feed",    0.0f, 1.0f,  0.47f));
     // Bloom hybrid
     layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::bloomOn,        "Bloom On",         false));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::bloomSize,      "Bloom Size",       0.25f, 2.0f, 0.77f));
@@ -1416,6 +1416,22 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             buffer.setSample (ch, i, buffer.getSample (ch, i) * g);
     }
 
+    // IR load crossfade: fade wet bus from silence while convolvers swap to new IR.
+    // The 8 ts*Conv convolvers load asynchronously; each swaps independently during its
+    // process() call. Between a preset switch and full swap-in, some may run old IR /
+    // some new, producing wrong-level mixed output (distortion). Fading from silence
+    // prevents this from being heard. Dry signal is unaffected — it plays through normally.
+    {
+        int remaining = irLoadFadeBlocksRemaining.load (std::memory_order_relaxed);
+        if (remaining > 0)
+        {
+            // Linear fade-in: 0 at block 0 (immediately after load), 1 at block kIRLoadFadeBlocks
+            float fadeIn = 1.0f - (float) remaining / (float) kIRLoadFadeBlocks;
+            buffer.applyGain (fadeIn);
+            irLoadFadeBlocksRemaining.store (remaining - 1, std::memory_order_relaxed);
+        }
+    }
+
     // Push wet signal for spectrum analyser (before dry/wet mix)
     for (int i = 0; i < numSamples; ++i)
     {
@@ -1782,7 +1798,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         const int srcRCh = (numCh >= 2) ? 1 : 0;                         // use ch0 for mono sources
         expanded.copyFrom (3, 0, buffer, srcRCh, 0, fullLen);             // iRR = IR_R (or IR_L for mono)
         expanded.applyGain (3, 0, fullLen, 0.5f);
-        expanded.applyGain (juce::Decibels::decibelsToGain (-12.0f));     // −12 dB: file IR level trim
+        expanded.applyGain (juce::Decibels::decibelsToGain (-15.0f));     // −15 dB: file IR level trim
         buffer = std::move (expanded);
         numCh  = 4;
     }
@@ -1820,6 +1836,11 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 m.applyGain (i, 1, (float) i / (float) fadeLength);
             return m;
         };
+        // Arm the wet-signal crossfade BEFORE kicking off any background IR loads.
+        // processBlock will fade the wet bus from silence for kIRLoadFadeBlocks blocks,
+        // covering the window during which different convolvers may be running different IRs.
+        irLoadFadeBlocksRemaining.store (kIRLoadFadeBlocks);
+
         juce::dsp::Convolution* tsEr[]  = { &tsErConvLL, &tsErConvRL, &tsErConvLR, &tsErConvRR };
         juce::dsp::Convolution* tsTail[] = { &tsTailConvLL, &tsTailConvRL, &tsTailConvLR, &tsTailConvRR };
         for (int c = 0; c < 4; ++c)

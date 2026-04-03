@@ -9,7 +9,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 STAGING_DIR=""
 OUTPUT_DIR="$PROJECT_ROOT/Installer/output"
-VERSION="2.2.1"
+VERSION="2.2.2"
 PKG_ID="com.ping.audio.ping"
 PKG_NAME="P!NG-Installer"
 
@@ -44,6 +44,30 @@ mkdir -p "$PAYLOAD/Library/Audio/Plug-Ins/VST3"
 
 cp -R "$AU_PLUGIN" "$PAYLOAD/Library/Audio/Plug-Ins/Components/"
 cp -R "$VST3_PLUGIN" "$PAYLOAD/Library/Audio/Plug-Ins/VST3/"
+
+# Factory content — copied from Installer/factory_irs/ and Installer/factory_presets/
+# Subfolder names inside factory_irs/ become the category headings shown in the plugin UI.
+# Safe to build without content: the if-guards skip the copy when the source folders are empty.
+FACTORY_DEST="$PAYLOAD/Library/Application Support/Ping/P!NG"
+mkdir -p "$FACTORY_DEST/Factory IRs"
+mkdir -p "$FACTORY_DEST/Factory Presets"
+
+if compgen -G "$SCRIPT_DIR/factory_irs/*" > /dev/null 2>&1; then
+    cp -R "$SCRIPT_DIR/factory_irs/"* "$FACTORY_DEST/Factory IRs/"
+    # Remove .gitkeep if it ended up in the payload
+    rm -f "$FACTORY_DEST/Factory IRs/.gitkeep"
+    echo "Factory IRs: copied"
+else
+    echo "Factory IRs: none found (skipping)"
+fi
+
+if compgen -G "$SCRIPT_DIR/factory_presets/*" > /dev/null 2>&1; then
+    cp -R "$SCRIPT_DIR/factory_presets/"* "$FACTORY_DEST/Factory Presets/"
+    rm -f "$FACTORY_DEST/Factory Presets/.gitkeep"
+    echo "Factory Presets: copied"
+else
+    echo "Factory Presets: none found (skipping)"
+fi
 
 mkdir -p "$OUTPUT_DIR"
 PKG_OUTPUT="$OUTPUT_DIR/P!NG-Audio-Plug-In-${VERSION}.pkg"
