@@ -143,6 +143,11 @@ PingEditor::PingEditor (PingProcessor& p)
     {
         irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
         irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
+        // Restore the currently-loaded IR name in the IR Synth combo so the user
+        // can see which file was loaded (setIRList blanks the field by default).
+        auto selectedFile = pingProcessor.getSelectedIRFile();
+        if (selectedFile != juce::File())
+            irSynthComponent.setSelectedIRDisplayName (selectedFile.getFileNameWithoutExtension());
         setMainPanelControlsVisible (false);
         irSynthComponent.setVisible (true);
         irSynthComponent.toFront (true);
@@ -1869,7 +1874,7 @@ void PingEditor::updateAllReadouts()
 void PingEditor::refreshIRList()
 {
     pingProcessor.getIRManager().refresh();
-    irCombo.clear();
+    irCombo.clear (juce::dontSendNotification);
     irCombo.addItem ("Synthesized IR", 1);
 
     const auto& entries = pingProcessor.getIRManager().getEntries();
@@ -1978,6 +1983,7 @@ void PingEditor::loadSelectedIR()
     if (idx < 0)
     {
         // Synth IR: re-process raw buffer with current reverse/trim/stretch/decay settings
+        pingProcessor.setSelectedIRFile (juce::File());
         pingProcessor.reloadSynthIR();
         irSynthComponent.setSelectedIRDisplayName ("");
         return;
@@ -1986,6 +1992,7 @@ void PingEditor::loadSelectedIR()
     if (! juce::isPositiveAndBelow (idx, entries.size()))
         return;
     auto file = entries[idx].file;
+    pingProcessor.setSelectedIRFile (file);
     if (file.existsAsFile())
     {
         pingProcessor.loadIRFromFile (file);
