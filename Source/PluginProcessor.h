@@ -72,8 +72,8 @@ public:
     float getReverseTrim() const;
     void setReverseTrim (float v);
 
-    int getSelectedIRIndex() const { return selectedIRIndex; }
-    void setSelectedIRIndex (int index) { selectedIRIndex = index; }
+    juce::File getSelectedIRFile() const  { return selectedIRFile; }
+    void       setSelectedIRFile (const juce::File& f) { selectedIRFile = f; }
 
     /** Last IR Synth parameters (room, materials, placement). Persisted with plugin state. */
     const IRSynthParams& getLastIRSynthParams() const { return lastIRSynthParams; }
@@ -280,7 +280,7 @@ private:
     juce::AudioBuffer<float> rawSynthBuffer;      // raw (pre-processing) copy of last synth IR
     double rawSynthSampleRate = 48000.0;
     double currentSampleRate = 48000.0;
-    int selectedIRIndex = -1;
+    juce::File selectedIRFile;   // empty = synth IR or nothing loaded
     bool irFromSynth = false;
     double synthesizedIRSampleRate = 48000.0;
     double currentIRSampleRate = 48000.0;

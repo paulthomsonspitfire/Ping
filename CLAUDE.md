@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.2.2 (see `CMakeLists.txt`)
+**Current version:** 2.2.3 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -1132,6 +1132,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Constant-power dry/wet** — `√(mix)` / `√(1−mix)` crossfade. Don't change to linear without a reason.
 - **SmoothedValue everywhere** — All parameters that scale audio use `SmoothedValue` (20 ms). Any new audio-scaling parameter should do the same.
 - **loadIR from message thread only** — Convolver loading is not real-time safe. Always call `loadIRFromFile` / `loadIRFromBuffer` from the message thread (UI callbacks, timer, not processBlock).
+- **IR load crossfade guard prevents partial-swap distortion** — `loadIRFromBuffer` calls `loadImpulseResponse` on all 8 convolvers (`tsEr*` / `tsTail*`) sequentially. Each call triggers an asynchronous JUCE background thread that prepares the IR and atomically swaps it in during its own next `process()` call. The 8 swaps happen independently, so the audio thread can be summing e.g. `new_LL + old_RL + old_LR + old_RR` — wrong-level mixed IR output that sounds like distortion, especially when switching presets while audio is playing. The fix: `irLoadFadeBlocksRemaining` (`std::atomic<int>`, initialised to 0) is armed to `kIRLoadFadeBlocks = 64` in `loadIRFromBuffer` *before* the first `loadImpulseResponse` call. In `processBlock`, just before the dry/wet blend, if the counter is > 0 a linear fade-in (`0 → 1` over 64 blocks ≈ 680 ms at 512 samples / 48 kHz) is applied to the wet buffer (`buffer.applyGain(fadeIn)`) and the counter is decremented. The dry signal is unaffected — it plays through normally throughout. Do not remove this guard or move the `irLoadFadeBlocksRemaining.store()` call to after any `loadImpulseResponse` call — the counter must be set before any background thread is kicked off.
 - **IR Synth runs on a background thread** — `synthIR()` is blocking and can take several seconds. Never call it from the audio or message thread directly; always dispatch to a background thread.
 - **No IR peak normalisation** — Removed intentionally. IR amplitude follows the 1/r law so speaker–mic distance affects wet level naturally. Don't add normalisation back without considering that it would flatten the proximity effect.
 - **Image-source order is RT60-based, not distance-gated (full-reverb mode)** — `mo = min(60, floor(RT60_MF × 343 / minDim / 2))`. In full-reverb mode, no arrival-time gate is applied in `calcRefs`; all sources within `mo` reflections are used and they decay naturally. Do not introduce an artificial distance cutoff in the non-eo path — it creates a perceptible character change where the image-source field cuts off and the FDN takes over alone. In **ER-only mode** (`eo = true`), sources with `t >= ec` *are* gated (`if (eo && t >= ec) continue`) — this is what keeps late periodic floor-ceiling bounces out of the ER output and is the correct behaviour.

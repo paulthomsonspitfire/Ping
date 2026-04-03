@@ -2,37 +2,63 @@
 
 juce::File IRManager::getIRFolder()
 {
-    auto docs = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
-    return docs.getChildFile ("P!NG").getChildFile ("IRs");
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+               .getChildFile ("P!NG")
+               .getChildFile ("IRs");
+}
+
+juce::File IRManager::getSystemFactoryIRFolder()
+{
+    return juce::File ("/Library/Application Support")
+               .getChildFile ("Ping")
+               .getChildFile ("P!NG")
+               .getChildFile ("Factory IRs");
 }
 
 void IRManager::scanFolder()
 {
-    irFiles.clear();
-    auto folder = getIRFolder();
-    if (! folder.exists() || ! folder.isDirectory())
-        return;
+    irEntries.clear();
 
-    juce::StringArray extensions;
-    extensions.add ("*.wav");
-    extensions.add ("*.WAV");
-    extensions.add ("*.aiff");
-    extensions.add ("*.aif");
-    extensions.add ("*.AIFF");
-    extensions.add ("*.AIF");
+    const juce::StringArray extensions { "*.wav", "*.WAV", "*.aiff", "*.aif", "*.AIFF", "*.AIF" };
 
-    for (const auto& ext : extensions)
+    // Helper: scan one directory for audio files, sort, deduplicate, and append entries.
+    auto addFilesFromDir = [&] (const juce::File& dir,
+                                 const juce::String& category,
+                                 bool isFactory)
     {
         juce::Array<juce::File> found;
-        folder.findChildFiles (found, juce::File::findFiles, false, ext);
+        for (const auto& ext : extensions)
+            dir.findChildFiles (found, juce::File::findFiles, false, ext);
+        found.sort();
         for (auto& f : found)
         {
-            if (! irFiles.contains (f))
-                irFiles.add (f);
+            bool alreadyIn = false;
+            for (const auto& e : irEntries)
+                if (e.file == f) { alreadyIn = true; break; }
+            if (! alreadyIn)
+                irEntries.add ({ f, category, isFactory });
         }
+    };
+
+    // ── Pass 1: factory folder ────────────────────────────────────────────────
+    // Files directly in the factory root get no category heading.
+    // Immediate subdirectories become named category sections.
+    auto factoryFolder = getSystemFactoryIRFolder();
+    if (factoryFolder.isDirectory())
+    {
+        addFilesFromDir (factoryFolder, {}, true);
+
+        juce::Array<juce::File> subDirs;
+        factoryFolder.findChildFiles (subDirs, juce::File::findDirectories, false);
+        subDirs.sort();
+        for (const auto& sub : subDirs)
+            addFilesFromDir (sub, sub.getFileName(), true);
     }
 
-    irFiles.sort();
+    // ── Pass 2: user folder (flat) ────────────────────────────────────────────
+    auto userFolder = getIRFolder();
+    if (userFolder.isDirectory())
+        addFilesFromDir (userFolder, {}, false);
 }
 
 void IRManager::refresh()
@@ -40,36 +66,44 @@ void IRManager::refresh()
     scanFolder();
 }
 
+// ── Legacy flat-array accessors ───────────────────────────────────────────────
+// These iterate irEntries in order (factory then user), matching the old irFiles behaviour.
+
 juce::StringArray IRManager::getDisplayNames() const
 {
     juce::StringArray names;
-    for (const auto& f : irFiles)
-        names.add (f.getFileNameWithoutExtension());
+    for (const auto& e : irEntries)
+        names.add (e.file.getFileNameWithoutExtension());
     return names;
 }
 
 juce::Array<juce::File> IRManager::getIRFiles() const
 {
-    return irFiles;
+    juce::Array<juce::File> files;
+    for (const auto& e : irEntries)
+        files.add (e.file);
+    return files;
 }
 
 juce::File IRManager::getIRFileAt (int index) const
 {
-    if (juce::isPositiveAndBelow (index, irFiles.size()))
-        return irFiles.getReference (index);
+    if (juce::isPositiveAndBelow (index, irEntries.size()))
+        return irEntries.getReference (index).file;
     return juce::File();
 }
+
+// ── 4-channel subset (synthesised IRs for IRSynthComponent) ──────────────────
 
 juce::StringArray IRManager::getDisplayNames4Channel() const
 {
     juce::StringArray names;
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
-    for (const auto& f : irFiles)
+    for (const auto& e : irEntries)
     {
-        std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+        std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (e.file));
         if (r && r->numChannels == 4)
-            names.add (f.getFileNameWithoutExtension());
+            names.add (e.file.getFileNameWithoutExtension());
     }
     return names;
 }
@@ -79,11 +113,11 @@ juce::Array<juce::File> IRManager::getIRFiles4Channel() const
     juce::Array<juce::File> out;
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
-    for (const auto& f : irFiles)
+    for (const auto& e : irEntries)
     {
-        std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+        std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (e.file));
         if (r && r->numChannels == 4)
-            out.add (f);
+            out.add (e.file);
     }
     return out;
 }

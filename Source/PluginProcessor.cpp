@@ -1654,7 +1654,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
     if (fromSynth)
     {
         irFromSynth = true;
-        selectedIRIndex = -1;
+        selectedIRFile = juce::File();   // clear any previous file selection
         synthesizedIRSampleRate = bufferSampleRate;
 
         // Auto-trim trailing silence: scan for last sample above -80 dB, add 200 ms safety tail.
@@ -2019,7 +2019,8 @@ void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
     auto state = apvts.copyState();
     if (auto xml = state.createXml())
     {
-        xml->setAttribute ("irIndex", selectedIRIndex);
+        if (selectedIRFile != juce::File())
+            xml->setAttribute ("irFilePath", selectedIRFile.getFullPathName());
         xml->setAttribute ("reverse", reverse);
         if (irFromSynth && currentIRBuffer.getNumSamples() > 0)
         {
@@ -2044,8 +2045,27 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
     {
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
-        selectedIRIndex = xml->getIntAttribute ("irIndex", -1);
         reverse = xml->getBoolAttribute ("reverse", false);
+
+        // Restore selected IR file. New sessions save the full path; old sessions saved an
+        // integer index — fall back to index-based lookup for backward compatibility.
+        selectedIRFile = juce::File();
+        juce::String savedPath = xml->getStringAttribute ("irFilePath", "");
+        if (savedPath.isNotEmpty())
+        {
+            selectedIRFile = juce::File (savedPath);
+        }
+        else
+        {
+            // Backward compat: resolve old irIndex to a file via the current scan results.
+            int oldIndex = xml->getIntAttribute ("irIndex", -1);
+            if (oldIndex >= 0)
+            {
+                auto f = irManager.getIRFileAt (oldIndex);
+                if (f.existsAsFile())
+                    selectedIRFile = f;
+            }
+        }
         if (auto* ir = xml->getChildByName ("irSynthParams"))
             lastIRSynthParams = irSynthParamsFromXml (ir);
 
@@ -2079,18 +2099,14 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
             {
                 loadIRFromBuffer (std::move (buf), sr, true);
             }
-            else if (selectedIRIndex >= 0)
+            else if (selectedIRFile.existsAsFile())
             {
-                auto file = irManager.getIRFileAt (selectedIRIndex);
-                if (file.existsAsFile())
-                    loadIRFromFile (file);
+                loadIRFromFile (selectedIRFile);
             }
         }
-        else if (selectedIRIndex >= 0)
+        else if (selectedIRFile.existsAsFile())
         {
-            auto file = irManager.getIRFileAt (selectedIRIndex);
-            if (file.existsAsFile())
-                loadIRFromFile (file);
+            loadIRFromFile (selectedIRFile);
         }
     }
 }

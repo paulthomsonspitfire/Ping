@@ -95,6 +95,13 @@ PingEditor::PingEditor (PingProcessor& p)
     presetCombo.setSelectedId (1, juce::dontSendNotification);
     presetCombo.setEditableText (true);
 
+    addAndMakeVisible (presetFolderCombo);
+    presetFolderCombo.setEditableText (true);
+    presetFolderCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x1effffff));
+    presetFolderCombo.setColour (juce::ComboBox::textColourId, textDim);
+    presetFolderCombo.setColour (juce::ComboBox::arrowColourId, accent);
+    presetFolderCombo.setTextWhenNothingSelected ("(no folder)");
+
     addAndMakeVisible (savePresetButton);
     savePresetButton.setComponentID ("SavePreset");
     savePresetButton.onClick = [this]
@@ -176,14 +183,7 @@ PingEditor::PingEditor (PingProcessor& p)
         auto file = pingProcessor.getIRManager().getIRFileAt4Channel (index);
         if (file.existsAsFile())
         {
-            int fullIdx = -1;
-            auto files = pingProcessor.getIRManager().getIRFiles();
-            for (int i = 0; i < files.size(); ++i)
-            {
-                if (files[i] == file) { fullIdx = i; break; }
-            }
-            if (fullIdx >= 0)
-                pingProcessor.setSelectedIRIndex (fullIdx);
+            pingProcessor.setSelectedIRFile (file);
             pingProcessor.loadIRFromFile (file);
             auto sidecar = file.getSiblingFile (file.getFileNameWithoutExtension() + ".ping");
             if (sidecar.existsAsFile())
@@ -523,13 +523,9 @@ PingEditor::PingEditor (PingProcessor& p)
     apvts.addParameterListener ("stretch", this);
     apvts.addParameterListener ("decay", this);
 
-    refreshIRList();
+    refreshIRList();     // populates combo and restores selection; calls loadSelectedIR()
     refreshPresetList();
     reverseButton.setToggleState (pingProcessor.getReverse(), juce::dontSendNotification);
-    int savedIdx = pingProcessor.getSelectedIRIndex();
-    if (savedIdx >= 0 && savedIdx < irCombo.getNumItems() - 1)  // -1 for Synthesized item
-        irCombo.setSelectedId (savedIdx + 2, juce::dontSendNotification);
-    loadSelectedIR();
     startTimerHz (8);
 }
 
@@ -988,16 +984,19 @@ void PingEditor::resized()
         }
     }
 
-    // Preset combo + Save button: right-aligned in header
-    const int saveButtonW = 48;
-    const int presetComboW = 200;
+    // Preset combo + folder combo + Save button: right-aligned in header
+    // Layout (right to left): [Save 48] [preset name 160] [folder 100] [PRESET label 62]
+    const int saveButtonW  = 48;
+    const int presetComboW = 160;
+    const int folderComboW = 100;
     {
         const int pComboH = 24;
         const int pTopY   = topRow.getY() + (topRowH - pComboH) / 2;
-        savePresetButton.setBounds (w - 12 - saveButtonW,                        pTopY, saveButtonW,  pComboH);
-        presetCombo.setBounds      (savePresetButton.getX() - 6 - presetComboW,  pTopY, presetComboW, pComboH);
+        savePresetButton.setBounds   (w - 12 - saveButtonW,                           pTopY, saveButtonW,  pComboH);
+        presetCombo.setBounds        (savePresetButton.getX() - 6 - presetComboW,     pTopY, presetComboW, pComboH);
+        presetFolderCombo.setBounds  (presetCombo.getX() - 4 - folderComboW,          pTopY, folderComboW, pComboH);
         const int pLabelW = 62;
-        presetLabel.setBounds      (presetCombo.getX() - pLabelW - 4,            pTopY, pLabelW,      pComboH);
+        presetLabel.setBounds        (presetFolderCombo.getX() - pLabelW - 4,         pTopY, pLabelW,      pComboH);
     }
 
     const int presetCenterX = presetCombo.getX() + presetCombo.getWidth() / 2;
@@ -1413,28 +1412,32 @@ void PingEditor::comboBoxChanged (juce::ComboBox* combo)
 {
     if (combo == &irCombo)
     {
-        int idx = irCombo.getSelectedId() - 2;  // id 1=Synth, 2+=files
+        int idx = irCombo.getSelectedId() - 2;  // id 1=Synth (idx -1), id 2+=file entry index
         if (idx >= 0)
         {
-            pingProcessor.setSelectedIRIndex (idx);
-            auto file = pingProcessor.getIRManager().getIRFileAt (idx);
-            if (file.existsAsFile())
+            const auto& entries = pingProcessor.getIRManager().getEntries();
+            if (juce::isPositiveAndBelow (idx, entries.size()))
             {
-                pingProcessor.loadIRFromFile (file);
-                auto sidecar = file.getSiblingFile (file.getFileNameWithoutExtension() + ".ping");
-                if (sidecar.existsAsFile())
+                auto file = entries[idx].file;
+                pingProcessor.setSelectedIRFile (file);
+                if (file.existsAsFile())
                 {
-                    auto params = PingProcessor::loadIRSynthParamsFromSidecar (file);
-                    pingProcessor.setLastIRSynthParams (params);
-                    irSynthComponent.setParams (params);
+                    pingProcessor.loadIRFromFile (file);
+                    auto sidecar = file.getSiblingFile (file.getFileNameWithoutExtension() + ".ping");
+                    if (sidecar.existsAsFile())
+                    {
+                        auto params = PingProcessor::loadIRSynthParamsFromSidecar (file);
+                        pingProcessor.setLastIRSynthParams (params);
+                        irSynthComponent.setParams (params);
+                    }
+                    irSynthComponent.setSelectedIRDisplayName (file.getFileNameWithoutExtension());
+                    updateWaveform();
                 }
-                irSynthComponent.setSelectedIRDisplayName (file.getFileNameWithoutExtension());
-                updateWaveform();
             }
         }
         else
         {
-            pingProcessor.setSelectedIRIndex (-1);  // Synthesized IR selected
+            pingProcessor.setSelectedIRFile (juce::File());  // Synthesized IR selected
             irSynthComponent.setSelectedIRDisplayName ("");
         }
     }
@@ -1446,32 +1449,120 @@ void PingEditor::comboBoxChanged (juce::ComboBox* combo)
     }
 }
 
-void PingEditor::refreshPresetList()
+void PingEditor::refreshFolderList()
 {
-    juce::String current = presetCombo.getText();
-    presetCombo.clear (juce::dontSendNotification);
-    presetCombo.addItem ("Default", 1);
-    auto names = PresetManager::getPresetNames();
-    for (int i = 0; i < names.size(); ++i)
-        presetCombo.addItem (names[i], i + 2);
-    if (current == "Default" || current.isEmpty())
-        presetCombo.setSelectedId (1, juce::dontSendNotification);
+    // Remember what was selected (by text) so we can restore it after rebuilding
+    juce::String currentFolder = presetFolderCombo.getText().trim();
+
+    presetFolderCombo.clear (juce::dontSendNotification);
+    presetFolderCombo.addItem ("(no folder)", 1);
+
+    // List immediate subdirectories of the user preset root only.
+    // Factory subfolders are excluded — users can't save to the factory location.
+    auto userRoot = PresetManager::getPresetDirectory();
+    auto subDirs  = userRoot.findChildFiles (juce::File::findDirectories, false);
+    subDirs.sort();
+    for (int i = 0; i < subDirs.size(); ++i)
+        presetFolderCombo.addItem (subDirs[i].getFileName(), i + 2);
+
+    // Restore prior selection if it still exists; otherwise fall back to "(no folder)"
+    if (currentFolder.isEmpty() || currentFolder == "(no folder)")
+    {
+        presetFolderCombo.setSelectedId (1, juce::dontSendNotification);
+    }
     else
     {
-        // If a file exists with the current typed name, select it so overwrites
-        // target the exact preset currently shown as selected in the dropdown.
-        int matchedIndex = -1;
-        for (int i = 0; i < names.size(); ++i)
+        bool found = false;
+        for (int i = 0; i < subDirs.size(); ++i)
         {
-            if (names[i] == current)
+            if (subDirs[i].getFileName() == currentFolder)
             {
-                matchedIndex = i;
+                presetFolderCombo.setSelectedId (i + 2, juce::dontSendNotification);
+                found = true;
                 break;
             }
         }
+        // If the user had typed a custom name not yet saved as a folder,
+        // keep it as editable text so they can still save into it
+        if (! found)
+            presetFolderCombo.setText (currentFolder, juce::dontSendNotification);
+    }
+}
 
-        if (matchedIndex >= 0)
-            presetCombo.setSelectedId (matchedIndex + 2, juce::dontSendNotification);
+void PingEditor::refreshPresetList()
+{
+    refreshFolderList();   // keep folder dropdown in sync with user subdirs
+
+    juce::String current = presetCombo.getText();
+    presetCombo.clear (juce::dontSendNotification);
+    presetCombo.addItem ("Default", 1);
+
+    const auto entries = PresetManager::getEntries();
+
+    // ── Factory section ───────────────────────────────────────────────────────
+    bool factoryHeaderAdded = false;
+    juce::String lastCategory;
+    for (int i = 0; i < entries.size(); ++i)
+    {
+        const auto& e = entries[i];
+        if (! e.isFactory) break;    // factory entries come first
+
+        if (! factoryHeaderAdded)
+        {
+            presetCombo.addSectionHeading ("Factory");
+            factoryHeaderAdded = true;
+        }
+        if (e.category != lastCategory)
+        {
+            if (e.category.isNotEmpty())
+                presetCombo.addSectionHeading ("  " + e.category);
+            lastCategory = e.category;
+        }
+        presetCombo.addItem (e.file.getFileNameWithoutExtension(), i + 2);
+    }
+
+    // ── User section ──────────────────────────────────────────────────────────
+    bool userHeaderAdded = false;
+    lastCategory = {};
+    for (int i = 0; i < entries.size(); ++i)
+    {
+        const auto& e = entries[i];
+        if (e.isFactory) continue;
+
+        if (! userHeaderAdded)
+        {
+            presetCombo.addSectionHeading ("Your Presets");
+            userHeaderAdded = true;
+        }
+        if (e.category != lastCategory)
+        {
+            if (e.category.isNotEmpty())
+                presetCombo.addSectionHeading ("  " + e.category);
+            lastCategory = e.category;
+        }
+        presetCombo.addItem (e.file.getFileNameWithoutExtension(), i + 2);
+    }
+
+    // ── Restore selection ─────────────────────────────────────────────────────
+    if (current.isEmpty() || current == "Default")
+    {
+        presetCombo.setSelectedId (1, juce::dontSendNotification);
+    }
+    else
+    {
+        // Match the current text against entry stems so overwrites target the
+        // exact preset currently shown as selected in the dropdown.
+        int matchedId = -1;
+        for (int i = 0; i < entries.size(); ++i)
+        {
+            if (entries[i].file.getFileNameWithoutExtension() == current)
+            {
+                matchedId = i + 2;
+                break;
+            }
+        }
+        if (matchedId >= 0)
+            presetCombo.setSelectedId (matchedId, juce::dontSendNotification);
         else
             presetCombo.setText (current, juce::dontSendNotification);
     }
@@ -1488,8 +1579,32 @@ void PingEditor::loadPreset (const juce::String& name)
             pingProcessor.setStateInformation (data.getData(), (int) data.getSize());
             reverseButton.setToggleState (pingProcessor.getReverse(), juce::dontSendNotification);
             irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
-            int idx = pingProcessor.getSelectedIRIndex();
-            irCombo.setSelectedId (idx >= 0 ? idx + 2 : 1, juce::sendNotificationSync);
+
+            // Restore IR combo selection by file path (file-based selection model)
+            if (pingProcessor.isIRFromSynth())
+            {
+                irCombo.setSelectedId (1, juce::sendNotificationSync);
+            }
+            else
+            {
+                auto selectedFile = pingProcessor.getSelectedIRFile();
+                bool found = false;
+                if (selectedFile != juce::File())
+                {
+                    const auto& entries = pingProcessor.getIRManager().getEntries();
+                    for (int i = 0; i < entries.size(); ++i)
+                    {
+                        if (entries[i].file == selectedFile)
+                        {
+                            irCombo.setSelectedId (i + 2, juce::sendNotificationSync);
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (! found)
+                    irCombo.setSelectedId (1, juce::sendNotificationSync);
+            }
             updateWaveform();
         }
     }
@@ -1584,7 +1699,16 @@ void PingEditor::savePreset (const juce::String& name)
     juce::MemoryBlock data;
     pingProcessor.getStateInformation (data);
     juce::String trimmedName = name.trim();
-    auto file = PresetManager::getPresetFile (trimmedName);
+
+    // Build the save path from the folder combo selection.
+    // The folder combo always targets the user preset directory — never the factory location.
+    juce::String folderName = presetFolderCombo.getText().trim();
+    const bool noFolder = (folderName.isEmpty() || folderName == "(no folder)");
+    juce::File targetDir = noFolder
+        ? PresetManager::getPresetDirectory()
+        : PresetManager::getPresetDirectory().getChildFile (folderName);
+    targetDir.createDirectory();   // no-op if it already exists
+    auto file = targetDir.getChildFile (trimmedName + ".xml");
 
     const bool targetExists = file.existsAsFile();
     const int selectedId = presetCombo.getSelectedId();
@@ -1664,20 +1788,12 @@ void PingEditor::finishSaveSynthIR (const juce::String& name)
     if (file.existsAsFile())
     {
         pingProcessor.getIRManager().refresh();
-        int idx = -1;
-        auto files = pingProcessor.getIRManager().getIRFiles();
-        for (int i = 0; i < files.size(); ++i)
-        {
-            if (files[i] == file) { idx = i; break; }
-        }
-        if (idx >= 0)
-        {
-            pingProcessor.setSelectedIRIndex (idx);
-            pingProcessor.loadIRFromFile (file);
-        }
+        pingProcessor.setSelectedIRFile (file);
+        pingProcessor.loadIRFromFile (file);
         refreshIRList();
         refreshPresetList();
         irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
+        irSynthComponent.setSelectedIRDisplayName (name);
         updateWaveform();
     }
 }
@@ -1780,22 +1896,73 @@ void PingEditor::refreshIRList()
     pingProcessor.getIRManager().refresh();
     irCombo.clear();
     irCombo.addItem ("Synthesized IR", 1);
-    auto names = pingProcessor.getIRManager().getDisplayNames();
-    for (int i = 0; i < names.size(); ++i)
-        irCombo.addItem (names[i], i + 2);  // id 1=Synth, 2+=files
+
+    const auto& entries = pingProcessor.getIRManager().getEntries();
+
+    // ── Factory section ───────────────────────────────────────────────────────
+    bool factoryHeaderAdded = false;
+    juce::String lastCategory;
+    for (int i = 0; i < entries.size(); ++i)
+    {
+        const auto& e = entries[i];
+        if (! e.isFactory) break;   // factory entries come first
+
+        if (! factoryHeaderAdded)
+        {
+            irCombo.addSectionHeading ("Factory");
+            factoryHeaderAdded = true;
+        }
+        if (e.category != lastCategory)
+        {
+            if (e.category.isNotEmpty())
+                irCombo.addSectionHeading ("  " + e.category);
+            lastCategory = e.category;
+        }
+        irCombo.addItem (e.file.getFileNameWithoutExtension(), i + 2);
+    }
+
+    // ── User section ──────────────────────────────────────────────────────────
+    bool userHeaderAdded = false;
+    for (int i = 0; i < entries.size(); ++i)
+    {
+        const auto& e = entries[i];
+        if (e.isFactory) continue;
+
+        if (! userHeaderAdded)
+        {
+            irCombo.addSectionHeading ("Your IRs");
+            userHeaderAdded = true;
+        }
+        irCombo.addItem (e.file.getFileNameWithoutExtension(), i + 2);
+    }
+
+    // ── Restore selection ─────────────────────────────────────────────────────
     if (pingProcessor.isIRFromSynth())
     {
         irCombo.setSelectedId (1, juce::dontSendNotification);
-    }
-    else
-    {
-        int idx = pingProcessor.getSelectedIRIndex();
-        if (idx >= 0 && idx < (int) names.size())
-            irCombo.setSelectedId (idx + 2, juce::dontSendNotification);
-        else if (irCombo.getNumItems() > 1)
-            irCombo.setSelectedId (2, juce::sendNotificationSync);  // first file
         loadSelectedIR();
+        return;
     }
+
+    juce::File selectedFile = pingProcessor.getSelectedIRFile();
+    if (selectedFile != juce::File())
+    {
+        for (int i = 0; i < entries.size(); ++i)
+        {
+            if (entries[i].file == selectedFile)
+            {
+                irCombo.setSelectedId (i + 2, juce::dontSendNotification);
+                loadSelectedIR();
+                return;
+            }
+        }
+    }
+
+    // No saved selection or file not found — pick first available entry if any
+    if (! entries.isEmpty())
+        irCombo.setSelectedId (2, juce::dontSendNotification);
+
+    loadSelectedIR();
 }
 
 void PingEditor::loadSelectedIR()
@@ -1807,7 +1974,10 @@ void PingEditor::loadSelectedIR()
         pingProcessor.reloadSynthIR();
         return;
     }
-    auto file = pingProcessor.getIRManager().getIRFileAt (idx);
+    const auto& entries = pingProcessor.getIRManager().getEntries();
+    if (! juce::isPositiveAndBelow (idx, entries.size()))
+        return;
+    auto file = entries[idx].file;
     if (file.existsAsFile())
         pingProcessor.loadIRFromFile (file);
 }

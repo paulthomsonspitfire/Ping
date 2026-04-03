@@ -31,6 +31,7 @@ private:
     void loadSelectedIR();
     void updateWaveform();
     void refreshPresetList();
+    void refreshFolderList();
     void loadPreset (const juce::String& name);
     void savePreset (const juce::String& name);
     void saveSynthIR (const juce::String& name);
@@ -43,6 +44,7 @@ private:
     juce::ComboBox irCombo;
     juce::Label    irComboLabel;
     juce::ComboBox presetCombo;
+    juce::ComboBox presetFolderCombo;   // subfolder selector for saving presets
     juce::TextButton savePresetButton { "Save" };
     juce::Label presetLabel;
     juce::TextButton reverseButton { "REVERSE" };
