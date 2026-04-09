@@ -204,14 +204,17 @@ private:
 
     // Per-block processBlock scratch buffers — pre-allocated in prepareToPlay to avoid
     // heap allocation on the audio thread (eliminates ~8 malloc calls per processBlock).
-    juce::AudioBuffer<float> dryBuffer;     // [2 ch × samplesPerBlock] copy of dry input
-    juce::AudioBuffer<float> convLIn;       // [1 ch] true-stereo convolution: L input
-    juce::AudioBuffer<float> convRIn;       // [1 ch] true-stereo convolution: R input
-    juce::AudioBuffer<float> convTmp;       // [1 ch] convolution intermediate (reused 8×)
-    juce::AudioBuffer<float> convLEr;       // [1 ch] convolution: L early reflections
-    juce::AudioBuffer<float> convREr;       // [1 ch] convolution: R early reflections
-    juce::AudioBuffer<float> convLTail;     // [1 ch] convolution: L tail
-    juce::AudioBuffer<float> convRTail;     // [1 ch] convolution: R tail
+    // NOTE: convTmp is wrapped in AudioBlock using the explicit-size constructor
+    //       (getArrayOfWritePointers, 1, numSamples) so it always processes exactly
+    //       numSamples regardless of the allocated capacity.
+    juce::AudioBuffer<float> dryBuffer;   // [2 ch × samplesPerBlock]
+    juce::AudioBuffer<float> convLIn;     // [1 ch] true-stereo: L input
+    juce::AudioBuffer<float> convRIn;     // [1 ch] true-stereo: R input
+    juce::AudioBuffer<float> convTmp;     // [1 ch] convolution intermediate (reused 8×)
+    juce::AudioBuffer<float> convLEr;     // [1 ch] L early reflections
+    juce::AudioBuffer<float> convREr;     // [1 ch] R early reflections
+    juce::AudioBuffer<float> convLTail;   // [1 ch] L tail
+    juce::AudioBuffer<float> convRTail;   // [1 ch] R tail
 
     // ── Shimmer ───────────────────────────────────────────────────────────────
     // 8-voice harmonic shimmer cloud. Every voice reads the CLEAN pre-conv dry

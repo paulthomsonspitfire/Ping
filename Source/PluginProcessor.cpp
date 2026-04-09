@@ -424,7 +424,7 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         cloudBuffer.setSize (2, samplesPerBlock);
         cloudBuffer.clear();
 
-        // Pre-allocate processBlock scratch buffers to eliminate per-block heap allocation.
+        // Pre-allocate processBlock scratch buffers — eliminates ~8 malloc calls per block.
         dryBuffer .setSize (2, samplesPerBlock, false, true, true);
         convLIn   .setSize (1, samplesPerBlock, false, true, true);
         convRIn   .setSize (1, samplesPerBlock, false, true, true);
@@ -1227,11 +1227,15 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     // All IRs use the unified true-stereo 8-convolver path (stereo file IRs are expanded to
     // 4-channel with zero cross-channels at load time in loadIRFromBuffer).
     {
-        // convLIn/convRIn/convTmp/convLEr/convREr/convLTail/convRTail are pre-allocated members.
+        // Use pre-allocated member buffers to avoid heap allocation on the audio thread.
+        // convTmp's AudioBlock is constructed with the explicit (ptr, numCh, numSamples) form
+        // so it always sees exactly numSamples — not the full samplesPerBlock capacity.
         convLIn.copyFrom (0, 0, buffer, 0, 0, numSamples);
         convRIn.copyFrom (0, 0, buffer, 1, 0, numSamples);
 
-        juce::dsp::AudioBlock<float> tmpBlock (convTmp);
+        // AudioBlock wraps exactly numSamples — safe for variable block sizes.
+        juce::dsp::AudioBlock<float> tmpBlock (convTmp.getArrayOfWritePointers(), 1, (size_t)numSamples);
+
         convTmp.copyFrom (0, 0, convLIn, 0, 0, numSamples);
         tsErConvLL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
         convLEr.copyFrom (0, 0, convTmp, 0, 0, numSamples);
