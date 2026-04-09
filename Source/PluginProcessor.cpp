@@ -1431,13 +1431,15 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     // some new, producing wrong-level mixed output (distortion). Fading from silence
     // prevents this from being heard. Dry signal is unaffected — it plays through normally.
     {
-        int remaining = irLoadFadeBlocksRemaining.load (std::memory_order_relaxed);
+        int remaining = irLoadFadeSamplesRemaining.load (std::memory_order_relaxed);
         if (remaining > 0)
         {
-            // Linear fade-in: 0 at block 0 (immediately after load), 1 at block kIRLoadFadeBlocks
-            float fadeIn = 1.0f - (float) remaining / (float) kIRLoadFadeBlocks;
+            // Linear fade-in over kIRLoadFadeSamples samples — buffer-size-independent so large
+            // IRs have time to fully swap in regardless of host buffer size.
+            float fadeIn = 1.0f - (float) remaining / (float) kIRLoadFadeSamples;
             buffer.applyGain (fadeIn);
-            irLoadFadeBlocksRemaining.store (remaining - 1, std::memory_order_relaxed);
+            irLoadFadeSamplesRemaining.store (std::max (0, remaining - numSamples),
+                                              std::memory_order_relaxed);
         }
     }
 
@@ -1846,9 +1848,10 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             return m;
         };
         // Arm the wet-signal crossfade BEFORE kicking off any background IR loads.
-        // processBlock will fade the wet bus from silence for kIRLoadFadeBlocks blocks,
+        // processBlock will fade the wet bus from silence for kIRLoadFadeSamples samples,
         // covering the window during which different convolvers may be running different IRs.
-        irLoadFadeBlocksRemaining.store (kIRLoadFadeBlocks);
+        // Sample-based (not block-based) so large IRs have time to fully swap in at any buffer size.
+        irLoadFadeSamplesRemaining.store (kIRLoadFadeSamples);
 
         juce::dsp::Convolution* tsEr[]  = { &tsErConvLL, &tsErConvRL, &tsErConvLR, &tsErConvRR };
         juce::dsp::Convolution* tsTail[] = { &tsTailConvLL, &tsTailConvRL, &tsTailConvLR, &tsTailConvRR };

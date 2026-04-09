@@ -310,9 +310,10 @@ private:
     // may run the new IR while others still run the old one, producing a wrong-level mixed output
     // that sounds like distortion. Arming this counter before loadImpulseResponse calls causes
     // processBlock to fade the wet bus from silence while the swap-in window passes.
-    std::atomic<int> irLoadFadeBlocksRemaining { 0 };
-    static constexpr int kIRLoadFadeBlocks = 64; // ~680 ms at 512 samples / 48 kHz — covers
-                                                  // worst-case background thread prep for long IRs
+    std::atomic<int> irLoadFadeSamplesRemaining { 0 };
+    static constexpr int kIRLoadFadeSamples = 48000; // 1 s at 48 kHz — buffer-size-independent;
+                                                      // covers worst-case JUCE background thread
+                                                      // prep for large IRs at any buffer size
 
     std::atomic<float> outputLevelPeakL { 0.0f };
     std::atomic<float> outputLevelPeakR { 0.0f };
