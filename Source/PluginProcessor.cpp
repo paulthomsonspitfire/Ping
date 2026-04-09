@@ -424,6 +424,16 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
         cloudBuffer.setSize (2, samplesPerBlock);
         cloudBuffer.clear();
 
+        // Pre-allocate processBlock scratch buffers to eliminate per-block heap allocation.
+        dryBuffer .setSize (2, samplesPerBlock, false, true, true);
+        convLIn   .setSize (1, samplesPerBlock, false, true, true);
+        convRIn   .setSize (1, samplesPerBlock, false, true, true);
+        convTmp   .setSize (1, samplesPerBlock, false, true, true);
+        convLEr   .setSize (1, samplesPerBlock, false, true, true);
+        convREr   .setSize (1, samplesPerBlock, false, true, true);
+        convLTail .setSize (1, samplesPerBlock, false, true, true);
+        convRTail .setSize (1, samplesPerBlock, false, true, true);
+
         // 4-stage all-pass diffusion cascade (Clouds TEXTURE-style grain-boundary smearing).
         // Delays are prime-number spaced and sub-15 ms to avoid audible echo.
         // Buffers are allocated exactly to the delay size (effLen=0 → uses buf.size()).
@@ -538,7 +548,6 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     };
 
     // Dry copy
-    juce::AudioBuffer<float> dryBuffer (numChannels, numSamples);
     dryBuffer.copyFrom (0, 0, buffer, 0, 0, numSamples);
     if (numChannels > 1)
         dryBuffer.copyFrom (1, 0, buffer, 1, 0, numSamples);
@@ -1218,42 +1227,38 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     // All IRs use the unified true-stereo 8-convolver path (stereo file IRs are expanded to
     // 4-channel with zero cross-channels at load time in loadIRFromBuffer).
     {
-        juce::AudioBuffer<float> lIn (1, numSamples), rIn (1, numSamples);
-        lIn.copyFrom (0, 0, buffer, 0, 0, numSamples);
-        rIn.copyFrom (0, 0, buffer, 1, 0, numSamples);
+        // convLIn/convRIn/convTmp/convLEr/convREr/convLTail/convRTail are pre-allocated members.
+        convLIn.copyFrom (0, 0, buffer, 0, 0, numSamples);
+        convRIn.copyFrom (0, 0, buffer, 1, 0, numSamples);
 
-        juce::AudioBuffer<float> tmp (1, numSamples);
-        juce::AudioBuffer<float> lEr (1, numSamples), rEr (1, numSamples);
-
-        juce::dsp::AudioBlock<float> tmpBlock (tmp);
-        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
+        juce::dsp::AudioBlock<float> tmpBlock (convTmp);
+        convTmp.copyFrom (0, 0, convLIn, 0, 0, numSamples);
         tsErConvLL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        lEr.copyFrom (0, 0, tmp, 0, 0, numSamples);
-        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
+        convLEr.copyFrom (0, 0, convTmp, 0, 0, numSamples);
+        convTmp.copyFrom (0, 0, convRIn, 0, 0, numSamples);
         tsErConvRL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        lEr.addFrom (0, 0, tmp, 0, 0, numSamples);
+        convLEr.addFrom (0, 0, convTmp, 0, 0, numSamples);
 
-        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
+        convTmp.copyFrom (0, 0, convLIn, 0, 0, numSamples);
         tsErConvLR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        rEr.copyFrom (0, 0, tmp, 0, 0, numSamples);
-        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
+        convREr.copyFrom (0, 0, convTmp, 0, 0, numSamples);
+        convTmp.copyFrom (0, 0, convRIn, 0, 0, numSamples);
         tsErConvRR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        rEr.addFrom (0, 0, tmp, 0, 0, numSamples);
+        convREr.addFrom (0, 0, convTmp, 0, 0, numSamples);
 
-        juce::AudioBuffer<float> lTail (1, numSamples), rTail (1, numSamples);
-        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
+        convTmp.copyFrom (0, 0, convLIn, 0, 0, numSamples);
         tsTailConvLL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        lTail.copyFrom (0, 0, tmp, 0, 0, numSamples);
-        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
+        convLTail.copyFrom (0, 0, convTmp, 0, 0, numSamples);
+        convTmp.copyFrom (0, 0, convRIn, 0, 0, numSamples);
         tsTailConvRL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        lTail.addFrom (0, 0, tmp, 0, 0, numSamples);
+        convLTail.addFrom (0, 0, convTmp, 0, 0, numSamples);
 
-        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
+        convTmp.copyFrom (0, 0, convLIn, 0, 0, numSamples);
         tsTailConvLR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        rTail.copyFrom (0, 0, tmp, 0, 0, numSamples);
-        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
+        convRTail.copyFrom (0, 0, convTmp, 0, 0, numSamples);
+        convTmp.copyFrom (0, 0, convRIn, 0, 0, numSamples);
         tsTailConvRR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        rTail.addFrom (0, 0, tmp, 0, 0, numSamples);
+        convRTail.addFrom (0, 0, convTmp, 0, 0, numSamples);
 
         if (apvts.getRawParameterValue (IDs::erCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
         {
@@ -1261,8 +1266,8 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             float attDb = apvts.getRawParameterValue (IDs::erCrossfeedAttDb)->load();
             int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1, (int)std::round (delayMs * (float)currentSampleRate / 1000.0f));
             float gain = juce::Decibels::decibelsToGain (attDb);
-            float* lPtr = lEr.getWritePointer (0);
-            float* rPtr = rEr.getWritePointer (0);
+            float* lPtr = convLEr.getWritePointer (0);
+            float* rPtr = convREr.getWritePointer (0);
             for (int i = 0; i < numSamples; ++i)
             {
                 int readRtoL = (crossfeedErWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
@@ -1282,8 +1287,8 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
             float attDb = apvts.getRawParameterValue (IDs::tailCrossfeedAttDb)->load();
             int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1, (int)std::round (delayMs * (float)currentSampleRate / 1000.0f));
             float gain = juce::Decibels::decibelsToGain (attDb);
-            float* lPtr = lTail.getWritePointer (0);
-            float* rPtr = rTail.getWritePointer (0);
+            float* lPtr = convLTail.getWritePointer (0);
+            float* rPtr = convRTail.getWritePointer (0);
             for (int i = 0; i < numSamples; ++i)
             {
                 int readRtoL = (crossfeedTailWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
@@ -1307,10 +1312,10 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         {
             float erG = erLevelSmoothed.getNextValue();
             float tailG = tailLevelSmoothed.getNextValue();
-            float eL = lEr.getSample (0, i) * erG   * trueStereoWetGain;
-            float eR = rEr.getSample (0, i) * erG   * trueStereoWetGain;
-            float tL = lTail.getSample (0, i) * tailG * trueStereoWetGain;
-            float tR = rTail.getSample (0, i) * tailG * trueStereoWetGain;
+            float eL = convLEr.getSample (0, i) * erG   * trueStereoWetGain;
+            float eR = convREr.getSample (0, i) * erG   * trueStereoWetGain;
+            float tL = convLTail.getSample (0, i) * tailG * trueStereoWetGain;
+            float tR = convRTail.getSample (0, i) * tailG * trueStereoWetGain;
             erPkL   = juce::jmax (erPkL,   std::abs (eL));
             erPkR   = juce::jmax (erPkR,   std::abs (eR));
             tailPkL = juce::jmax (tailPkL, std::abs (tL));

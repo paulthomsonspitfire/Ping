@@ -202,6 +202,17 @@ private:
     // Same-block bridge: written pre-conv, read post-blend.
     juce::AudioBuffer<float> cloudBuffer;
 
+    // Per-block processBlock scratch buffers — pre-allocated in prepareToPlay to avoid
+    // heap allocation on the audio thread (eliminates ~8 malloc calls per processBlock).
+    juce::AudioBuffer<float> dryBuffer;     // [2 ch × samplesPerBlock] copy of dry input
+    juce::AudioBuffer<float> convLIn;       // [1 ch] true-stereo convolution: L input
+    juce::AudioBuffer<float> convRIn;       // [1 ch] true-stereo convolution: R input
+    juce::AudioBuffer<float> convTmp;       // [1 ch] convolution intermediate (reused 8×)
+    juce::AudioBuffer<float> convLEr;       // [1 ch] convolution: L early reflections
+    juce::AudioBuffer<float> convREr;       // [1 ch] convolution: R early reflections
+    juce::AudioBuffer<float> convLTail;     // [1 ch] convolution: L tail
+    juce::AudioBuffer<float> convRTail;     // [1 ch] convolution: R tail
+
     // ── Shimmer ───────────────────────────────────────────────────────────────
     // 8-voice harmonic shimmer cloud. Every voice reads the CLEAN pre-conv dry
     // signal and injects a pitch-shifted copy into the convolver input (× shimIRFeed).
