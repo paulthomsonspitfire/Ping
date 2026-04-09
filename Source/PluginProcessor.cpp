@@ -516,6 +516,26 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     updateGains();
     updatePredelay();
     updateEQ();
+
+    // Mark the audio engine as prepared.  From this point on, setStateInformation (live preset
+    // switch) will call loadImpulseResponse immediately.
+    audioEnginePrepared.store (true);
+
+    // Post a callAsync to load (or reload) the IR on the message thread AFTER this prepareToPlay
+    // returns.  This is the deferred load triggered by setStateInformation's initial-load path;
+    // it also handles the case where prepareToPlay is called again after a sample-rate change
+    // (which resets all convolvers, losing the loaded IR).
+    //
+    // The lambda accesses irFromSynth / rawSynthBuffer / selectedIRFile on the message thread,
+    // where they are always written, so there is no data race.
+    juce::MessageManager::callAsync ([this]()
+    {
+        if (irFromSynth && rawSynthBuffer.getNumSamples() > 0)
+            reloadSynthIR();
+        else if (selectedIRFile.existsAsFile())
+            loadIRFromFile (selectedIRFile);
+        // else: no IR loaded yet (fresh plugin with no state) — nothing to do.
+    });
 }
 
 void PingProcessor::releaseResources() {}
@@ -1658,7 +1678,7 @@ juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
     return file;
 }
 
-void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth)
+void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth, bool deferConvolverLoad)
 {
     if (buffer.getNumSamples() == 0) return;
     currentIRSampleRate = bufferSampleRate;
@@ -1714,6 +1734,14 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
 
         rawSynthBuffer = buffer;           // save raw copy before any transforms (silence already trimmed)
         rawSynthSampleRate = bufferSampleRate;
+
+        // During initial session load (audioEnginePrepared = false), setStateInformation calls
+        // us with deferConvolverLoad = true.  We've saved rawSynthBuffer; prepareToPlay will
+        // later post a callAsync that calls reloadSynthIR(), which re-enters loadIRFromBuffer
+        // without the defer flag and completes the full transform + loadImpulseResponse sequence.
+        // This prevents the race between loadImpulseResponse background threads and reset().
+        if (deferConvolverLoad)
+            return;
     }
     else
         irFromSynth = false;
@@ -2145,22 +2173,45 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
             }
         }
 
-        if (auto* synth = xml->getChildByName ("synthIR"))
+        if (audioEnginePrepared.load())
         {
-            juce::AudioBuffer<float> buf;
-            double sr;
-            if (synthesizedIRFromXml (*synth, buf, sr))
+            // Live preset switch: audio engine is already running, load the IR immediately.
+            // No prepareToPlay will follow, so there is nothing to race against.
+            if (auto* synth = xml->getChildByName ("synthIR"))
             {
-                loadIRFromBuffer (std::move (buf), sr, true);
+                juce::AudioBuffer<float> buf;
+                double sr;
+                if (synthesizedIRFromXml (*synth, buf, sr))
+                    loadIRFromBuffer (std::move (buf), sr, true);
+                else if (selectedIRFile.existsAsFile())
+                    loadIRFromFile (selectedIRFile);
             }
             else if (selectedIRFile.existsAsFile())
             {
                 loadIRFromFile (selectedIRFile);
             }
         }
-        else if (selectedIRFile.existsAsFile())
+        else
         {
-            loadIRFromFile (selectedIRFile);
+            // Initial session load: prepareToPlay has not yet been called, so the JUCE
+            // Convolution objects have not been prepared.  Calling loadImpulseResponse here
+            // would spawn 9 NUPC background threads; prepareToPlay then calls reset() on
+            // all 9 convolvers while those threads are still running — a data race that
+            // corrupts NUPC internal state and causes permanent distortion / escalating
+            // crackling.  Instead, we save the necessary state and let prepareToPlay post
+            // a callAsync that fires loadIRFromFile / reloadSynthIR after reset() completes.
+            if (auto* synth = xml->getChildByName ("synthIR"))
+            {
+                juce::AudioBuffer<float> buf;
+                double sr;
+                if (synthesizedIRFromXml (*synth, buf, sr))
+                {
+                    // Save rawSynthBuffer (+ silence trim) without calling loadImpulseResponse.
+                    loadIRFromBuffer (std::move (buf), sr, /*fromSynth=*/true, /*deferConvolverLoad=*/true);
+                }
+                // (If XML decode fails, selectedIRFile fallback is handled by prepareToPlay's callAsync.)
+            }
+            // selectedIRFile is already set above — prepareToPlay's callAsync will pick it up.
         }
     }
 

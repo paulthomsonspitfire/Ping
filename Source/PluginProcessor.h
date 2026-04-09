@@ -47,8 +47,12 @@ public:
     const juce::File& getLastLoadedIRFile() const { return lastLoadedIRFile; }
 
     /** Load IR from buffer (e.g. reversed). Call from message thread.
-        If fromSynth is true, marks current IR as synthesized and persists it with plugin state. */
-    void loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth = false);
+        If fromSynth is true, marks current IR as synthesized and persists it with plugin state.
+        If deferConvolverLoad is true, saves rawSynthBuffer (fromSynth only) but does NOT call
+        loadImpulseResponse. Use this in setStateInformation before prepareToPlay has run, to
+        avoid a data race between loadImpulseResponse background threads and reset(). */
+    void loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate,
+                           bool fromSynth = false, bool deferConvolverLoad = false);
     void reloadSynthIR();
 
     /** True when current IR came from IR Synth (not from file list). */
@@ -325,6 +329,17 @@ private:
     // Without this, a preset load causes 3 × 8 = 24 loadImpulseResponse calls in milliseconds,
     // swamping the NUPC background thread and causing persistent crackling.
     std::atomic<bool> isRestoringState { false };
+
+    // Set to true the first time prepareToPlay completes.  Used in setStateInformation to
+    // distinguish an initial session load (prepareToPlay not yet run) from a live preset switch.
+    // During initial load, loadImpulseResponse must NOT be called before prepareToPlay resets and
+    // prepares the convolvers: doing so spawns JUCE background threads that race with reset(),
+    // corrupting NUPC internal state and causing permanent distortion / escalating crackling.
+    // When false: setStateInformation saves rawSynthBuffer / selectedIRFile but defers the
+    //   actual loadImpulseResponse calls to a callAsync posted at the END of prepareToPlay.
+    // When true (live preset switch): setStateInformation calls loadIRFromFile immediately;
+    //   no prepareToPlay follows so there is nothing to race against.
+    std::atomic<bool> audioEnginePrepared { false };
 
     std::atomic<float> outputLevelPeakL { 0.0f };
     std::atomic<float> outputLevelPeakR { 0.0f };
