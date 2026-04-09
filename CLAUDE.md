@@ -96,8 +96,10 @@ g++ -std=c++17 -O2 \
 | IR_09 | No NaN/Inf with extreme parameters (tiny room, coincident speakers, high diffusion) |
 | IR_10 | Measured RT60 within 2× of Eyring-predicted value (lower bound 0.4×, upper 2×) |
 | IR_11 | Golden regression lock — 30 samples from onset at index 371, locked to 17 sig-fig |
+| IR_12 | FDN LFO rates have no rational beat frequencies (p,q ≤ 6 check across all 120 pairs) |
+| IR_13 | IR end-of-buffer is near-silent — last 500 ms below −60 dB of peak (silence-trim precondition) |
 
-**DSP tests (DSP_01 – DSP_11)** — test the hybrid-mode DSP building blocks. DSP_01–DSP_02 and DSP_10 cover `SimpleAllpass` (Plate), which is now implemented in `PluginProcessor.h`. The remaining tests (Bloom, Cloud, Shimmer) are self-contained reference specs for blocks not yet implemented in production code. All tests define their own structs locally and must stay in sync with any production implementation.
+**DSP tests (DSP_01 – DSP_14)** — test the hybrid-mode DSP building blocks. DSP_01–DSP_02 and DSP_10/12 cover `SimpleAllpass` (Plate and Bloom). DSP_03/04/11 cover Bloom feedback stability. DSP_05/06/13/14 cover Cloud granular. DSP_07–09 cover Shimmer. All tests define their own structs locally and must stay in sync with any production implementation.
 
 | ID | Description |
 |----|-------------|
@@ -105,13 +107,16 @@ g++ -std=c++17 -O2 \
 | DSP_02 | Plate at density=0 is bit-identical to bypass (IEEE-754 collapse) |
 | DSP_03 | Bloom allpass is causal — no echo before first delay drains |
 | DSP_04 | Bloom feedback is stable at maximum setting (0.65) — output decays after input stops (bloomTime = 300 ms) |
-| DSP_05 | Cloud LFO rates have no rational beat frequencies (p,q ≤ 6 check) |
-| DSP_06 | Cloud does not amplify signal (RMS out ≤ RMS in × 1.05) |
+| DSP_05 | Cloud granular output does not amplify signal (RMS out ≤ RMS in × 1.05) |
+| DSP_06 | Cloud grain Hann window is applied per grain (near-zero onset/end, peak ≈ 1 at mid-grain) |
 | DSP_07 | Shimmer 12-semitone shift produces ~750 Hz from 375 Hz input |
 | DSP_08 | Shimmer feedback decays after input stops (stability check) |
 | DSP_09 | Shimmer semitone-to-ratio formula is correct for key musical intervals |
 | DSP_10 | Plate `plateSize=2.0` doubles the effective allpass delay — first-return peak moves from sample ~691 to ~1382 |
 | DSP_11 | Bloom feedback stable at minimum bloomTime (50 ms) — most stressful case (~20 recirculations/s) |
+| DSP_12 | Bloom `bloomSize=2.0` doubles the effective allpass delay — first-return peak moves from sample ~1913 to ~3826 (longest L-channel prime) |
+| DSP_13 | Cloud grains scatter across full buffer depth — max lookback ≥ 60% of 3 s buffer, scatter range ≥ 70% (guards "do not revert to 1–2 grain lengths" regression) |
+| DSP_14 | Cloud feedback stable at maximum setting (0.7) — no NaN/Inf, output decays after input stops |
 
 ### Golden regression lock (IR_11)
 
@@ -127,13 +132,16 @@ Paste the printed `onset_offset` and `golden_iLL[30]` values into `IR_11` in `Pi
 
 - **`PING_TESTING_BUILD=1`** — defined for the `PingTests` target; gates out `#include <JuceHeader.h>` in `IRSynthEngine.h`, making the engine compilable with no JUCE dependency.
 - **Small-room params** — `width=10, depth=8, height=5 m`. Generates a ~2 s IR instead of the default 25 s, keeping individual test runtime under 4 s.
-- **DSP tests are self-contained** — `SimpleAllpass`, the Cloud LFO, and the grain engine are defined locally in `PingDSPTests.cpp`. The `SimpleAllpass` production implementation now lives in `PluginProcessor.h`; the struct definition there must stay in sync with the one in the tests exactly. Cloud LFO and grain engine are not yet in production code.
+- **DSP tests are self-contained** — `SimpleAllpass` and the grain engines are defined locally in `PingDSPTests.cpp`. The `SimpleAllpass` production implementation now lives in `PluginProcessor.h`; the struct definition there must stay in sync with the one in the tests exactly.
 - **DSP_07 uses 375 Hz input** (not 440 Hz) — 375 × 512/48000 = 4 exact integer cycles per grain, making grain resets phase-coherent. 440 Hz gives 4.69 cycles/grain, producing phase discontinuities that shift the DFT peak ~65 Hz below the true pitch-shifted frequency.
 - **DSP_04 feedback delay** — the Bloom feedback circular buffer must be read from `fbWp` (the oldest slot, = full `fbLen` samples of delay), not `(fbWp-1)` (1-sample IIR). The same convention applies in the production implementation. DSP_04 tests bloomTime = 300 ms (mid-range); DSP_11 tests the 50 ms minimum.
-- **DSP_05 rational-beat bound** — p,q ≤ 6 covers all perceptible simple LFO beat ratios. The original p,q ≤ 32 flagged 11/15, whose beat period at these rates would be many minutes — completely inaudible.
-- **DSP_10 first-return peak test** — allpass filters are IIR and never fully "drain," so drain-energy comparisons are unsuitable for testing `effLen`. Instead, DSP_10 exploits the fact that a single allpass of delay d, fed an impulse, produces its first large positive output exactly at sample d: `out[d] = 1 - g² ≈ 0.51`. At `plateSize=2.0`, d doubles from 691 to 1382 samples, making the peak position a direct, unambiguous observable of the `effLen` mechanism.
+- **IR_12 rational-beat bound** — p,q ≤ 6 covers all perceptible simple beat ratios between FDN LFO pairs. **0.1% tolerance** (`TOL = 0.001`) is used: the nearest quasi-rational case in the geometric series is k^13 ≈ 5.016, which is 0.32% off from 5/1 — safely outside the threshold, with a drift period of ~888 s (completely inaudible). An earlier 1% tolerance incorrectly flagged the three pairs with Δ=13 (indices 0/13, 1/14, 2/15) as beats. The FDN now uses geometric spacing `r_i = 0.07 × k^i`; the previous linear spacing had 11/15 as an exact rational, producing a ~2.7 s beat.
+- **DSP_10/12 first-return peak test** — allpass filters are IIR and never fully "drain," so drain-energy comparisons are unsuitable for testing `effLen`. Instead, DSP_10 (Plate) and DSP_12 (Bloom) exploit the fact that a single allpass of delay d, fed an impulse, produces its first large positive output exactly at sample d. At `plateSize=2.0`, d doubles from 691 to 1382; at `bloomSize=2.0`, d doubles from 1913 to 3826.
 - **DSP_11 short bloomTime is the worst case** — At 50 ms (minimum bloomTime) there are ~20 feedback round-trips per second. More trips per second means more opportunities for energy to accumulate if the loop gain is near 1. DSP_04 (300 ms) and DSP_11 (50 ms) together bound the stability guarantee across the full 50–500 ms range.
+- **DSP_13 full-buffer scatter is critical** — Cloud grains must look back across the full 3 s capture buffer (range [grainLen, 90% of buffer]), not just 1–2 grain lengths. Concurrent grains reading very different moments of audio history produce spectrally independent signals; limited scatter collapses them into near-identical content, creating comb filtering. The test uses 200 deterministic spawns (seed 12345u) to verify max lookback ≥ 60% and scatter range ≥ 70% of the buffer.
+- **DSP_14 Cloud feedback uses 1/√N normalisation** — grain output is `sum / sqrt(activeCount)` (sqrt-power), not `sum / activeCount` (1/N). The existing DSP_05 gain test uses 1/N (an older design artefact); DSP_14 uses the correct 1/√N to match production. Both tests pass with either formula since 1/N is more conservative for stability.
 - **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Plate stages set `effLen` each block via `plateSize` (14× alloc, range 0.5–14.0). Bloom stages also now set `effLen` each block via `bloomSize` (2× alloc, range 0.25–2.0). Plate buffers at 14× base primes; Bloom buffers at 2× base primes.
+- **IR_13 silence-trim precondition** — verifies the last 500 ms of the full-length synthIR output is below −60 dB of peak. The actual trim threshold in `loadIRFromBuffer` is −80 dB; −60 dB is a conservative check sufficient to catch FDN decay regressions without being brittle.
 
 ---
 

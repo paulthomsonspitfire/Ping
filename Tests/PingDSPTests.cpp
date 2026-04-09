@@ -696,3 +696,234 @@ TEST_CASE("DSP_11: Bloom feedback is stable at minimum bloomTime (50 ms)", "[dsp
     INFO("bloomTime=50ms  RMS [50–51k]: " << rmsEarly << "  RMS [80–81k]: " << rmsLate);
     CHECK(rmsLate <= rmsEarly + 1e-6);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DSP_12 — Bloom: bloomSize scales effective delay lengths via effLen
+// ─────────────────────────────────────────────────────────────────────────────
+// Mirrors DSP_10 (Plate plateSize) but for the Bloom cascade.
+// Bloom allocates buffers at 2× base primes and sets effLen each block via
+// bloomSize (range 0.25–2.0). This test verifies the effLen mechanism correctly
+// changes the wrap point: at bloomSize=2.0 the first-return peak moves from
+// sample ~1913 to sample ~3826 (longest L-channel prime doubles).
+//
+// A bug where ptr wraps at buf.size() (= 3826) instead of effLen (= 1913) at
+// bloomSize=1.0 would push the peak to ~3826, failing the lower bound check.
+// See CLAUDE.md: "Bloom stages also now set effLen each block via bloomSize
+// (2× alloc, range 0.25–2.0). Plate buffers at 14× base primes; Bloom buffers
+// at 2× base primes."
+TEST_CASE("DSP_12: Bloom bloomSize=2.0 doubles effective allpass delay time", "[dsp][bloom][bloomSize]")
+{
+    const int   sr        = 48000;
+    // Longest Bloom L-channel prime: 1913 samples (~39.9 ms at 48 kHz).
+    // g=0.35 (hardcoded): first-return amplitude (1−g²) = 0.8775 — easily detectable.
+    const int   basePrime = 1913;
+    const float g         = 0.35f;
+
+    auto makeSingleBloomStage = [&](float bloomSize) -> SimpleAllpass
+    {
+        SimpleAllpass ap;
+        int allocD = basePrime * 2;          // 2× headroom, as per production prepareToPlay
+        ap.buf.assign((size_t)allocD, 0.f);
+        ap.effLen = (int)std::round(basePrime * bloomSize);
+        ap.g = g;
+        return ap;
+    };
+
+    // Feed a unit impulse then silence. Return the sample index of the first
+    // large positive peak (the primary delay-line return at t = effLen).
+    auto firstReturnSample = [&](float bloomSize) -> int
+    {
+        SimpleAllpass stage = makeSingleBloomStage(bloomSize);
+        int   runLen  = (int)(basePrime * bloomSize) * 3;   // well past the first return
+        float peak    = 0.f;
+        int   peakIdx = 0;
+        for (int i = 0; i < runLen; ++i)
+        {
+            float x = (i == 0) ? 1.0f : 0.0f;
+            float y = stage.process(x);
+            if (y > peak) { peak = y; peakIdx = i; }
+        }
+        return peakIdx;
+    };
+
+    int peak1x = firstReturnSample(1.0f);
+    int peak2x = firstReturnSample(2.0f);
+
+    INFO("First-return peak: bloomSize=1.0 → sample " << peak1x
+         << "  bloomSize=2.0 → sample " << peak2x);
+
+    // At size=1.0 the first return must be at approximately basePrime (1913).
+    CHECK(peak1x >= basePrime - 5);
+    CHECK(peak1x <= basePrime + 5);
+
+    // At size=2.0 the first return must be at approximately 2×basePrime (3826).
+    CHECK(peak2x >= basePrime * 2 - 5);
+    CHECK(peak2x <= basePrime * 2 + 5);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DSP_13 — Cloud granular: grains scatter across full buffer depth
+// ─────────────────────────────────────────────────────────────────────────────
+// The production design draws each grain's read position uniformly from
+// [grainLen, 90% of captureBuffer] behind the write head.  This full-buffer
+// scatter is CRITICAL to the "cloud" texture: concurrent grains reading very
+// different moments of audio history produce spectrally independent signals.
+//
+// If reverted to 1–2 grain lengths of scatter (a naive implementation), all
+// concurrent grains would read nearly identical content, producing comb
+// filtering and a delay-like stutter rather than a cloud texture.
+// See CLAUDE.md: "Do not revert to 1–2 grain lengths of scatter."
+//
+// Simulates 200 grain spawns with the production LCG seed (12345u) and verifies:
+//   1. Minimum lookback ≥ grainLen (grains never read from the "future").
+//   2. Maximum lookback ≥ 60% of buffer — scatter reaches deep audio history.
+//      A bug reverting to ≤2× grain lengths gives max ~19 200 (13% of buffer),
+//      well short of the required 86 400 (60% of 144 000).
+//   3. Scatter range (max − min) ≥ 70% of buffer — not clustered near the head.
+TEST_CASE("DSP_13: Cloud grains scatter across full buffer depth", "[dsp][cloud][scatter]")
+{
+    const int   sr        = 48000;
+    // Production parameters: 3-second capture buffer, 200 ms default grain length.
+    const int   capBufLen = (int)std::ceil  (3000.f * sr / 1000.f);   // 144 000
+    const int   grainLen  = (int)std::round (200.f  * sr / 1000.f);   // 9 600
+    const float maxScatterRange = capBufLen * 0.9f - (float)grainLen; // usable scatter range
+
+    // Simulate grain spawning with the production LCG (cloudSpawnSeed = 12345u).
+    // Production formula (PluginProcessor::processBlock Cloud block):
+    //   seed     = seed * 1664525u + 1013904223u;
+    //   r        = (float)(seed >> 8) / (float)(1u << 24);    // [0, 1)
+    //   scatter  = r * (capBufLen * 0.9f − grainLen)
+    //   lookback = grainLen + scatter                          // distance behind write head
+    uint32_t seed       = 12345u;
+    float    maxLookback = 0.f;
+    float    minLookback = (float)capBufLen;
+
+    const int numSpawns = 200;
+    for (int i = 0; i < numSpawns; ++i)
+    {
+        seed = seed * 1664525u + 1013904223u;
+        float r       = (float)(seed >> 8) / (float)(1u << 24);
+        float scatter  = r * maxScatterRange;
+        float lookback = (float)grainLen + scatter;
+        maxLookback    = std::max(maxLookback, lookback);
+        minLookback    = std::min(minLookback, lookback);
+    }
+
+    INFO("capBufLen=" << capBufLen << "  grainLen=" << grainLen);
+    INFO("Min lookback: " << minLookback << " samps  ("
+         << (minLookback / sr * 1000.f) << " ms)");
+    INFO("Max lookback: " << maxLookback << " samps  ("
+         << (maxLookback / sr * 1000.f) << " ms)");
+    INFO("Scatter range: " << (maxLookback - minLookback) << " samps  ("
+         << ((maxLookback - minLookback) / capBufLen * 100.f) << "% of buffer)");
+
+    // 1. Minimum lookback ≥ grainLen — grain never reads ahead of what was written.
+    CHECK(minLookback >= (float)grainLen);
+
+    // 2. Maximum lookback > 60% of buffer length — scatter reaches deep history.
+    CHECK(maxLookback >= capBufLen * 0.60f);
+
+    // 3. Scatter range spans > 70% of the buffer — not clustered near the write head.
+    CHECK((maxLookback - minLookback) >= capBufLen * 0.70f);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DSP_14 — Cloud feedback: stable at maximum setting (0.7)
+// ─────────────────────────────────────────────────────────────────────────────
+// Cloud mixes `cloudFeedback × cloudFbSamples[ch]` (previous grain output)
+// into each capture write, building a self-reinforcing granular texture.
+// Safety clamp is at 0.7.  This test verifies the system does not diverge
+// (no NaN/Inf) and that output decays after input stops.
+//
+// Uses a shortened 500 ms capture buffer and 50 ms grains so the test completes
+// in under 2 s of simulated audio.  Grain normalisation uses 1/√N (sqrt-power),
+// matching the production implementation described in CLAUDE.md.
+//
+// Complements DSP_04/11 (Bloom stability) — those cover the Bloom cascade's
+// explicit circular feedback delay; this covers the Cloud capture-buffer path.
+TEST_CASE("DSP_14: Cloud feedback stable at maximum setting (0.7)", "[dsp][cloud][stability]")
+{
+    const int   sr       = 48000;
+    const int   N_active = sr;       // 1 s of input noise
+    const int   N_total  = sr * 4;   // 4 s total; 3 s of silence after input stops
+    const float fbAmt    = 0.70f;    // maximum cloudFeedback
+
+    // Shortened test parameters — same mechanics as production, faster runtime.
+    const int capBufLen = (int)std::ceil  (500.f * sr / 1000.f);   // 24 000
+    const int grainLen  = (int)std::round ( 50.f * sr / 1000.f);   //  2 400
+
+    static constexpr int kNG = 8;   // grain slots
+    struct TestGrain { float readPos; int glen; float phase; };
+    std::array<TestGrain, kNG> grains;
+    for (auto& g : grains) { g.readPos = 0.f; g.glen = grainLen; g.phase = 1.f; }
+    int nextSlot = 0;
+
+    std::vector<float> capBuf(capBufLen, 0.f);
+    int      capWP         = 0;
+    float    fbSample      = 0.f;
+    float    spawnPhase    = 0.f;
+    const float spawnInterval = (float)grainLen * 0.5f;   // aggressive spawn rate
+    uint32_t seed          = 12345u;
+
+    TestRng rng(0xFB00C00Du);
+    std::vector<float> outputs(N_total);
+
+    for (int i = 0; i < N_total; ++i)
+    {
+        float x = (i < N_active) ? rng.nextFloat() * 0.5f : 0.f;
+
+        // Write dry + feedback into capture buffer (mirrors production cloudFeedback path).
+        capBuf[(size_t)capWP] = x + fbAmt * fbSample;
+        capWP = (capWP + 1) % capBufLen;
+
+        // Spawn a new grain when spawn phase rolls over.
+        spawnPhase += 1.f / spawnInterval;
+        while (spawnPhase >= 1.f)
+        {
+            spawnPhase -= 1.f;
+            seed = seed * 1664525u + 1013904223u;
+            float r       = (float)(seed >> 8) / (float)(1u << 24);
+            float scatter  = r * (capBufLen * 0.9f - (float)grainLen);
+            float rp       = (float)capWP - (float)grainLen - scatter;
+            while (rp < 0.f) rp += (float)capBufLen;
+            grains[(size_t)nextSlot] = { rp, grainLen, 0.f };
+            nextSlot = (nextSlot + 1) % kNG;
+        }
+
+        // Sum active grains with Hann window; normalise by 1/√N (sqrt-power).
+        float sum   = 0.f;
+        int   active = 0;
+        for (auto& g : grains)
+        {
+            if (g.phase >= 1.f) continue;
+            float win = 0.5f - 0.5f * std::cos(2.f * (float)M_PI * g.phase);
+            int   ri  = ((int)g.readPos % capBufLen + capBufLen) % capBufLen;
+            sum += capBuf[(size_t)ri] * win;
+            g.readPos += 1.f;
+            if (g.readPos >= (float)capBufLen) g.readPos -= (float)capBufLen;
+            g.phase += 1.f / (float)g.glen;
+            ++active;
+        }
+        float out = (active > 0) ? sum / std::sqrt((float)active) : 0.f;
+
+        fbSample   = out;
+        outputs[i] = out;
+    }
+
+    // 1. No NaN/Inf at any point.
+    CHECK_FALSE(hasNaNorInfF(outputs));
+
+    // 2. Output must decay after input stops.
+    //    Allow 700 ms for the capture buffer to flush (grains scatter up to
+    //    500 ms into the past and continue playing after input is cut).
+    //    Compare two 100 ms windows well into the silence phase.
+    const int tailStart = N_active + (int)(0.7f * sr);   // 1.7 s into the run
+    if (tailStart + (int)(1.5f * sr) < N_total)
+    {
+        double rmsEarly = windowRMSF(outputs, tailStart,                      4800);
+        double rmsLate  = windowRMSF(outputs, tailStart + (int)(0.5f * sr),  4800);
+        INFO("RMS window 1 [~1.7 s]: " << rmsEarly
+             << "  RMS window 2 [~2.2 s]: " << rmsLate);
+        CHECK(rmsLate <= rmsEarly + 1e-6);
+    }
+}

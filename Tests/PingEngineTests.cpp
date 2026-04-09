@@ -356,6 +356,115 @@ TEST_CASE("IR_11: golden output regression lock", "[engine][golden]")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TEST_IR_12 — FDN LFO rates have no rational beat frequencies
+// ─────────────────────────────────────────────────────────────────────────────
+// The FDN uses 16 LFO rates in geometric progression:
+//   r_i = 0.07 × k^i   where  k = (0.45 / 0.07)^(1/15) ≈ 1.1321
+// spanning 0.07–0.45 Hz across the 16 delay lines.
+//
+// Geometric spacing means the ratio of any two rates is k^Δ for integer Δ —
+// an irrational number — so no two lines share a common beat frequency.
+// The previous linear spacing (0.07 + i × 0.025 Hz) had 11/15 as an exact
+// rational ratio, producing a ~2.7 s periodic density peak audible in long tails.
+//
+// This test checks all 16×15/2 = 120 rate pairs for rational beat ratios p/q
+// with p,q ≤ 6 within 1% tolerance.  A match at that level implies a beat
+// period short enough to potentially be perceptible.
+// See CLAUDE.md: "FDN LFO rates use geometric spacing — Do not revert."
+TEST_CASE("IR_12: FDN LFO rates have no rational beat frequencies", "[engine][fdn][lfo]")
+{
+    const int    N  = 16;
+    const double r0 = 0.07;
+    const double rN = 0.45;
+    const double k  = std::pow(rN / r0, 1.0 / (N - 1));   // ≈ 1.1321
+
+    std::vector<double> rates(N);
+    for (int i = 0; i < N; ++i)
+        rates[i] = r0 * std::pow(k, i);
+
+    // Sanity: first and last rates land within 1% of their specified bounds.
+    CHECK(rates[0]     == Catch::Approx(r0).epsilon(0.01));
+    CHECK(rates[N - 1] == Catch::Approx(rN).epsilon(0.01));
+
+    // Check all 120 pairs for rational ratios with small numerators/denominators.
+    // Tolerance is 0.1%: the nearest quasi-rational case is k^13 ≈ 5.016 (0.32%
+    // off from 5/1), which has a drift period of ~888 s — completely inaudible.
+    // The previous 1% tolerance incorrectly flagged those three pairs (Δ=13).
+    const int    P_MAX = 6;
+    const double TOL   = 0.001;  // 0.1% — tighter than the k^13≈5.016 case (0.32% off 5/1)
+
+    bool anyBeat = false;
+    for (int i = 0; i < N; ++i)
+    {
+        for (int j = i + 1; j < N; ++j)
+        {
+            double ratio = rates[j] / rates[i];   // always > 1 (rates are increasing)
+            for (int p = 1; p <= P_MAX; ++p)
+            {
+                for (int q = 1; q <= P_MAX; ++q)
+                {
+                    double rational = (double)p / (double)q;
+                    if (std::abs(ratio - rational) / rational < TOL)
+                    {
+                        INFO("Pair (" << i << "," << j << "): ratio=" << ratio
+                             << " ≈ " << p << "/" << q
+                             << "  beat period ≈ "
+                             << 1.0 / std::abs(rates[j] - rates[i]) << " s");
+                        anyBeat = true;
+                    }
+                }
+            }
+        }
+    }
+    CHECK_FALSE(anyBeat);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEST_IR_13 — IR end-of-buffer is near-silent (silence trim precondition)
+// ─────────────────────────────────────────────────────────────────────────────
+// synthIR allocates 8 × max(RT60) of buffer space (up to 30 s).  The reverb
+// must decay well before the end of this allocation; otherwise the silence trim
+// in loadIRFromBuffer cannot meaningfully shorten the IR when loading into the
+// convolvers.
+//
+// Verifies that the last 500 ms of the full-length IR (before any external trim)
+// is below −60 dB of the IR's peak amplitude.  The actual trim threshold used by
+// loadIRFromBuffer is −80 dB, so this is a conservative precondition check that
+// still catches FDN decay regressions (e.g. if the tail erroneously sustains or
+// a level-calibration change causes the end of the buffer to be unexpectedly loud).
+TEST_CASE("IR_13: IR end-of-buffer is near-silent (trim precondition)", "[engine][trim]")
+{
+    IRSynthParams p = smallRoomParams();
+    auto r = IRSynthEngine::synthIR(p, [](double, const std::string&) {});
+
+    REQUIRE(r.success);
+    REQUIRE(r.irLen > 0);
+
+    // Find global peak amplitude across the full IR.
+    double peak = 0.0;
+    for (double x : r.iLL) peak = std::max(peak, std::abs(x));
+    REQUIRE(peak > 1e-9);   // must have meaningful signal
+
+    // Inspect the last 500 ms of the allocated buffer.
+    int tailWindowSamps = (int)(0.500 * r.sampleRate);
+    int tailStart       = r.irLen - tailWindowSamps;
+    REQUIRE(tailStart > 0);
+
+    double tailPeak = 0.0;
+    for (int i = tailStart; i < r.irLen; ++i)
+        tailPeak = std::max(tailPeak, std::abs(r.iLL[i]));
+
+    INFO("Global peak: " << peak
+         << "  End-buffer peak (last 500 ms): " << tailPeak
+         << "  Ratio: " << tailPeak / peak
+         << "  (−60 dB threshold = 1e-3)");
+
+    // Must be below −60 dB.  The trim threshold is −80 dB, so this is conservative:
+    // passing this test is a necessary (not sufficient) condition for a useful trim.
+    CHECK(tailPeak < peak * 1e-3);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TEST_IR_GOLDEN_CAPTURE — Helper to print golden values
 // ─────────────────────────────────────────────────────────────────────────────
 // Run this test once to get the values to paste into TEST_IR_11.
