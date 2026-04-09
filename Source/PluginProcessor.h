@@ -209,20 +209,6 @@ private:
     // Same-block bridge: written pre-conv, read post-blend.
     juce::AudioBuffer<float> cloudBuffer;
 
-    // Per-block processBlock scratch buffers — pre-allocated in prepareToPlay to avoid
-    // heap allocation on the audio thread (eliminates ~8 malloc calls per processBlock).
-    // NOTE: convTmp is wrapped in AudioBlock using the explicit-size constructor
-    //       (getArrayOfWritePointers, 1, numSamples) so it always processes exactly
-    //       numSamples regardless of the allocated capacity.
-    juce::AudioBuffer<float> dryBuffer;   // [2 ch × samplesPerBlock]
-    juce::AudioBuffer<float> convLIn;     // [1 ch] true-stereo: L input
-    juce::AudioBuffer<float> convRIn;     // [1 ch] true-stereo: R input
-    juce::AudioBuffer<float> convTmp;     // [1 ch] convolution intermediate (reused 8×)
-    juce::AudioBuffer<float> convLEr;     // [1 ch] L early reflections
-    juce::AudioBuffer<float> convREr;     // [1 ch] R early reflections
-    juce::AudioBuffer<float> convLTail;   // [1 ch] L tail
-    juce::AudioBuffer<float> convRTail;   // [1 ch] R tail
-
     // ── Shimmer ───────────────────────────────────────────────────────────────
     // 8-voice harmonic shimmer cloud. Every voice reads the CLEAN pre-conv dry
     // signal and injects a pitch-shifted copy into the convolver input (× shimIRFeed).
@@ -317,10 +303,9 @@ private:
     // may run the new IR while others still run the old one, producing a wrong-level mixed output
     // that sounds like distortion. Arming this counter before loadImpulseResponse calls causes
     // processBlock to fade the wet bus from silence while the swap-in window passes.
-    std::atomic<int>  irLoadFadeSamplesRemaining { 0 };
-    static constexpr int kIRLoadFadeSamples = 48000; // 1 s at 48 kHz — buffer-size-independent;
-                                                      // covers worst-case JUCE background thread
-                                                      // prep for large IRs at any buffer size
+    std::atomic<int> irLoadFadeBlocksRemaining { 0 };
+    static constexpr int kIRLoadFadeBlocks = 64; // ~680 ms at 512 samples / 48 kHz — covers
+                                                  // worst-case background thread prep for long IRs
 
     // Set to true at the start of setStateInformation, cleared asynchronously (via
     // MessageManager::callAsync) AFTER all queued parameterChanged notifications have fired.
