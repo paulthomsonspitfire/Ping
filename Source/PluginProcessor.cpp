@@ -1790,6 +1790,54 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         }
     }
 
+    // Trim trailing silence from ALL IRs — critical for synthesised factory IRs which are
+    // allocated at 8×RT60 (up to 60 s) but contain only 8–15 s of actual reverb signal.
+    // File-loaded factory IRs skip the fromSynth silence-trim block above, so without this
+    // they arrive with a huge silent tail that makes the NUPC background thread unable to
+    // keep up at small buffer sizes (persistent glitching). Threshold: −80 dB below peak.
+    // Synth IRs are already trimmed in the fromSynth block; this is a fast no-op for them.
+    {
+        const int nSamples = buffer.getNumSamples();
+        const int nCh      = buffer.getNumChannels();
+
+        float peak = 1.0e-6f;
+        for (int ch = 0; ch < nCh; ++ch)
+        {
+            const float* p = buffer.getReadPointer (ch);
+            for (int i = 0; i < nSamples; ++i)
+                peak = juce::jmax (peak, std::abs (p[i]));
+        }
+
+        const float threshold = peak * 1.0e-4f; // −80 dB below peak
+
+        int lastSignificant = 0;
+        for (int ch = 0; ch < nCh; ++ch)
+        {
+            const float* p = buffer.getReadPointer (ch);
+            for (int i = nSamples - 1; i >= 0; --i)
+            {
+                if (std::abs (p[i]) > threshold)
+                {
+                    lastSignificant = juce::jmax (lastSignificant, i);
+                    break;
+                }
+            }
+        }
+
+        const int safetyTail = (int) (0.2 * bufferSampleRate); // 200 ms
+        const int minLen     = (int) (0.3 * bufferSampleRate); // 300 ms floor
+        int newLen = juce::jmin (lastSignificant + safetyTail + 1, nSamples);
+        newLen     = juce::jmax (newLen, minLen);
+
+        if (newLen < nSamples)
+        {
+            juce::AudioBuffer<float> trimmed (nCh, newLen);
+            for (int ch = 0; ch < nCh; ++ch)
+                trimmed.copyFrom (ch, 0, buffer, ch, 0, newLen);
+            buffer = std::move (trimmed);
+        }
+    }
+
     currentIRBuffer = buffer;   // store original data for waveform display before any channel expansion
     int numCh = buffer.getNumChannels();
     int fullLen = buffer.getNumSamples();
