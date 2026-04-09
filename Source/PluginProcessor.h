@@ -96,6 +96,9 @@ public:
     /** Pull wet-spectrum samples for GUI (lock-free). Returns num samples copied, or 0 if not ready. */
     int pullSpectrumSamples (float* dest, int maxSamples);
 
+    /** True while preset/session state is being restored (skip redundant IR reloads from APVTS callbacks). */
+    bool getIsRestoringState() const noexcept { return isRestoringState.load(); }
+
 private:
     juce::AudioProcessorValueTreeState apvts;
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -310,10 +313,18 @@ private:
     // may run the new IR while others still run the old one, producing a wrong-level mixed output
     // that sounds like distortion. Arming this counter before loadImpulseResponse calls causes
     // processBlock to fade the wet bus from silence while the swap-in window passes.
-    std::atomic<int> irLoadFadeSamplesRemaining { 0 };
+    std::atomic<int>  irLoadFadeSamplesRemaining { 0 };
     static constexpr int kIRLoadFadeSamples = 48000; // 1 s at 48 kHz — buffer-size-independent;
                                                       // covers worst-case JUCE background thread
                                                       // prep for large IRs at any buffer size
+
+    // Set to true at the start of setStateInformation, cleared asynchronously (via
+    // MessageManager::callAsync) AFTER all queued parameterChanged notifications have fired.
+    // PingEditor::parameterChanged checks this flag and skips loadSelectedIR() while set,
+    // preventing the extra IR reloads that apvts.replaceState() triggers for "stretch"/"decay".
+    // Without this, a preset load causes 3 × 8 = 24 loadImpulseResponse calls in milliseconds,
+    // swamping the NUPC background thread and causing persistent crackling.
+    std::atomic<bool> isRestoringState { false };
 
     std::atomic<float> outputLevelPeakL { 0.0f };
     std::atomic<float> outputLevelPeakR { 0.0f };

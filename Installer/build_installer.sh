@@ -9,7 +9,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 STAGING_DIR=""
 OUTPUT_DIR="$PROJECT_ROOT/Installer/output"
-VERSION="2.3.3"
+VERSION="2.3.4"
 PKG_ID="com.ping.audio.ping"
 PKG_NAME="P!NG-Installer"
 
@@ -53,10 +53,15 @@ mkdir -p "$FACTORY_DEST/Factory IRs"
 mkdir -p "$FACTORY_DEST/Factory Presets"
 
 if compgen -G "$SCRIPT_DIR/factory_irs/*" > /dev/null 2>&1; then
+    # Trim trailing silence from factory IRs before packaging.
+    # This ensures the NUPC background FFT thread is not overloaded at small buffer sizes.
+    # The trim script runs in-place on the staging copy so the source files are never modified.
     cp -R "$SCRIPT_DIR/factory_irs/"* "$FACTORY_DEST/Factory IRs/"
     # Remove .gitkeep if it ended up in the payload
     rm -f "$FACTORY_DEST/Factory IRs/.gitkeep"
-    echo "Factory IRs: copied"
+    echo "Factory IRs: trimming silence..."
+    python3 "$PROJECT_ROOT/Tools/trim_factory_irs.py" "$FACTORY_DEST/Factory IRs"
+    echo "Factory IRs: copied and trimmed"
 else
     echo "Factory IRs: none found (skipping)"
 fi

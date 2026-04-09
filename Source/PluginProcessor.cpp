@@ -2102,6 +2102,14 @@ void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
 
 void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
+    // Suppress PingEditor::parameterChanged -> loadSelectedIR() during state restoration.
+    // apvts.replaceState() queues async parameterChanged notifications for every changed
+    // parameter (including "stretch" and "decay").  Without this guard, those fire after
+    // setStateInformation returns and each calls loadSelectedIR(), producing 3 × 8 = 24
+    // loadImpulseResponse calls in milliseconds — NUPC background thread overload → crackling.
+    // callAsync clears the flag AFTER all queued notifications have been processed (FIFO).
+    isRestoringState.store (true);
+
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
     {
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
@@ -2155,6 +2163,11 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
             loadIRFromFile (selectedIRFile);
         }
     }
+
+    // Clear isRestoringState AFTER all queued parameterChanged notifications have fired.
+    // MessageManager::callAsync posts to the end of the message-thread FIFO; apvts.replaceState()
+    // queues its async notifications before this call, so they will all be processed first.
+    juce::MessageManager::callAsync ([this]() { isRestoringState.store (false); });
 }
 
 bool PingProcessor::isLicensed() const

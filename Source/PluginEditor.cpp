@@ -546,6 +546,14 @@ PingEditor::~PingEditor()
 
 void PingEditor::parameterChanged (const juce::String& parameterID, float)
 {
+    // Skip during state restoration — apvts.replaceState() queues async parameterChanged
+    // notifications for every parameter, including "stretch" and "decay".  Without this guard
+    // each notification calls loadSelectedIR(), producing 3 × 8 = 24 loadImpulseResponse calls
+    // in milliseconds.  The NUPC background thread cannot keep up → persistent crackling.
+    // isRestoringState is cleared via callAsync (FIFO) after all notifications have fired.
+    if (pingProcessor.getIsRestoringState())
+        return;
+
     if (parameterID == "stretch" || parameterID == "decay")
         loadSelectedIR();
 }
