@@ -1744,7 +1744,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                     peak = juce::jmax (peak, std::abs (p[i]));
             }
 
-            const float threshold = peak * 1.0e-4f; // −80 dB below peak
+            const float threshold = juce::jmin (peak * 1.0e-4f, 1.0e-4f); // −80 dB below peak, capped at −80 dBFS absolute
 
             int lastSignificant = 0;
             for (int ch = 0; ch < nCh; ++ch)
@@ -1878,7 +1878,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 peak = juce::jmax (peak, std::abs (p[i]));
         }
 
-        const float threshold = peak * 1.0e-4f; // −80 dB below peak
+        const float threshold = juce::jmin (peak * 1.0e-4f, 1.0e-4f); // −80 dB below peak, capped at −80 dBFS absolute
 
         int lastSignificant = 0;
         for (int ch = 0; ch < nCh; ++ch)
@@ -1905,6 +1905,24 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             for (int ch = 0; ch < nCh; ++ch)
                 trimmed.copyFrom (ch, 0, buffer, ch, 0, newLen);
             buffer = std::move (trimmed);
+        }
+
+        // End-fade: apply a cosine fade over the last safetyTail (200 ms) samples so the IR
+        // decays smoothly to silence rather than ending abruptly at the −80 dB cut point.
+        {
+            const int curLen    = buffer.getNumSamples();
+            const int curCh     = buffer.getNumChannels();
+            const int fadeSamps = juce::jmin (safetyTail, curLen);
+            const int fadeStart = curLen - fadeSamps;
+            for (int ch = 0; ch < curCh; ++ch)
+            {
+                float* p = buffer.getWritePointer (ch);
+                for (int i = fadeStart; i < curLen; ++i)
+                {
+                    const float t = (float)(i - fadeStart) / (float)juce::jmax (fadeSamps, 1);
+                    p[i] *= 0.5f * (1.0f + std::cos (juce::MathConstants<float>::pi * t));
+                }
+            }
         }
     }
 
