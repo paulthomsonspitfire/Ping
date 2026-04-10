@@ -9,7 +9,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 STAGING_DIR=""
 OUTPUT_DIR="$PROJECT_ROOT/Installer/output"
-VERSION="2.3.7"
+VERSION="2.3.8"
 PKG_ID="com.ping.audio.ping"
 PKG_NAME="P!NG-Installer"
 
@@ -48,7 +48,7 @@ cp -R "$VST3_PLUGIN" "$PAYLOAD/Library/Audio/Plug-Ins/VST3/"
 # Factory content — copied from Installer/factory_irs/ and Installer/factory_presets/
 # Subfolder names inside factory_irs/ become the category headings shown in the plugin UI.
 # Safe to build without content: the if-guards skip the copy when the source folders are empty.
-FACTORY_DEST="$PAYLOAD/Library/Application Support/Ping/P!NG"
+FACTORY_DEST="$PAYLOAD/Library/Application Support/Ping"
 mkdir -p "$FACTORY_DEST/Factory IRs"
 mkdir -p "$FACTORY_DEST/Factory Presets"
 
@@ -77,8 +77,33 @@ fi
 mkdir -p "$OUTPUT_DIR"
 PKG_OUTPUT="$OUTPUT_DIR/P!NG-Audio-Plug-In-${VERSION}.pkg"
 
+# --- Postinstall script ---------------------------------------------------
+# Runs as root after the payload is installed. Migrates any system-wide
+# licence file from the old P!NG-nested path to the new flat path.
+# Per-user licence migration is handled by the plugin at runtime.
+SCRIPTS_DIR="$STAGING_DIR/scripts"
+mkdir -p "$SCRIPTS_DIR"
+cat > "$SCRIPTS_DIR/postinstall" << 'POSTINSTALL'
+#!/bin/bash
+OLD="/Library/Application Support/Audio/Ping/P!NG/licence.xml"
+NEW_DIR="/Library/Application Support/Audio/Ping"
+NEW="$NEW_DIR/licence.xml"
+
+if [[ -f "$OLD" && ! -f "$NEW" ]]; then
+    mkdir -p "$NEW_DIR"
+    cp "$OLD" "$NEW"
+    rm -f "$OLD"
+    # Remove old P!NG directory if now empty
+    rmdir "/Library/Application Support/Audio/Ping/P!NG" 2>/dev/null || true
+    echo "P!NG: migrated system licence to $NEW"
+fi
+exit 0
+POSTINSTALL
+chmod +x "$SCRIPTS_DIR/postinstall"
+
 # Build the package (will prompt for admin password when user runs it)
 pkgbuild --root "$PAYLOAD" \
+         --scripts "$SCRIPTS_DIR" \
          --identifier "$PKG_ID" \
          --version "$VERSION" \
          --install-location "/" \

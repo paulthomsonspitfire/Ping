@@ -6,9 +6,9 @@
  * Scans the IR folders and provides a structured list of impulse response files.
  *
  * Two locations are scanned in order:
- *   1. /Library/Application Support/Ping/P!NG/Factory IRs/   (system-wide, read-only)
+ *   1. /Library/Application Support/Ping/Factory IRs/        (system-wide, read-only)
  *      Immediate subdirectories become named categories shown as section headings in the UI.
- *   2. ~/Documents/P!NG/IRs/                                  (per-user, flat)
+ *   2. ~/Library/Audio/Impulse Responses/Ping/               (per-user, flat)
  *
  * Results are exposed as a flat indexed array of IREntry structs (factory entries first,
  * then user entries) via getEntries(). All legacy methods (getDisplayNames, getIRFileAt, etc.)
@@ -27,11 +27,11 @@ public:
 
     IRManager() = default;
 
-    /** Returns the per-user IR folder: ~/Documents/P!NG/IRs/ */
+    /** Returns the per-user IR folder: ~/Library/Audio/Impulse Responses/Ping/ */
     static juce::File getIRFolder();
 
     /** Returns the system-wide factory IR folder:
-        /Library/Application Support/Ping/P!NG/Factory IRs/ */
+        /Library/Application Support/Ping/Factory IRs/ */
     static juce::File getSystemFactoryIRFolder();
 
     /** Re-scans both the factory and user folders. Call when you want to refresh the list. */

@@ -2,16 +2,20 @@
 
 juce::File IRManager::getIRFolder()
 {
-    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
-               .getChildFile ("P!NG")
-               .getChildFile ("IRs");
+    auto dir = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                   .getChildFile ("Library")
+                   .getChildFile ("Audio")
+                   .getChildFile ("Impulse Responses")
+                   .getChildFile ("Ping");
+    if (! dir.exists())
+        dir.createDirectory();
+    return dir;
 }
 
 juce::File IRManager::getSystemFactoryIRFolder()
 {
     return juce::File ("/Library/Application Support")
                .getChildFile ("Ping")
-               .getChildFile ("P!NG")
                .getChildFile ("Factory IRs");
 }
 

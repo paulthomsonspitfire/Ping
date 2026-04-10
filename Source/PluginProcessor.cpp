@@ -63,26 +63,82 @@ namespace IDs
     static const juce::String shimFeedback    { "shimFeedback" };
 }
 
+// New canonical licence directory: /Library/Application Support/Audio/Ping/
 static juce::File getLicenceDirectory()
 {
-    auto systemDir = juce::File::getSpecialLocation (juce::File::commonApplicationDataDirectory)
-                         .getChildFile ("Audio")
-                         .getChildFile ("Ping")
-                         .getChildFile ("P!NG");
-    return systemDir;
+    return juce::File::getSpecialLocation (juce::File::commonApplicationDataDirectory)
+               .getChildFile ("Audio")
+               .getChildFile ("Ping");
+}
+
+// New canonical user licence directory: ~/Library/Audio/Ping/
+static juce::File getUserLicenceDirectory()
+{
+    return juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+               .getChildFile ("Library")
+               .getChildFile ("Audio")
+               .getChildFile ("Ping");
+}
+
+// Attempt to migrate a licence file from an old P!NG-nested path to the new flat path.
+// Returns true if the file is now available at newFile (either already there or migrated).
+// Best-effort: if the copy or delete fails (e.g. no write permission on system paths)
+// we leave the old file in place and return false so the caller can still use it.
+static bool migrateLicenceFile (const juce::File& oldFile, const juce::File& newFile)
+{
+    if (! oldFile.existsAsFile())
+        return false;
+    if (newFile.existsAsFile())
+        return true;  // already migrated by another user session
+    if (! newFile.getParentDirectory().createDirectory().wasOk())
+        return false;
+    if (! oldFile.copyFileTo (newFile))
+        return false;
+    oldFile.deleteFile();
+    // Remove the old P!NG directory if it is now empty
+    auto oldDir = oldFile.getParentDirectory();
+    if (oldDir.getNumberOfChildFiles (juce::File::findFilesAndDirectories) == 0)
+        oldDir.deleteFile();
+    return true;
 }
 
 static juce::File getLicenceFile()
 {
-    auto userFile = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
-                        .getChildFile ("Library")
-                        .getChildFile ("Audio")
-                        .getChildFile ("Ping")
-                        .getChildFile ("P!NG")
-                        .getChildFile ("licence.xml");
-    if (userFile.existsAsFile())
-        return userFile;
-    return getLicenceDirectory().getChildFile ("licence.xml");
+    // Canonical new paths (no P!NG subfolder)
+    auto newUser   = getUserLicenceDirectory().getChildFile ("licence.xml");
+    auto newSystem = getLicenceDirectory()    .getChildFile ("licence.xml");
+
+    // Legacy paths (P!NG subfolder, pre-2.3.8)
+    auto oldUser   = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                         .getChildFile ("Library").getChildFile ("Audio")
+                         .getChildFile ("Ping").getChildFile ("P!NG")
+                         .getChildFile ("licence.xml");
+    auto oldSystem = juce::File::getSpecialLocation (juce::File::commonApplicationDataDirectory)
+                         .getChildFile ("Audio").getChildFile ("Ping").getChildFile ("P!NG")
+                         .getChildFile ("licence.xml");
+
+    // 1. New user path — canonical location for new installs
+    if (newUser.existsAsFile())   return newUser;
+
+    // 2. New system path
+    if (newSystem.existsAsFile()) return newSystem;
+
+    // 3. Old user path — migrate silently to new location
+    if (oldUser.existsAsFile())
+    {
+        migrateLicenceFile (oldUser, newUser);
+        return newUser.existsAsFile() ? newUser : oldUser;
+    }
+
+    // 4. Old system path — best-effort migration (may lack write permission)
+    if (oldSystem.existsAsFile())
+    {
+        migrateLicenceFile (oldSystem, newSystem);
+        return newSystem.existsAsFile() ? newSystem : oldSystem;
+    }
+
+    // No licence found anywhere — return new user path as the target for activation
+    return newUser;
 }
 
 static bool looksLikeDate (const std::string& s)
@@ -176,19 +232,16 @@ static juce::String decodeDecimalAscii (const juce::String& s)
     return decoded.length() >= 2 ? decoded : s;
 }
 
-/** Persist current licence to disk. Uses /Library/Audio/Ping/P!NG/ (main Library). */
+/** Persist current licence to disk.
+ *  Tries /Library/Application Support/Audio/Ping/ (system-wide) first;
+ *  falls back to ~/Library/Audio/Ping/ (per-user) if that directory can't be created. */
 static void persistLicenceToFile (const std::string& normalisedName, const juce::String& serial,
                                   const juce::String& displayName)
 {
-    auto dir = getLicenceDirectory();
+    auto dir = getLicenceDirectory();     // new system path
     if (! dir.createDirectory().wasOk())
     {
-        auto userDir = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
-                           .getChildFile ("Library")
-                           .getChildFile ("Audio")
-                           .getChildFile ("Ping")
-                           .getChildFile ("P!NG");
-        dir = userDir;
+        dir = getUserLicenceDirectory();  // new user path
         if (! dir.createDirectory().wasOk())
             return;
     }

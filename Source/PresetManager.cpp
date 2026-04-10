@@ -6,8 +6,7 @@ juce::File PresetManager::getPresetDirectory()
                    .getChildFile ("Library")
                    .getChildFile ("Audio")
                    .getChildFile ("Presets")
-                   .getChildFile ("Ping")
-                   .getChildFile ("P!NG");
+                   .getChildFile ("Ping");
     if (! dir.exists())
         dir.createDirectory();
     return dir;
@@ -17,7 +16,6 @@ juce::File PresetManager::getSystemFactoryPresetFolder()
 {
     return juce::File ("/Library/Application Support")
                .getChildFile ("Ping")
-               .getChildFile ("P!NG")
                .getChildFile ("Factory Presets");
 }
 

@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.3.7 (see `CMakeLists.txt`)
+**Current version:** 2.3.8 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -151,7 +151,7 @@ Paste the printed `onset_offset` and `golden_iLL[30]` values into `IR_11` in `Pi
 Source/
   PluginProcessor.h/.cpp   — Audio engine, APVTS parameters, IR loading, processBlock
   PluginEditor.h/.cpp      — Main UI, IR list, IR Synth panel host
-  IRManager.h/.cpp         — Scans ~/Documents/P!NG/IRs for .wav/.aiff files
+  IRManager.h/.cpp         — Scans ~/Library/Audio/Impulse Responses/Ping for .wav/.aiff files
   IRSynthEngine.h/.cpp     — Room acoustic simulation (image-source + FDN)
   IRSynthComponent.h/.cpp  — UI panel for the IR Synth
   FloorPlanComponent.h/.cpp— 2D floor-plan visualiser for speaker/mic placement
@@ -1095,7 +1095,7 @@ Sidecar files: `.ping` (JSON) stored alongside each synthesised WAV, containing 
 - **Algorithm:** Ed25519 (libsodium). Public key embedded in `LicenceVerifier.h`.
 - **Serial format:** Base32-encoded signed payload `normalisedName|tier|expiry`.
 - **Tiers:** `demo`, `standard`, `pro`. Expiry `9999-12-31` = perpetual.
-- **Storage:** Checked in order: `~/Library/Audio/Ping/P!NG/licence.xml`, then `/Library/Application Support/Audio/Ping/P!NG/licence.xml`.
+- **Storage:** Checked in order (new paths first, old P!NG-nested paths as fallback with auto-migration): `~/Library/Audio/Ping/licence.xml` → `/Library/Application Support/Audio/Ping/licence.xml` → `~/Library/Audio/Ping/P!NG/licence.xml` → `/Library/Application Support/Audio/Ping/P!NG/licence.xml`.
 - **In processBlock:** Checked first — clears buffer and returns immediately if unlicensed.
 
 To generate serials (developer only — never commit `private_key.bin`):
@@ -1110,9 +1110,9 @@ cd Tools && g++ -std=c++17 -o keygen keygen.cpp -lsodium
 
 | Purpose | Path |
 |---------|------|
-| IR folder | `~/Documents/P!NG/IRs/` |
-| Licence (user) | `~/Library/Audio/Ping/P!NG/licence.xml` |
-| Licence (system) | `/Library/Application Support/Audio/Ping/P!NG/licence.xml` |
+| IR folder | `~/Library/Audio/Impulse Responses/Ping/` |
+| Licence (user) | `~/Library/Audio/Ping/licence.xml` |
+| Licence (system) | `/Library/Application Support/Audio/Ping/licence.xml` |
 | IR Synth sidecar | `<irname>.wav.ping` (same folder as the WAV) |
 
 ---
@@ -1247,7 +1247,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 ### File system layout
 
 ```
-/Library/Application Support/Ping/P!NG/   ← installed by .pkg (system-wide, read-only)
+/Library/Application Support/Ping/   ← installed by .pkg (system-wide, read-only)
     Factory IRs/
         Halls/
             <name>.wav
@@ -1265,8 +1265,8 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
         Scoring Stages/
         Tight Spaces/
 
-~/Documents/P!NG/IRs/               ← user IRs (flat, no subcategories)
-~/Library/Audio/Presets/Ping/P!NG/  ← user presets
+~/Library/Audio/Impulse Responses/Ping/               ← user IRs (flat, no subcategories)
+~/Library/Audio/Presets/Ping/  ← user presets
     <name>.xml                       ← presets saved with no folder
     Vocals/                          ← user-created subfolders (optional)
         <name>.xml
@@ -1332,7 +1332,7 @@ struct IREntry {
 
 ```cpp
 static juce::File getSystemFactoryIRFolder();
-// → /Library/Application Support/Ping/P!NG/Factory IRs/
+// → /Library/Application Support/Ping/Factory IRs/
 
 const juce::Array<IREntry>& getEntries() const;   // full structured list
 ```
@@ -1480,7 +1480,7 @@ struct PresetEntry {
 
 ```cpp
 static juce::File getSystemFactoryPresetFolder();
-// → /Library/Application Support/Ping/P!NG/Factory Presets/
+// → /Library/Application Support/Ping/Factory Presets/
 
 static juce::Array<PresetEntry> getEntries();
 ```
@@ -1490,7 +1490,7 @@ static juce::Array<PresetEntry> getEntries();
 Same two-pass pattern as `IRManager`:
 
 1. **Factory folder** — root `.xml` files (no category), then immediate subdirs sorted alphabetically.
-2. **User folder** (`~/Library/Audio/Presets/Ping/P!NG/`) — root `.xml` files, then immediate subdirs sorted alphabetically.
+2. **User folder** (`~/Library/Audio/Presets/Ping/`) — root `.xml` files, then immediate subdirs sorted alphabetically.
 
 ### `getPresetFile(name)` updated
 
@@ -1572,9 +1572,9 @@ The overwrite prompt fires only when the exact target file (path-aware, not just
 - **No `.DS_Store` files in the installer payload** — macOS creates `.DS_Store` files in any Finder-browsed folder. These must be removed from `Installer/factory_irs/` and `Installer/factory_presets/` before building the installer, or they will be installed to `/Library/Application Support/`. Remove with `find Installer -name '.DS_Store' -delete` before running `cmake --build build --target installer`.
 - **`Tools/trim_factory_irs.py` trims trailing silence from IR .wav files** — `build_installer.sh` runs this automatically on the staging copy of factory IRs during packaging. Run it manually on user-saved IRs and installed factory IRs to fix files saved before silence trimming was introduced:
   ```bash
-  # Trim repo factory IRs + ~/Documents/P!NG/IRs/ (user-saved IRs):
+  # Trim repo factory IRs + ~/Library/Audio/Impulse Responses/Ping/ (user-saved IRs):
   python3 Tools/trim_factory_irs.py
   # Trim the currently-installed factory IRs on this machine:
-  python3 Tools/trim_factory_irs.py "/Library/Application Support/Ping/P!NG/Factory IRs"
+  python3 Tools/trim_factory_irs.py "/Library/Application Support/Ping/Factory IRs"
   ```
   The script handles WAVE_FORMAT_EXTENSIBLE (4-channel 24-bit) files, applies −80 dB trim with 200 ms safety tail (minimum 300 ms), and writes in-place atomically. User-saved IRs created before v2.3.3 may be 8×RT60 (up to 60 s) — these are the main target. Future saves via `saveCurrentIRToFile` write `currentIRBuffer` which is already trimmed at load time.

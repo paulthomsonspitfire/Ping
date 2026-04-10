@@ -5,10 +5,10 @@
 /** Manages factory and user presets.
  *
  *  Factory presets live at:
- *    /Library/Application Support/Ping/P!NG/Factory Presets/
+ *    /Library/Application Support/Ping/Factory Presets/
  *
  *  User presets live at:
- *    ~/Library/Audio/Presets/Ping/P!NG/
+ *    ~/Library/Audio/Presets/Ping/
  *
  *  Both locations support one level of subcategory subfolders which become
  *  section headings in the preset combo.
@@ -23,10 +23,10 @@ public:
         bool         isFactory = false;
     };
 
-    /** User preset root: ~/Library/Audio/Presets/Ping/P!NG/ (created if absent). */
+    /** User preset root: ~/Library/Audio/Presets/Ping/ (created if absent). */
     static juce::File getPresetDirectory();
 
-    /** Factory preset root: /Library/Application Support/Ping/P!NG/Factory Presets/ */
+    /** Factory preset root: /Library/Application Support/Ping/Factory Presets/ */
     static juce::File getSystemFactoryPresetFolder();
 
     /** Returns all presets — factory first (sorted by category then filename),
