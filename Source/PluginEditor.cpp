@@ -95,13 +95,6 @@ PingEditor::PingEditor (PingProcessor& p)
     presetCombo.setSelectedId (1, juce::dontSendNotification);
     presetCombo.setEditableText (true);
 
-    addAndMakeVisible (presetFolderCombo);
-    presetFolderCombo.setEditableText (true);
-    presetFolderCombo.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x1effffff));
-    presetFolderCombo.setColour (juce::ComboBox::textColourId, textDim);
-    presetFolderCombo.setColour (juce::ComboBox::arrowColourId, accent);
-    presetFolderCombo.setTextWhenNothingSelected ("(no folder)");
-
     addAndMakeVisible (savePresetButton);
     savePresetButton.setComponentID ("SavePreset");
     savePresetButton.onClick = [this]
@@ -997,19 +990,17 @@ void PingEditor::resized()
         }
     }
 
-    // Preset combo + folder combo + Save button: right-aligned in header
-    // Layout (right to left): [Save 48] [preset name 160] [folder 100] [PRESET label 62]
+    // Preset combo + Save button: right-aligned in header
+    // Layout (right to left): [Save 48] [preset name 200] [PRESET label 62]
     const int saveButtonW  = 48;
-    const int presetComboW = 160;
-    const int folderComboW = 100;
+    const int presetComboW = 200;
     {
         const int pComboH = 24;
         const int pTopY   = topRow.getY() + (topRowH - pComboH) / 2;
         savePresetButton.setBounds   (w - 12 - saveButtonW,                           pTopY, saveButtonW,  pComboH);
         presetCombo.setBounds        (savePresetButton.getX() - 6 - presetComboW,     pTopY, presetComboW, pComboH);
-        presetFolderCombo.setBounds  (presetCombo.getX() - 4 - folderComboW,          pTopY, folderComboW, pComboH);
         const int pLabelW = 62;
-        presetLabel.setBounds        (presetFolderCombo.getX() - pLabelW - 4,         pTopY, pLabelW,      pComboH);
+        presetLabel.setBounds        (presetCombo.getX() - pLabelW - 4,               pTopY, pLabelW,      pComboH);
     }
 
     const int presetCenterX = presetCombo.getX() + presetCombo.getWidth() / 2;
@@ -1462,49 +1453,8 @@ void PingEditor::comboBoxChanged (juce::ComboBox* combo)
     }
 }
 
-void PingEditor::refreshFolderList()
-{
-    // Remember what was selected (by text) so we can restore it after rebuilding
-    juce::String currentFolder = presetFolderCombo.getText().trim();
-
-    presetFolderCombo.clear (juce::dontSendNotification);
-    presetFolderCombo.addItem ("(no folder)", 1);
-
-    // List immediate subdirectories of the user preset root only.
-    // Factory subfolders are excluded — users can't save to the factory location.
-    auto userRoot = PresetManager::getPresetDirectory();
-    auto subDirs  = userRoot.findChildFiles (juce::File::findDirectories, false);
-    subDirs.sort();
-    for (int i = 0; i < subDirs.size(); ++i)
-        presetFolderCombo.addItem (subDirs[i].getFileName(), i + 2);
-
-    // Restore prior selection if it still exists; otherwise fall back to "(no folder)"
-    if (currentFolder.isEmpty() || currentFolder == "(no folder)")
-    {
-        presetFolderCombo.setSelectedId (1, juce::dontSendNotification);
-    }
-    else
-    {
-        bool found = false;
-        for (int i = 0; i < subDirs.size(); ++i)
-        {
-            if (subDirs[i].getFileName() == currentFolder)
-            {
-                presetFolderCombo.setSelectedId (i + 2, juce::dontSendNotification);
-                found = true;
-                break;
-            }
-        }
-        // If the user had typed a custom name not yet saved as a folder,
-        // keep it as editable text so they can still save into it
-        if (! found)
-            presetFolderCombo.setText (currentFolder, juce::dontSendNotification);
-    }
-}
-
 void PingEditor::refreshPresetList()
 {
-    refreshFolderList();   // keep folder dropdown in sync with user subdirs
 
     juce::String current = presetCombo.getText();
     presetCombo.clear (juce::dontSendNotification);
@@ -1688,14 +1638,8 @@ void PingEditor::savePreset (const juce::String& name)
     pingProcessor.getStateInformation (data);
     juce::String trimmedName = name.trim();
 
-    // Build the save path from the folder combo selection.
-    // The folder combo always targets the user preset directory — never the factory location.
-    juce::String folderName = presetFolderCombo.getText().trim();
-    const bool noFolder = (folderName.isEmpty() || folderName == "(no folder)");
-    juce::File targetDir = noFolder
-        ? PresetManager::getPresetDirectory()
-        : PresetManager::getPresetDirectory().getChildFile (folderName);
-    targetDir.createDirectory();   // no-op if it already exists
+    auto targetDir = PresetManager::getPresetDirectory();
+    targetDir.createDirectory();
     auto file = targetDir.getChildFile (trimmedName + ".xml");
 
     const bool targetExists = file.existsAsFile();

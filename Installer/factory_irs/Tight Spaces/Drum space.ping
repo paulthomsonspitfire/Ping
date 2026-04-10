@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PingIRSynth>
+  <irSynthParams shape="Fan / Shoebox" width="19.5" depth="9.0" height="7.5" floor="Concrete / bare brick"
+                 ceiling="Acoustic ceiling tile" wall="Exposed brick (rough)"
+                 windows="0.29" audience="0.0" diffusion="0.03" vault="Shallow barrel vault"
+                 organ="0.18" balconies="0.1" temp="20.0" humidity="50.0" slx="0.3248299319727891"
+                 sly="0.3047052154195011" srx="0.5102040816326531" sry="0.2973356009070295"
+                 rlx="0.3622448979591837" rly="0.8168934240362812" rrx="0.5272108843537415"
+                 rry="0.8205782312925171" spkl="2.285608903560783" spkr="0.427563817296172"
+                 micl="-2.135703080888242" micr="-1.212999083597348" micPat="cardioid"
+                 erOnly="0" sr="48000" bakeERTail="0" bakedERGain="1.0" bakedTailGain="1.0"/>
+</PingIRSynth>

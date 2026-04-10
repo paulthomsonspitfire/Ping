@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PingIRSynth>
+  <irSynthParams shape="Cylindrical" width="19.0" depth="12.0" height="9.0" floor="Hardwood floor"
+                 ceiling="Painted plaster" wall="Painted plaster" windows="0.46"
+                 audience="0.6" diffusion="0.24" vault="Shallow barrel vault"
+                 organ="0.4" balconies="0.27" temp="20.0" humidity="50.0" slx="0.3453003930376193"
+                 sly="0.3458394160583942" srx="0.596687254351488" sry="0.3423357664233577"
+                 rlx="0.4447501403705783" rly="0.7557664233576642" rrx="0.5690623245367771"
+                 rry="0.7557664233576642" spkl="2.695111409816886" spkr="0.4376997659541615"
+                 micl="-2.380681747193784" micr="-0.9156339546033598" micPat="omni"
+                 erOnly="0" sr="48000" bakeERTail="0" bakedERGain="1.0" bakedTailGain="1.0"/>
+</PingIRSynth>

@@ -32,10 +32,24 @@ namespace
             combo.addItem (opts[i], i + 1);
     }
 
+    juce::String collapseSpaces (const juce::String& s)
+    {
+        juce::String r;
+        bool lastWasSpace = false;
+        for (int i = 0; i < s.length(); ++i)
+        {
+            auto c = s[i];
+            if (c == ' ') { if (! lastWasSpace) r += c; lastWasSpace = true; }
+            else           { r += c; lastWasSpace = false; }
+        }
+        return r;
+    }
+
     void setComboTo (juce::ComboBox& combo, const juce::String& value, const char* const* opts, int n)
     {
+        auto normValue = collapseSpaces (value);
         for (int i = 0; i < n; ++i)
-            if (value == opts[i])
+            if (normValue == collapseSpaces (opts[i]))
             {
                 combo.setSelectedId (i + 1, juce::dontSendNotification);
                 return;

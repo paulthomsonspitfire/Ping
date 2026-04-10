@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<PingIRSynth>
+  <irSynthParams shape="Octagonal" width="26.0" depth="20.5" height="14.0" floor="Hardwood floor"
+                 ceiling="Painted plaster" wall="Painted plaster" windows="0.28"
+                 audience="0.45" diffusion="0.68" vault="Groin / cross vault  (Lyndhurst Hall)"
+                 organ="0.06" balconies="0.13" temp="20.0" humidity="50.0" slx="0.6674356577245925"
+                 sly="0.4175926431584823" srx="0.7449058874180606" sry="0.5" rlx="0.4175316909714694"
+                 rly="0.7377135293505318" rrx="0.5474817536830934" rry="0.7503915842492268"
+                 spkl="3.036403552684928" spkr="1.946559966597701" micl="-2.380681747193784"
+                 micr="-0.9156339546033598" micPat="cardioid" erOnly="0" sr="48000"
+                 bakeERTail="0" bakedERGain="1.0" bakedTailGain="1.0"/>
+</PingIRSynth>

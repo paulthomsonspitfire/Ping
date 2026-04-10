@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.4.0 (see `CMakeLists.txt`)
+**Current version:** 2.4.2 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -1060,6 +1060,7 @@ Pipeline:
 6. **Feature B — Modal bank** — After the blend, all 4 channels are processed by `applyModalBank`: a parallel bank of high-Q IIR resonators (via `bpFQ`) tuned to axial modes f_n = c·n/(2L) for n=1..4 (10–250 Hz). Q from 125 Hz RT60; gain 0.18, normalised by mode count. Adds standing-wave ringing the ISM under-represents. For the default large room (e.g. 28×16×12 m) all axial modes fall below ~57 Hz (below the 125 Hz synthesis band), so the feature is effectively a no-op there; it becomes audible in smaller rooms or if the mode range were extended.
 7. **Post-process** — LP@18kHz, HP@20Hz, 500ms cosine end fade. **No peak normalisation** — amplitude scales naturally with the 1/r law (proximity effect preserved).
 8. **Output level trim (+15 dB)** — After all processing, a fixed `+15 dB` gain (`pow(10, 15/20) ≈ 5.6234`) is applied to all four channels. This corrects for the observed ~15 dB shortfall in synthesised IR output level without touching any synthesis calculations. Applied as the very last step in `synthIR()`, immediately before moving results into `IRSynthResult`.
+9. **`makeWav` writes WAVE_FORMAT_EXTENSIBLE (`0xFFFE`)** — The 4-channel WAV output uses a 40-byte extended `fmt` chunk with format tag `0xFFFE`, `cbSize=22`, `wValidBitsPerSample=24`, `dwChannelMask=0x33` (FL+FR+BL+BR quadraphonic), and the PCM SubFormat GUID `{00000001-0000-0010-8000-00AA00389B71}`. JUCE's `WavAudioFormat` silently refuses to create a reader for 4-channel files that use the plain PCM tag (`0x0001` with a 16-byte `fmt` chunk) — `createReaderFor` returns nullptr and the IR load fails without any error. `dwChannelMask=0` (unspecified) causes macOS QuickTime and CoreAudio to reject the file as incompatible, which also prevents the plugin from loading it on macOS. Always use `dwChannelMask=0x33` to match JUCE's own WAV writer. Do not revert to a minimal 16-byte `fmt` chunk or `dwChannelMask=0` for multichannel output.
 
 ### Close / coincident speaker handling
 
@@ -1171,6 +1172,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **IR load crossfade guard prevents partial-swap distortion** — `loadIRFromBuffer` calls `loadImpulseResponse` on all 8 convolvers (`tsEr*` / `tsTail*`) sequentially. Each call triggers an asynchronous JUCE background thread that prepares the IR and atomically swaps it in during its own next `process()` call. The 8 swaps happen independently, so the audio thread can be summing e.g. `new_LL + old_RL + old_LR + old_RR` — wrong-level mixed IR output that sounds like distortion, especially when switching presets while audio is playing. The fix: `irLoadFadeSamplesRemaining` (`std::atomic<int>`, initialised to 0) is armed to `kIRLoadFadeSamples = 48000` (1 second at 48 kHz) in `loadIRFromBuffer` *before* the first `loadImpulseResponse` call. In `processBlock`, just before the dry/wet blend, if the counter is > 0 a linear fade-in is applied to the wet buffer (`buffer.applyGain(fadeIn)`) and the counter is decremented by `numSamples`. The counter is **sample-based, not block-based** — this is critical: a block-count of 64 was originally sized for 512-sample buffers (≈ 680 ms), but at 128-sample buffers it shrinks to only ≈ 170 ms, which is not long enough for JUCE's background thread to fully prepare all 8 convolvers for large/long IRs. At 128-sample buffers, large space IRs would crackle when selected from the preset list (but not when freshly synthesised, since synthesis itself takes several seconds and the convolvers are ready by the time audio is first heard). The sample-based approach gives a consistent 1-second fade at any buffer size. The dry signal is unaffected throughout. Do not remove this guard or move the `irLoadFadeSamplesRemaining.store()` call to after any `loadImpulseResponse` call — the counter must be set before any background thread is kicked off.
 - **IR Synth runs on a background thread** — `synthIR()` is blocking and can take several seconds. Never call it from the audio or message thread directly; always dispatch to a background thread.
 - **No IR peak normalisation** — Removed intentionally. IR amplitude follows the 1/r law so speaker–mic distance affects wet level naturally. Don't add normalisation back without considering that it would flatten the proximity effect.
+- **`makeWav` must use WAVE_FORMAT_EXTENSIBLE with `dwChannelMask=0x33` for 4-channel output** — Two distinct bugs: (1) JUCE's `WavAudioFormat::createReaderFor` silently returns nullptr for 4-channel files using the plain PCM tag (`0x0001`, 16-byte `fmt` chunk) — always use `tag=0xFFFE` with a 40-byte `fmt` chunk. (2) `dwChannelMask=0` (unspecified) causes macOS QuickTime/CoreAudio to reject the file as incompatible even though the EXTENSIBLE tag is correct — use `dwChannelMask=0x33` (FL+FR+BL+BR = 0x1|0x2|0x10|0x20) to match JUCE's own WAV writer. Both bugs produce silent failure: the IR appears in the combo list but the waveform stays blank and audio is unchanged. Always verify a newly generated factory IR opens in QuickTime as a sanity check.
 - **`sz` / `rz` are fixed physical heights, not a fraction of ceiling height** — `sz = min(1.0, He * 0.9)` (speaker/instrument at 1 m off the floor) and `rz = min(3.0, He * 0.9)` (mic at 3 m, Decca tree / outrigger height). Previously both were `He * 0.55` (symmetric, 55% of ceiling). The physical values model a standard orchestral session: instruments at floor level ~1 m, main mics at ~3 m. The `He * 0.9` clamp prevents invalid geometry in low-ceiling rooms (e.g. a 2 m vocal booth). **Any change to `sz`/`rz` shifts the direct-path arrival and all reflection geometry, moving IR_11's onset index** — re-run `./PingTests "[capture]" -s` and update the golden values.
 - **Image-source order is RT60-based, not distance-gated (full-reverb mode)** — `mo = min(60, floor(RT60_MF × 343 / minDim / 2))`. In full-reverb mode, no arrival-time gate is applied in `calcRefs`; all sources within `mo` reflections are used and they decay naturally. Do not introduce an artificial distance cutoff in the non-eo path — it creates a perceptible character change where the image-source field cuts off and the FDN takes over alone. In **ER-only mode** (`eo = true`), sources with `t >= ec` *are* gated (`if (eo && t >= ec) continue`) — this is what keeps late periodic floor-ceiling bounces out of the ER output and is the correct behaviour.
 - **FDN seeding starts at `t_first`, not sample 0** — `t_first` is the sample of the minimum direct-path arrival across all four speaker-mic pairs. `ecFdn = t_first + ec` is the warmup-end / output-start sample, ensuring the full 85 ms warmup is spent on real reverberant signal. `fdnMaxRefCut = (ecFdn + fdnMaxMs) × 1.1` guarantees the direct-path echo (which would arrive at `t_first + fdnMaxMs`) is absorbed by Hadamard mixing within Phase 2. This is placement-independent: the formula works for both centred speakers and mics-on-far-wall layouts without adjustment.
@@ -1563,36 +1565,9 @@ This means factory presets can be loaded by name. The fallback is only used when
 
 IDs are assigned `i + 2` across all entries from `getEntries()` in order. Section headings consume no IDs.
 
-`refreshFolderList()` is called at the top of `refreshPresetList()` to keep the folder dropdown in sync.
+`savePreset()` always saves to the user preset root directory (`~/Library/Audio/Presets/Ping/`). After saving, `refreshPresetList()` updates the combo so the new preset appears immediately.
 
-### Folder save UI (`presetFolderCombo`)
-
-A `juce::ComboBox` with `setEditableText(true)` sits between the "PRESET" label and the preset name combo in the header:
-
-```
-[PRESET label 62px] [folder 100px] [preset name 160px] [Save 48px]
-```
-
-`refreshFolderList()` scans only the **user preset directory** for immediate subdirectories (factory subfolders are excluded — users can't save there). Lists `(no folder)` as ID 1, then existing user subfolders as IDs 2..N.
-
-Since the combo is editable, the user can either:
-- Select an existing subfolder from the dropdown
-- Type a new subfolder name directly
-
-`savePreset()` builds the target path from the folder combo:
-```cpp
-juce::String folderName = presetFolderCombo.getText().trim();
-const bool noFolder = (folderName.isEmpty() || folderName == "(no folder)");
-juce::File targetDir = noFolder
-    ? PresetManager::getPresetDirectory()
-    : PresetManager::getPresetDirectory().getChildFile (folderName);
-targetDir.createDirectory();   // no-op if already exists; creates new subfolder on first use
-auto file = targetDir.getChildFile (trimmedName + ".xml");
-```
-
-Saves always target the **user directory** — never the factory location. After saving, `refreshPresetList()` (which calls `refreshFolderList()`) updates both combos so the new folder/preset appear immediately.
-
-The overwrite prompt fires only when the exact target file (path-aware, not just name-aware) already exists and the typed name matches the currently selected item.
+The overwrite prompt fires only when the exact target file already exists and the typed name matches the currently selected item.
 
 ---
 
@@ -1607,8 +1582,7 @@ The overwrite prompt fires only when the exact target file (path-aware, not just
 - **`IRSynthComponent::setSelectedIRDisplayName` uses 0-based `getItemText` index** — `ComboBox::getItemText(int index)` takes a 0-based position, not an item ID. The search loop must use `getItemText(i)` — using `getItemText(i + 1)` skips position 0 and causes every match to resolve to the item one position above the intended one, selecting `id = i` via `setSelectedId(i)` which picks position `i-1`. This bug caused the IR Synth dropdown to load the item above the selected one, and caused the IR Synth panel to display the wrong item after loading a preset from the main menu.
 - **IR combo ID mapping: `selectedId - 2 = index into getEntries()`** — `addSectionHeading()` in JUCE's `ComboBox` does not consume IDs. IDs are therefore a flat 1-based offset: ID 1 = Synth, ID 2 = `entries[0]`, ID 3 = `entries[1]`, etc. This mapping must be maintained exactly — do not use a separate ID counter or the entries array will be misaligned.
 - **Factory entries always come first in `irEntries` / `getEntries()`** — `scanFolder()` does the factory pass before the user pass. `refreshIRList()` and `refreshPresetList()` rely on this ordering: they iterate forward and break/continue on `isFactory` to separate the two sections. Do not interleave factory and user entries.
-- **`presetFolderCombo` is editable but lists only user subfolders** — factory subfolder names are not offered as save targets (you can't write to `/Library/`). If the user types a name that doesn't exist yet, `createDirectory()` in `savePreset()` creates it on first save. After save, `refreshFolderList()` picks it up automatically.
-- **`getPresetFile(name)` searches factory entries too but `savePreset()` bypasses it** — `getPresetFile()` is used by `loadPreset()` (reading) and finds both factory and user presets by name. `savePreset()` constructs the target path directly from `presetFolderCombo` + `getPresetDirectory()`, so it always writes to the user location regardless of what `getPresetFile()` would return.
+- **`getPresetFile(name)` searches factory entries too but `savePreset()` bypasses it** — `getPresetFile()` is used by `loadPreset()` (reading) and finds both factory and user presets by name. `savePreset()` constructs the target path directly from `getPresetDirectory()`, so it always writes to the user location regardless of what `getPresetFile()` would return.
 - **`.ping` sidecar files are copied alongside `.wav` IRs by `cp -R`** — `build_installer.sh` uses `cp -R "$SCRIPT_DIR/factory_irs/"* "$FACTORY_DEST/Factory IRs/"`, which copies the full subfolder tree including any `.ping` sidecar files. When `IRManager` loads a factory IR selected from the combo, `PluginEditor` checks for a `.ping` sidecar via `file.getSiblingFile(stem + ".ping")` and loads the `IRSynthParams` from it if present. This restores the IR Synth panel state to match how the IR was generated.
 - **`Tools/generate_factory_irs.cpp` regenerates all factory content** — builds a standalone binary (no JUCE dependency) that calls `IRSynthEngine` directly to synthesise the 27 real-world venue IRs and writes WAV + `.ping` sidecar + JUCE binary preset for each. Compile and run:
   ```bash
@@ -1619,6 +1593,8 @@ The overwrite prompt fires only when the exact target file (path-aware, not just
   python3 Tools/trim_factory_irs.py Installer/factory_irs
   ```
   After any `IRSynthEngine` change that affects acoustic output (room geometry, FDN, height formula, etc.), regenerate all factory IRs before cutting a release so they stay in sync with the engine. The tool outputs to `Installer/factory_irs/` and `Installer/factory_presets/` — both are committed to the repo and are the source of truth for the installer payload. Current inventory: 27 venues across Halls (11), Large Spaces (8), Rooms (9), Scoring Stages (7), Tight Spaces (8). Venue parameters are documented inline in the tool.
+
+  **Factory IRs must use WAVE_FORMAT_EXTENSIBLE** — `IRSynthEngine::makeWav` now writes `tag=0xFFFE` with a 40-byte `fmt` chunk. If you ever see factory IRs appearing in the IR combo but silently failing to load (waveform blank, no audio change), check the WAV `fmt` tag first: `python3 -c "import struct; d=open('file.wav','rb').read(80); [print(f'tag=0x{struct.unpack(\"<H\",d[p+8:p+10])[0]:04x}') for p in range(12,60) if d[p:p+4]==b'fmt ']"` — it must be `0xfffe`, not `0x0001`.
 - **No `.DS_Store` files in the installer payload** — macOS creates `.DS_Store` files in any Finder-browsed folder. These must be removed from `Installer/factory_irs/` and `Installer/factory_presets/` before building the installer, or they will be installed to `/Library/Application Support/`. Remove with `find Installer -name '.DS_Store' -delete` before running `cmake --build build --target installer`.
 - **`Tools/trim_factory_irs.py` trims trailing silence from IR .wav files** — `build_installer.sh` runs this automatically on the staging copy of factory IRs during packaging. Run it manually on user-saved IRs and installed factory IRs to fix files saved before silence trimming was introduced:
   ```bash

@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PingIRSynth>
+  <irSynthParams shape="Rectangular" width="14" depth="10" height="5" floor="Hardwood floor" ceiling="Acoustic ceiling tile" wall="Plywood panel" windows="0.05" audience="0.2" diffusion="0.55" vault="None (flat)" organ="0" balconies="0" temp="20" humidity="50" slx="0.28" sly="0.35" srx="0.72" sry="0.35" rlx="0.37" rly="0.65" rrx="0.63" rry="0.65" spkl="1.57079632679" spkr="1.57079632679" micl="-2.35619449019" micr="-0.785398163397" micPat="cardioid" erOnly="0" sr="48000" bakeERTail="0" bakedERGain="1" bakedTailGain="1"/>
+</PingIRSynth>

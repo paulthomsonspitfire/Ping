@@ -1212,6 +1212,8 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
 }
 
 // ── makeWav — 24-bit quad (iLL,iRL,iLR,iRR), little-endian ────────────────
+// Writes WAVE_FORMAT_EXTENSIBLE (tag 0xFFFE) with a 40-byte fmt chunk.
+// Plain PCM (tag 0x0001) is rejected by JUCE's WavAudioFormat for 4-channel files.
 std::vector<uint8_t> IRSynthEngine::makeWav (const std::vector<double>& iLL,
                                               const std::vector<double>& iRL,
                                               const std::vector<double>& iLR,
@@ -1219,22 +1221,41 @@ std::vector<uint8_t> IRSynthEngine::makeWav (const std::vector<double>& iLL,
                                               int sampleRate)
 {
     size_t N = std::min({iLL.size(), iRL.size(), iLR.size(), iRR.size()});
-    size_t ds = N * 4 * 3;  // 4 channels, 24-bit
-    std::vector<uint8_t> buf(44 + ds);
+    size_t ds = N * 4 * 3;  // 4 channels, 24-bit = 12 bytes/frame
+
+    // EXTENSIBLE fmt chunk is 40 bytes; total header = 12 (RIFF+WAVE) + 48 (fmt) + 8 (data hdr)
+    const size_t kFmtSize   = 40;
+    const size_t kHeaderSize = 12 + (8 + kFmtSize) + 8;  // = 68
+    std::vector<uint8_t> buf(kHeaderSize + ds);
     uint8_t* p = buf.data();
 
+    // ── RIFF header ──────────────────────────────────────────────────────────
     memcpy(p, "RIFF", 4); p += 4;
-    uint32_t v32 = (uint32_t)(36 + ds);
+    uint32_t v32 = (uint32_t)(4 + (8 + kFmtSize) + 8 + ds);  // WAVE + fmt chunk + data chunk
     memcpy(p, &v32, 4); p += 4;
     memcpy(p, "WAVE", 4); p += 4;
+
+    // ── fmt chunk (WAVE_FORMAT_EXTENSIBLE, 40-byte body) ────────────────────
     memcpy(p, "fmt ", 4); p += 4;
-    v32 = 16; memcpy(p, &v32, 4); p += 4;
-    uint16_t v16 = 1; memcpy(p, &v16, 2); p += 2;
-    v16 = 4; memcpy(p, &v16, 2); p += 2;  // 4 channels
+    v32 = (uint32_t)kFmtSize; memcpy(p, &v32, 4); p += 4;
+
+    uint16_t v16 = 0xFFFE; memcpy(p, &v16, 2); p += 2;  // wFormatTag = EXTENSIBLE
+    v16 = 4;               memcpy(p, &v16, 2); p += 2;  // nChannels
     v32 = (uint32_t)sampleRate; memcpy(p, &v32, 4); p += 4;
-    v32 = (uint32_t)(sampleRate * 4 * 3); memcpy(p, &v32, 4); p += 4;  // byte rate
-    v16 = 12; memcpy(p, &v16, 2); p += 2;  // block align
-    v16 = 24; memcpy(p, &v16, 2); p += 2;
+    v32 = (uint32_t)(sampleRate * 4 * 3); memcpy(p, &v32, 4); p += 4;  // nAvgBytesPerSec
+    v16 = 12; memcpy(p, &v16, 2); p += 2;  // nBlockAlign
+    v16 = 24; memcpy(p, &v16, 2); p += 2;  // wBitsPerSample
+    v16 = 22; memcpy(p, &v16, 2); p += 2;  // cbSize (size of extension = 22)
+    v16 = 24; memcpy(p, &v16, 2); p += 2;  // wValidBitsPerSample
+    v32 = 0x33; memcpy(p, &v32, 4); p += 4; // dwChannelMask (0x33 = FL+FR+BL+BR, matches JUCE writer)
+    // SubFormat GUID for PCM: {00000001-0000-0010-8000-00AA00389B71}
+    static const uint8_t kPCMGuid[16] = {
+        0x01,0x00,0x00,0x00, 0x00,0x00, 0x10,0x00,
+        0x80,0x00, 0x00,0xAA,0x00,0x38,0x9B,0x71
+    };
+    memcpy(p, kPCMGuid, 16); p += 16;
+
+    // ── data chunk ──────────────────────────────────────────────────────────
     memcpy(p, "data", 4); p += 4;
     v32 = (uint32_t)ds; memcpy(p, &v32, 4); p += 4;
 
