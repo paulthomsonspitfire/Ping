@@ -293,7 +293,14 @@ TEST_CASE("IR_10: measured RT60 within 2× of predicted", "[engine][rt60][accura
     int measured60dB = r.irLen;        // default = IR didn't decay to -60 dB
     // Use a 10 ms running peak to avoid being fooled by a momentary dip.
     int smoothMs = (int)(0.010 * sr);
-    for (int i = 0; i + smoothMs < r.irLen; ++i)
+    // Find the onset (first sample above threshold) so the decay scan starts after
+    // the pre-arrival silence.  With different mic/speaker heights the direct-path
+    // arrival time changes; scanning from i=0 would find silence below threshold
+    // and report measuredRT60 = 0.
+    int onsetIdx = 0;
+    for (int i = 0; i < r.irLen; ++i)
+        if (std::abs(r.iLL[i]) > threshold) { onsetIdx = i; break; }
+    for (int i = onsetIdx; i + smoothMs < r.irLen; ++i)
     {
         double env = 0.0;
         for (int j = i; j < i + smoothMs; ++j)
@@ -329,14 +336,17 @@ TEST_CASE("IR_11: golden output regression lock", "[engine][golden]")
     // GOLDEN VALUES — captured by IR_GOLDEN_CAPTURE after all tests first went green.
     // onset_offset is the sample index of the first non-silent sample.
     // To update: run ./PingTests "[capture]" -s, paste new values, update the offset.
-    static const int    onset_offset  = 371;   // first non-zero sample in small room (10×8×5 m)
+    // Updated 2026-04-10: engine Z-heights changed from 55% of He to fixed 1m (speaker) / 3m (mic),
+    // clamped to 90% of He. Small room params (10×8×5 m) give sz=1.0m, rz=min(3.0,4.5)=3.0m.
+    // Previously onset was at sample 371; new mic/speaker geometry shifts first arrival to sample 482.
+    static const int    onset_offset  = 482;   // first non-zero sample in small room (10×8×5 m)
     static const double golden_iLL[30] = {
-        0.12082711547013722, 0.011617035641463791, -0.0880557095447565, 0.36185931503723046, 0.11650941749202648,
-        -0.27642565832450722, 0.20266553938496784, 0.26238078855636437, 0.11715489782285847, 0.13895270672334867,
-        -0.044034829441784634, -0.023834405198599185, 0.11086208208284273, 0.12023590912633199, 0.1414653064391666,
-        0.11858163745197364, 0.062658486120851509, 0.047327794767400594, 0.017779896779347736, -0.0070150246023846846,
-        -0.010429292348654291, -0.015687433402143326, -0.009112250910141664, 0.007887293655452262, 0.019813787435512747,
-        0.029746442953672448, 0.034496683954546359, 0.031390824424568975, 0.025780688694690419, 0.017358389667671944
+        0.0051792085171578151, 0.025369894752680908, 0.097860988553396241, 0.25438113462715278, 0.46193602239719112,
+        0.55841515240302642, 0.39023380619148984, 0.26246109162711079, 0.30621958959671514, -0.15921141945804507,
+        -0.60958255114003679, -0.12631119879647323, 0.10756329241843518, -0.055029364465391174, 0.10442958729543032,
+        -0.014651727054243625, -0.1110397387312371, 0.031629806881020947, -0.024522139667834154, -0.035829562502841437,
+        -0.0079078490019186456, -0.055520921382296543, -0.031726335385831451, -0.0060684433960605392, -0.01204341685290245,
+        0.0040868559752431687, 0.0025364920747359427, -0.006936442813475812, -0.0051144725539495426, -0.012623325589073961
     };
 
     static const bool goldenCaptured = true;    // captured by IR_GOLDEN_CAPTURE — do not change without a reason

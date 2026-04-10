@@ -858,7 +858,11 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
 
     report(0.05, "Computing image sources…");
 
-    double sz = He * 0.55, rz = He * 0.55;
+    // Physical placement heights:
+    //   sz  = source (speaker/instrument) at 1 m off the floor, clamped to 90 % of He.
+    //   rz  = receiver (mic) at 3 m (Decca tree / outrigger height), clamped to 90 % of He.
+    double sz = std::min(1.0, He * 0.9);
+    double rz = std::min(3.0, He * 0.9);
     double slx = p.width * p.source_lx, sly = p.depth * p.source_ly;
     double srx = p.width * p.source_rx, sry = p.depth * p.source_ry;
     double rlx = p.width * p.receiver_lx, rly = p.depth * p.receiver_ly;
