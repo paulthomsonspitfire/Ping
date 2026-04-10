@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.3.8 (see `CMakeLists.txt`)
+**Current version:** 2.3.9 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -1368,11 +1368,30 @@ if (selectedIRFile != juce::File())
     xml->setAttribute ("irFilePath", selectedIRFile.getFullPathName());
 ```
 
-`setStateInformation` reads `irFilePath`:
+`setStateInformation` reads `irFilePath`, with a filename-stem fallback if the saved path no longer exists (e.g. factory IR folder relocated between builds):
 ```cpp
 juce::String savedPath = xml->getStringAttribute ("irFilePath", "");
 if (savedPath.isNotEmpty())
-    selectedIRFile = juce::File (savedPath);
+{
+    juce::File savedFile (savedPath);
+    if (savedFile.existsAsFile())
+    {
+        selectedIRFile = savedFile;
+    }
+    else
+    {
+        // Path no longer valid — search all known IR locations by filename stem.
+        juce::String stem = savedFile.getFileNameWithoutExtension();
+        for (const auto& entry : irManager.getEntries())
+        {
+            if (entry.file.getFileNameWithoutExtension() == stem)
+            {
+                selectedIRFile = entry.file;
+                break;
+            }
+        }
+    }
+}
 ```
 
 `loadIRFromBuffer` sets `selectedIRFile = juce::File()` (empty) when `fromSynth = true`, same role as the old `selectedIRIndex = -1`.
@@ -1560,6 +1579,7 @@ The overwrite prompt fires only when the exact target file (path-aware, not just
 
 - **`/Library/Application Support/` for factory content, not `~/`** — the `.pkg` installer runs as root so can write there; users cannot write there, making factory content permanently read-only. No per-user copying at launch. All users on a multi-user Mac share the same factory content automatically.
 - **`selectedIRFile` (juce::File) replaces `selectedIRIndex` (int)** — integer indices are fragile: they shift whenever the IR list changes (e.g. new factory IRs added in an update). Full file paths survive list changes.
+- **`setStateInformation` resolves stale `irFilePath` values by filename-stem fallback** — if the saved path doesn't exist on disk (e.g. factory IR folder relocated between builds), `setStateInformation` searches `irManager.getEntries()` for a file whose `getFileNameWithoutExtension()` matches the saved path's stem. This makes presets self-healing across factory path changes without any preset migration. The match is stem-only (no extension) so `.wav`/`.aiff` format changes also survive. If no match is found `selectedIRFile` stays empty and no IR loads (same silent-skip behaviour as before).
 - **`loadSelectedIR()` is the single entry point for all IR reloads** — `parameterChanged` (Stretch, Decay), the Reverse button, the Trim handle, `comboBoxChanged`, `loadPreset`, `finishSaveSynthIR`, and the `setOnLoadIR` callback all route through `loadSelectedIR()` (or `refreshIRList()` which calls it). Never call `loadIRFromFile()` or `reloadSynthIR()` directly from parameter listeners. `loadSelectedIR()` always calls `setSelectedIRFile()` in both branches (synth and file) so `selectedIRFile` stays in sync with the actual loaded IR.
 - **`irCombo.clear()` must always use `juce::dontSendNotification`** — `ComboBox::clear()` fires `comboBoxChanged` if the combo previously had a selection, which calls `loadSelectedIR()`, which calls `setSelectedIRFile(juce::File())`, wiping the restored file path before `updateIRComboSelection()` has a chance to use it. Always call `irCombo.clear(juce::dontSendNotification)` in `refreshIRList()`.
 - **`updateIRComboSelection()` is display-only** — it syncs the combo and IRSynth panel display name to `selectedIRFile`/`isIRFromSynth()` using `dontSendNotification`. Call it after `setStateInformation` (from `loadPreset()`). It never triggers an audio load.

@@ -2188,7 +2188,27 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
         selectedIRFile = juce::File();
         juce::String savedPath = xml->getStringAttribute ("irFilePath", "");
         if (savedPath.isNotEmpty())
-            selectedIRFile = juce::File (savedPath);
+        {
+            juce::File savedFile (savedPath);
+            if (savedFile.existsAsFile())
+            {
+                selectedIRFile = savedFile;
+            }
+            else
+            {
+                // Saved path no longer valid (e.g. factory IR folder moved between builds).
+                // Try to find the file by filename stem across all known IR locations.
+                juce::String stem = savedFile.getFileNameWithoutExtension();
+                for (const auto& entry : irManager.getEntries())
+                {
+                    if (entry.file.getFileNameWithoutExtension() == stem)
+                    {
+                        selectedIRFile = entry.file;
+                        break;
+                    }
+                }
+            }
+        }
         if (auto* ir = xml->getChildByName ("irSynthParams"))
             lastIRSynthParams = irSynthParamsFromXml (ir);
 

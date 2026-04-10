@@ -14,7 +14,7 @@ if(APPLE)
     endif()
 endif()
 
-project(Ping VERSION 2.3.8)
+project(Ping VERSION 2.3.9)
 
 # Minimum macOS 13.0 (Ventura) for plugin compatibility
 if(APPLE)
