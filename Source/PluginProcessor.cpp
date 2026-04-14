@@ -2166,14 +2166,24 @@ void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
     auto state = apvts.copyState();
     if (auto xml = state.createXml())
     {
+        // Remove any custom children that leaked into the APVTS state tree
+        // from a previous setStateInformation → replaceState cycle.
+        // Without this, each save/load cycle accumulates duplicate children,
+        // inflating the state by 10+ MB per cycle (from the base64 synthIR data)
+        // until the DAW truncates or fails to save the state entirely.
+        while (auto* old = xml->getChildByName ("irSynthParams"))
+            xml->removeChildElement (old, true);
+        while (auto* old = xml->getChildByName ("synthIR"))
+            xml->removeChildElement (old, true);
+
         if (selectedIRFile != juce::File())
             xml->setAttribute ("irFilePath", selectedIRFile.getFullPathName());
         xml->setAttribute ("reverse", reverse);
-        if (irFromSynth && currentIRBuffer.getNumSamples() > 0)
+        if (irFromSynth && rawSynthBuffer.getNumSamples() > 0)
         {
             auto* synth = xml->createNewChildElement ("synthIR");
             if (synth)
-                synthesizedIRToXml (currentIRBuffer, synthesizedIRSampleRate, *synth);
+                synthesizedIRToXml (rawSynthBuffer, rawSynthSampleRate, *synth);
         }
         irSynthParamsToXml (lastIRSynthParams, *xml);
         if (currentLicence.valid)
