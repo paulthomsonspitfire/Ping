@@ -145,11 +145,10 @@ PingEditor::PingEditor (PingProcessor& p)
     {
         irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
         irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
-        // Restore the currently-loaded IR name in the IR Synth combo so the user
-        // can see which file was loaded (setIRList blanks the field by default).
         auto selectedFile = pingProcessor.getSelectedIRFile();
         if (selectedFile != juce::File())
             irSynthComponent.setSelectedIRDisplayName (selectedFile.getFileNameWithoutExtension());
+        irSynthComponent.setDirty (pingProcessor.isIRSynthDirty());
         setMainPanelControlsVisible (false);
         irSynthComponent.setVisible (true);
         irSynthComponent.toFront (true);
@@ -1565,7 +1564,7 @@ void PingEditor::loadPreset (const juce::String& name)
         {
             pingProcessor.setStateInformation (data.getData(), (int) data.getSize());
             pingProcessor.setLastPresetName (name);
-            pingProcessor.setPresetDirty (false);
+            pingProcessor.snapshotCleanState();
             reverseButton.setToggleState (pingProcessor.getReverse(), juce::dontSendNotification);
             irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
             updateIRComboSelection();
@@ -1694,7 +1693,7 @@ void PingEditor::savePreset (const juce::String& name)
 
             if (fileToWrite.replaceWithData (payload.getData(), payload.getSize()))
             {
-                pingProcessor.setPresetDirty (false);
+                pingProcessor.snapshotCleanState();
                 refreshPresetList();
             }
         });
@@ -1703,7 +1702,7 @@ void PingEditor::savePreset (const juce::String& name)
 
     if (file.replaceWithData (data.getData(), data.getSize()))
     {
-        pingProcessor.setPresetDirty (false);
+        pingProcessor.snapshotCleanState();
         refreshPresetList();
     }
 }
@@ -1797,7 +1796,10 @@ void PingEditor::timerCallback()
     juce::String name = pingProcessor.getLicenceNameFromPayload();
     licenceLabel.setText (name.isNotEmpty() ? ("Licensed to: " + name) : juce::String ("Licensed"), juce::dontSendNotification);
 
-    if (! presetCombo.hasKeyboardFocus (true) && ! presetCombo.isPopupActive())
+    if (! pingProcessor.isPresetDirty() && pingProcessor.hasParameterChangedSinceSnapshot())
+        pingProcessor.setPresetDirty (true);
+
+    if (! presetCombo.isPopupActive())
     {
         juce::String txt = presetCombo.getText();
         if (pingProcessor.isPresetDirty())

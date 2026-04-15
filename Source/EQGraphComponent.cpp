@@ -120,6 +120,13 @@ void EQGraphComponent::setupKnob (juce::Slider& s, int band, int param)
     };
 }
 
+void EQGraphComponent::setOnKnobDragStart (std::function<void()> fn)
+{
+    for (int b = 0; b < numBands; ++b)
+        for (int k = 0; k < 3; ++k)
+            knobs[b][k].onDragStart = fn;
+}
+
 // ── resized ──────────────────────────────────────────────────────────────────
 
 void EQGraphComponent::resized()

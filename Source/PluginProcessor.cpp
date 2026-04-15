@@ -282,6 +282,26 @@ void PingProcessor::parameterValueChanged (int, float)
         presetDirty.store (true);
 }
 
+void PingProcessor::snapshotCleanState()
+{
+    const auto& params = getParameters();
+    cleanParamSnapshot.resize ((size_t) params.size());
+    for (int i = 0; i < params.size(); ++i)
+        cleanParamSnapshot[(size_t) i] = params[i]->getValue();
+    presetDirty.store (false);
+}
+
+bool PingProcessor::hasParameterChangedSinceSnapshot() const
+{
+    const auto& params = getParameters();
+    if (cleanParamSnapshot.size() != (size_t) params.size())
+        return false;
+    for (int i = 0; i < params.size(); ++i)
+        if (std::abs (params[i]->getValue() - cleanParamSnapshot[(size_t) i]) > 1e-6f)
+            return true;
+    return false;
+}
+
 juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParameterLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
@@ -601,7 +621,7 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
                 {
                     setStateInformation (data.getData(), (int) data.getSize());
                     lastPresetName = "Orch Beauty Med Hall";
-                    presetDirty.store (false);
+                    snapshotCleanState();
                 }
             }
         }
@@ -2365,7 +2385,7 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
     // queues its async notifications before this call, so they will all be processed first.
     juce::MessageManager::callAsync ([this]() {
         isRestoringState.store (false);
-        presetDirty.store (false);
+        snapshotCleanState();
         irSynthDirty.store (false);
     });
 }

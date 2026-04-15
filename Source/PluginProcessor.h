@@ -92,6 +92,11 @@ public:
     bool isPresetDirty() const noexcept { return presetDirty.load(); }
     void setPresetDirty (bool d) noexcept { presetDirty.store (d); }
 
+    /** Snapshot the current APVTS state as the "clean" reference for dirty comparison. */
+    void snapshotCleanState();
+    /** Compare current APVTS parameter values against the clean snapshot. */
+    bool hasParameterChangedSinceSnapshot() const;
+
     /** IR Synth dirty flag — set when any synth parameter changes after an IR load/save/calculate. */
     bool isIRSynthDirty() const noexcept { return irSynthDirty.load(); }
     void setIRSynthDirty (bool d) noexcept { irSynthDirty.store (d); }
@@ -331,6 +336,8 @@ private:
     std::atomic<bool> stateWasRestored { false };
     std::atomic<bool> presetDirty { false };
     std::atomic<bool> irSynthDirty { false };
+
+    std::vector<float> cleanParamSnapshot;
 
     void parameterValueChanged (int parameterIndex, float newValue) override;
     void parameterGestureChanged (int, bool) override {}

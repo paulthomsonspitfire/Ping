@@ -23,6 +23,9 @@ public:
 
     void paint   (juce::Graphics& g) override;
     void resized () override;
+
+    /** Set a callback fired when ANY EQ knob drag starts (user interaction only). */
+    void setOnKnobDragStart (std::function<void()> fn);
     void mouseDown (const juce::MouseEvent& e) override;
     void mouseDrag (const juce::MouseEvent& e) override;
     void mouseUp   (const juce::MouseEvent& e) override;

@@ -588,7 +588,7 @@ void IRSynthComponent::timerCallback()
     balconiesReadout.setText (juce::String (balconiesSlider.getValue(), 2), juce::dontSendNotification);
     updateRT60Display();
 
-    if (! irCombo.hasKeyboardFocus (true) && ! irCombo.isPopupActive())
+    if (! irCombo.isPopupActive())
     {
         juce::String txt = irCombo.getText();
         if (dirty)
