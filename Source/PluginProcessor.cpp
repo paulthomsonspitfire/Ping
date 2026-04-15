@@ -265,8 +265,7 @@ PingProcessor::PingProcessor()
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
     for (auto* param : getParameters())
-        if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (param))
-            apvts.addParameterListener (p->paramID, this);
+        param->addListener (this);
     irManager.refresh();
     loadStoredLicence();
 }
@@ -274,11 +273,10 @@ PingProcessor::PingProcessor()
 PingProcessor::~PingProcessor()
 {
     for (auto* param : getParameters())
-        if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (param))
-            apvts.removeParameterListener (p->paramID, this);
+        param->removeListener (this);
 }
 
-void PingProcessor::parameterChanged (const juce::String&, float)
+void PingProcessor::parameterValueChanged (int, float)
 {
     if (! isRestoringState.load())
         presetDirty.store (true);
@@ -2368,6 +2366,7 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
     juce::MessageManager::callAsync ([this]() {
         isRestoringState.store (false);
         presetDirty.store (false);
+        irSynthDirty.store (false);
     });
 }
 

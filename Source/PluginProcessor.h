@@ -8,7 +8,7 @@
 #include "LicenceVerifier.h"
 
 class PingProcessor : public juce::AudioProcessor,
-                      private juce::AudioProcessorValueTreeState::Listener
+                      private juce::AudioProcessorParameter::Listener
 {
 public:
     PingProcessor();
@@ -332,7 +332,8 @@ private:
     std::atomic<bool> presetDirty { false };
     std::atomic<bool> irSynthDirty { false };
 
-    void parameterChanged (const juce::String& parameterID, float newValue) override;
+    void parameterValueChanged (int parameterIndex, float newValue) override;
+    void parameterGestureChanged (int, bool) override {}
 
     // Set to true the first time prepareToPlay completes.  Used in setStateInformation to
     // distinguish an initial session load (prepareToPlay not yet run) from a live preset switch.
