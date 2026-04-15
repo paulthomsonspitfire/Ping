@@ -2218,6 +2218,11 @@ void PingProcessor::fixImportedFilePermissions (const juce::File& f)
     cp.waitForProcessToFinish (2000);
 }
 
+void PingProcessor::writeIRSynthSidecar (const juce::File& wavFile, const IRSynthParams& p)
+{
+    writeIRSynthParamsSidecar (wavFile, p);
+}
+
 void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();

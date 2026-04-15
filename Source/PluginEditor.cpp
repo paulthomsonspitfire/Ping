@@ -1,6 +1,7 @@
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
 #include "PingBinaryData.h"
+#include <map>
 
 namespace
 {
@@ -105,15 +106,18 @@ PingEditor::PingEditor (PingProcessor& p)
         if (name.isEmpty())
             return;
 
-        if (pingProcessor.isPresetDirty())
+        ensureSynthIRSaved ([this, name]
         {
-            showPresetSaveAsDialog (name);
-        }
-        else
-        {
-            savePreset (name);
-            refreshPresetList();
-        }
+            if (pingProcessor.isPresetDirty())
+            {
+                showPresetSaveAsDialog (name);
+            }
+            else
+            {
+                savePreset (name);
+                refreshPresetList();
+            }
+        });
     };
     savePresetButton.setColour (juce::TextButton::buttonColourId, panelBg);
     savePresetButton.setColour (juce::TextButton::textColourOffId, textDim);
@@ -122,7 +126,7 @@ PingEditor::PingEditor (PingProcessor& p)
     exportPresetButton.setComponentID ("ExportPreset");
     exportPresetButton.setColour (juce::TextButton::buttonColourId, panelBg);
     exportPresetButton.setColour (juce::TextButton::textColourOffId, textDim);
-    exportPresetButton.onClick = [this] { exportPreset(); };
+    exportPresetButton.onClick = [this] { ensureSynthIRSaved ([this] { exportPreset(); }); };
 
     addAndMakeVisible (importPresetButton);
     importPresetButton.setComponentID ("ImportPreset");
@@ -1774,6 +1778,42 @@ void PingEditor::showPresetSaveAsDialog (const juce::String& defaultName)
         }), true);
 }
 
+void PingEditor::ensureSynthIRSaved (std::function<void()> continuation)
+{
+    if (! pingProcessor.isIRFromSynth() || ! pingProcessor.isIRSynthDirty()
+        || pingProcessor.getCurrentIRBuffer().getNumSamples() == 0)
+    {
+        continuation();
+        return;
+    }
+
+    auto* aw = new juce::AlertWindow (
+        "Save IR First",
+        "Your current synthesised IR hasn't been saved.\n"
+        "Please give it a name so it can be included with the preset.",
+        juce::MessageBoxIconType::InfoIcon, this);
+    aw->addTextEditor ("irName", "My IR", "IR name:");
+    aw->addButton ("Save IR", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    auto cont = std::make_shared<std::function<void()>> (std::move (continuation));
+
+    aw->enterModalState (true, juce::ModalCallbackFunction::create (
+        [this, aw, cont] (int result)
+        {
+            if (result == 1)
+            {
+                juce::String irName = aw->getTextEditorContents ("irName").trim();
+                if (irName.isNotEmpty())
+                {
+                    finishSaveSynthIR (irName);
+                    (*cont)();
+                }
+            }
+            delete aw;
+        }), true);
+}
+
 void PingEditor::exportPreset()
 {
     juce::String name = presetCombo.getText().trim();
@@ -1783,26 +1823,73 @@ void PingEditor::exportPreset()
         name = "Preset";
 
     auto chooser = std::make_shared<juce::FileChooser> (
-        "Export Preset", juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
-                             .getChildFile (name + ".xml"),
-        "*.xml");
+        "Export Preset — choose a folder",
+        juce::File::getSpecialLocation (juce::File::userDesktopDirectory),
+        "");
 
-    chooser->launchAsync (juce::FileBrowserComponent::saveMode
-                          | juce::FileBrowserComponent::canSelectFiles,
-        [this, chooser] (const juce::FileChooser&)
+    chooser->launchAsync (juce::FileBrowserComponent::openMode
+                          | juce::FileBrowserComponent::canSelectDirectories,
+        [this, chooser, name] (const juce::FileChooser&)
         {
-            auto dest = chooser->getResult();
-            if (dest == juce::File())
+            auto destDir = chooser->getResult();
+            if (destDir == juce::File())
                 return;
 
             if (irSynthComponent.isVisible())
                 pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
 
+            // Write preset
             juce::MemoryBlock data;
             pingProcessor.getStateInformation (data);
 
-            if (dest.replaceWithData (data.getData(), data.getSize()))
-                PingProcessor::fixImportedFilePermissions (dest);
+            auto presetDest = destDir.getChildFile (name + ".xml");
+            if (presetDest.replaceWithData (data.getData(), data.getSize()))
+                PingProcessor::fixImportedFilePermissions (presetDest);
+
+            // Write associated IR + sidecar
+            auto selectedFile = pingProcessor.getSelectedIRFile();
+            if (selectedFile != juce::File() && selectedFile.existsAsFile())
+            {
+                auto irDest = destDir.getChildFile (selectedFile.getFileName());
+                selectedFile.copyFileTo (irDest);
+                PingProcessor::fixImportedFilePermissions (irDest);
+
+                auto srcSidecar = selectedFile.getSiblingFile (
+                    selectedFile.getFileNameWithoutExtension() + ".ping");
+                if (srcSidecar.existsAsFile())
+                {
+                    auto sidecarDest = destDir.getChildFile (srcSidecar.getFileName());
+                    srcSidecar.copyFileTo (sidecarDest);
+                    PingProcessor::fixImportedFilePermissions (sidecarDest);
+                }
+            }
+            else if (pingProcessor.isIRFromSynth()
+                     && pingProcessor.getCurrentIRBuffer().getNumSamples() > 0)
+            {
+                auto irDest = destDir.getChildFile (name + " IR.wav");
+                const auto& buf = pingProcessor.getCurrentIRBuffer();
+                double sr = pingProcessor.getCurrentIRSampleRate();
+
+                juce::WavAudioFormat wavFormat;
+                auto* rawStream = new juce::FileOutputStream (irDest);
+                if (rawStream->openedOk())
+                {
+                    std::unique_ptr<juce::AudioFormatWriter> writer (
+                        wavFormat.createWriterFor (rawStream, sr,
+                                                   (unsigned int) buf.getNumChannels(), 24, {}, 0));
+                    if (writer)
+                        writer->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
+                }
+                else
+                {
+                    delete rawStream;
+                }
+
+                PingProcessor::fixImportedFilePermissions (irDest);
+                PingProcessor::writeIRSynthSidecar (irDest, pingProcessor.getLastIRSynthParams());
+                auto sidecarDest = destDir.getChildFile (name + " IR.ping");
+                PingProcessor::fixImportedFilePermissions (sidecarDest);
+            }
         });
 }
 
@@ -1821,20 +1908,99 @@ void PingEditor::importPreset()
             if (src == juce::File() || ! src.existsAsFile())
                 return;
 
-            auto targetDir = PresetManager::getPresetDirectory();
-            targetDir.createDirectory();
+            // Import any sibling IR files (.wav/.aiff) + sidecars from the same folder.
+            // Build a map of original filename stem → imported path so the preset's
+            // irFilePath can be rewritten to point to the imported user copy.
+            auto srcDir = src.getParentDirectory();
+            auto irTargetDir = IRManager::getIRFolder();
+            if (! irTargetDir.exists())
+                irTargetDir.createDirectory();
+
+            std::map<juce::String, juce::File> importedIRMap;
+            for (const auto& ext : { "*.wav", "*.aiff", "*.aif" })
+            {
+                auto irFiles = srcDir.findChildFiles (juce::File::findFiles, false, ext);
+                for (auto& irSrc : irFiles)
+                {
+                    auto irName = irSrc.getFileNameWithoutExtension();
+                    auto irDest = irTargetDir.getChildFile (irSrc.getFileName());
+
+                    int suffix = 2;
+                    while (irDest.existsAsFile())
+                    {
+                        irDest = irTargetDir.getChildFile (
+                            irName + " (" + juce::String (suffix) + ")" + irSrc.getFileExtension());
+                        ++suffix;
+                    }
+
+                    if (irSrc.copyFileTo (irDest))
+                    {
+                        PingProcessor::fixImportedFilePermissions (irDest);
+                        importedIRMap[irName] = irDest;
+
+                        auto sidecarSrc = irSrc.getSiblingFile (irName + ".ping");
+                        if (sidecarSrc.existsAsFile())
+                        {
+                            auto sidecarDest = irDest.getSiblingFile (
+                                irDest.getFileNameWithoutExtension() + ".ping");
+                            sidecarSrc.copyFileTo (sidecarDest);
+                            PingProcessor::fixImportedFilePermissions (sidecarDest);
+                        }
+                    }
+                }
+            }
+
+            if (! importedIRMap.empty())
+            {
+                pingProcessor.getIRManager().refresh();
+                refreshIRList();
+            }
+
+            // Load preset binary, patch irFilePath to point to the imported IR,
+            // then write the modified preset. Without this, the preset's saved path
+            // (e.g. /Library/.../Factory IRs/Halls/X.wav) still exists on disk and
+            // setStateInformation uses it directly, ignoring the imported user copy.
+            juce::MemoryBlock presetData;
+            if (! src.loadFileAsData (presetData))
+                return;
+
+            if (! importedIRMap.empty())
+            {
+                auto xml = juce::AudioProcessor::getXmlFromBinary (
+                    presetData.getData(), (int) presetData.getSize());
+
+                if (xml != nullptr)
+                {
+                    juce::String savedPath = xml->getStringAttribute ("irFilePath", "");
+                    if (savedPath.isNotEmpty())
+                    {
+                        juce::String stem = juce::File (savedPath).getFileNameWithoutExtension();
+                        auto it = importedIRMap.find (stem);
+                        if (it != importedIRMap.end())
+                        {
+                            xml->setAttribute ("irFilePath", it->second.getFullPathName());
+                            presetData.reset();
+                            juce::AudioProcessor::copyXmlToBinary (*xml, presetData);
+                        }
+                    }
+                }
+            }
+
+            // Write the (possibly patched) preset to the user preset folder
+            auto presetTargetDir = PresetManager::getPresetDirectory();
+            presetTargetDir.createDirectory();
 
             auto targetName = src.getFileNameWithoutExtension();
-            auto targetFile = targetDir.getChildFile (targetName + ".xml");
+            auto targetFile = presetTargetDir.getChildFile (targetName + ".xml");
 
             int suffix = 2;
             while (targetFile.existsAsFile())
             {
-                targetFile = targetDir.getChildFile (targetName + " (" + juce::String (suffix) + ").xml");
+                targetFile = presetTargetDir.getChildFile (targetName + " (" + juce::String (suffix) + ").xml");
                 ++suffix;
             }
 
-            if (src.copyFileTo (targetFile))
+            if (targetFile.replaceWithData (presetData.getData(), presetData.getSize()))
             {
                 PingProcessor::fixImportedFilePermissions (targetFile);
                 refreshPresetList();
@@ -1904,6 +2070,10 @@ void PingEditor::exportIR()
                     writer->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
 
                 PingProcessor::fixImportedFilePermissions (dest);
+
+                PingProcessor::writeIRSynthSidecar (dest, pingProcessor.getLastIRSynthParams());
+                auto destSidecar = dest.getSiblingFile (dest.getFileNameWithoutExtension() + ".ping");
+                PingProcessor::fixImportedFilePermissions (destSidecar);
             }
         });
 }

@@ -75,6 +75,9 @@ public:
         Ensures the plugin can read files received via AirDrop, email, etc. */
     static void fixImportedFilePermissions (const juce::File& f);
 
+    /** Write a .ping sidecar file alongside a WAV, containing the IRSynthParams used to generate it. */
+    static void writeIRSynthSidecar (const juce::File& wavFile, const IRSynthParams& p);
+
     bool getReverse() const { return reverse; }
     void setReverse (bool v) { reverse = v; }
 
