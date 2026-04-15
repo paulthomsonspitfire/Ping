@@ -181,6 +181,16 @@ IRSynthComponent::IRSynthComponent()
     // Add all controls directly (no tabs / viewports)
     addAndMakeVisible (floorPlanComponent);
     floorPlanComponent.setParamsGetter ([this] { return getParams(); });
+    floorPlanComponent.setOnPlacementChanged ([this] { if (onParamModifiedFn) onParamModifiedFn(); });
+
+    auto notifyParamChanged = [this] { if (onParamModifiedFn) onParamModifiedFn(); };
+    for (auto* s : { &widthSlider, &depthSlider, &heightSlider, &windowsSlider,
+                     &audienceSlider, &diffusionSlider, &organSlider, &balconiesSlider })
+        s->onValueChange = notifyParamChanged;
+    erOnlyButton.onClick = notifyParamChanged;
+    for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
+                      &vaultCombo, &micPatternCombo, &sampleRateCombo })
+        cb->addListener (this);
 
     addAndMakeVisible (shapeCombo);
     addAndMakeVisible (widthSlider);
@@ -577,6 +587,20 @@ void IRSynthComponent::timerCallback()
     organReadout.setText (juce::String (organSlider.getValue(), 2), juce::dontSendNotification);
     balconiesReadout.setText (juce::String (balconiesSlider.getValue(), 2), juce::dontSendNotification);
     updateRT60Display();
+
+    if (! irCombo.hasKeyboardFocus (true) && ! irCombo.isPopupActive())
+    {
+        juce::String txt = irCombo.getText();
+        if (dirty)
+        {
+            if (! txt.endsWith (" *"))
+                irCombo.setText (txt + " *", juce::dontSendNotification);
+        }
+        else if (txt.endsWith (" *"))
+        {
+            irCombo.setText (txt.dropLastCharacters (2), juce::dontSendNotification);
+        }
+    }
 }
 
 void IRSynthComponent::buttonClicked (juce::Button* b)
@@ -590,8 +614,38 @@ void IRSynthComponent::buttonClicked (juce::Button* b)
     else if (b == &saveIRButton && onSaveIRFn)
     {
         juce::String name = irCombo.getText().trim();
-        if (name.isNotEmpty())
+        if (name.endsWith ("*"))
+            name = name.dropLastCharacters (1).trim();
+        if (name.isEmpty())
+            return;
+
+        if (dirty)
+        {
+            auto* aw = new juce::AlertWindow ("Save IR As", "Enter a name for the IR:",
+                                              juce::MessageBoxIconType::NoIcon, this);
+            aw->addTextEditor ("irName", name, "Name:");
+            aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+            aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+            aw->enterModalState (true, juce::ModalCallbackFunction::create (
+                [this, aw] (int result)
+                {
+                    if (result == 1)
+                    {
+                        juce::String saveName = aw->getTextEditorContents ("irName").trim();
+                        if (saveName.isNotEmpty() && onSaveIRFn)
+                        {
+                            onSaveIRFn (saveName);
+                            dirty = false;
+                        }
+                    }
+                    delete aw;
+                }), true);
+        }
+        else
+        {
             onSaveIRFn (name);
+        }
     }
 }
 
@@ -602,6 +656,10 @@ void IRSynthComponent::comboBoxChanged (juce::ComboBox* combo)
         int id = irCombo.getSelectedId();
         if (id >= 1)
             onLoadIRFn (id - 1);
+    }
+    else if (combo != &irCombo && onParamModifiedFn)
+    {
+        onParamModifiedFn();
     }
 }
 

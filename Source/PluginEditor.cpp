@@ -100,7 +100,16 @@ PingEditor::PingEditor (PingProcessor& p)
     savePresetButton.onClick = [this]
     {
         juce::String name = presetCombo.getText().trim();
-        if (name.isNotEmpty())
+        if (name.endsWith ("*"))
+            name = name.dropLastCharacters (1).trim();
+        if (name.isEmpty())
+            return;
+
+        if (pingProcessor.isPresetDirty())
+        {
+            showPresetSaveAsDialog (name);
+        }
+        else
         {
             savePreset (name);
             refreshPresetList();
@@ -163,6 +172,8 @@ PingEditor::PingEditor (PingProcessor& p)
         }
         pingProcessor.setLastIRSynthParams (irSynthComponent.getLastRenderParams());
         pingProcessor.loadIRFromBuffer (std::move (buf), (double) result.sampleRate, true);
+        irSynthComponent.setDirty (true);
+        pingProcessor.setIRSynthDirty (true);
         updateWaveform();
     });
     irSynthComponent.setOnDone ([this]
@@ -175,6 +186,11 @@ PingEditor::PingEditor (PingProcessor& p)
     irSynthComponent.setOnSaveIR ([this] (const juce::String& name)
     {
         saveSynthIR (name);
+    });
+    irSynthComponent.setOnParamModified ([this]
+    {
+        irSynthComponent.setDirty (true);
+        pingProcessor.setIRSynthDirty (true);
     });
     irSynthComponent.setOnLoadIR ([this] (int index)
     {
@@ -191,6 +207,8 @@ PingEditor::PingEditor (PingProcessor& p)
                 irSynthComponent.setParams (params);
             }
             irSynthComponent.setSelectedIRDisplayName (file.getFileNameWithoutExtension());
+            irSynthComponent.setDirty (false);
+            pingProcessor.setIRSynthDirty (false);
             refreshIRList();
             updateWaveform();
         }
@@ -204,6 +222,7 @@ PingEditor::PingEditor (PingProcessor& p)
         return std::pair<float, float> { erDb, tailDb };
     });
     irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
+    irSynthComponent.setDirty (pingProcessor.isIRSynthDirty());
 
     // Sliders - rotary style
     auto makeSlider = [this] (juce::Slider& s, const juce::String& name)
@@ -1450,6 +1469,8 @@ void PingEditor::comboBoxChanged (juce::ComboBox* combo)
         int id = presetCombo.getSelectedId();
         if (id > 1)
             loadPreset (presetCombo.getText());
+        else
+            pingProcessor.setLastPresetName (presetCombo.getText());
     }
 }
 
@@ -1506,19 +1527,18 @@ void PingEditor::refreshPresetList()
         presetCombo.addItem (e.file.getFileNameWithoutExtension(), i + 2);
     }
 
-    // ── Restore selection ─────────────────────────────────────────────────────
-    if (current.isEmpty() || current == "Default")
+    // ── Restore selection from processor (survives editor destroy/recreate) ──
+    juce::String restoreName = current.isNotEmpty() ? current : pingProcessor.getLastPresetName();
+    if (restoreName.isEmpty() || restoreName == "Default")
     {
         presetCombo.setSelectedId (1, juce::dontSendNotification);
     }
     else
     {
-        // Match the current text against entry stems so overwrites target the
-        // exact preset currently shown as selected in the dropdown.
         int matchedId = -1;
         for (int i = 0; i < entries.size(); ++i)
         {
-            if (entries[i].file.getFileNameWithoutExtension() == current)
+            if (entries[i].file.getFileNameWithoutExtension() == restoreName)
             {
                 matchedId = i + 2;
                 break;
@@ -1527,7 +1547,7 @@ void PingEditor::refreshPresetList()
         if (matchedId >= 0)
             presetCombo.setSelectedId (matchedId, juce::dontSendNotification);
         else
-            presetCombo.setText (current, juce::dontSendNotification);
+            presetCombo.setText (restoreName, juce::dontSendNotification);
     }
 }
 
@@ -1540,6 +1560,8 @@ void PingEditor::loadPreset (const juce::String& name)
         if (file.loadFileAsData (data))
         {
             pingProcessor.setStateInformation (data.getData(), (int) data.getSize());
+            pingProcessor.setLastPresetName (name);
+            pingProcessor.setPresetDirty (false);
             reverseButton.setToggleState (pingProcessor.getReverse(), juce::dontSendNotification);
             irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
             updateIRComboSelection();
@@ -1634,9 +1656,10 @@ void PingEditor::savePreset (const juce::String& name)
 {
     if (irSynthComponent.isVisible())
         pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
+    juce::String trimmedName = name.trim();
+    pingProcessor.setLastPresetName (trimmedName);
     juce::MemoryBlock data;
     pingProcessor.getStateInformation (data);
-    juce::String trimmedName = name.trim();
 
     auto targetDir = PresetManager::getPresetDirectory();
     targetDir.createDirectory();
@@ -1662,19 +1685,48 @@ void PingEditor::savePreset (const juce::String& name)
 
         juce::AlertWindow::showAsync (options, [this, fileToWrite, payload] (int result) mutable
         {
-            if (result != 1) // 1 == first button clicked ("Overwrite")
+            if (result != 1)
                 return;
 
             if (fileToWrite.replaceWithData (payload.getData(), payload.getSize()))
+            {
+                pingProcessor.setPresetDirty (false);
                 refreshPresetList();
+            }
         });
         return;
     }
 
     if (file.replaceWithData (data.getData(), data.getSize()))
     {
+        pingProcessor.setPresetDirty (false);
         refreshPresetList();
     }
+}
+
+void PingEditor::showPresetSaveAsDialog (const juce::String& defaultName)
+{
+    auto* aw = new juce::AlertWindow ("Save Preset As", "Enter a name for the preset:",
+                                      juce::MessageBoxIconType::NoIcon, this);
+    aw->addTextEditor ("presetName", defaultName, "Name:");
+    aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    aw->enterModalState (true, juce::ModalCallbackFunction::create (
+        [this, aw] (int result)
+        {
+            if (result == 1)
+            {
+                juce::String name = aw->getTextEditorContents ("presetName").trim();
+                if (name.isNotEmpty())
+                {
+                    savePreset (name);
+                    pingProcessor.setPresetDirty (false);
+                    refreshPresetList();
+                }
+            }
+            delete aw;
+        }), true);
 }
 
 void PingEditor::saveSynthIR (const juce::String& name)
@@ -1722,6 +1774,8 @@ void PingEditor::finishSaveSynthIR (const juce::String& name)
         pingProcessor.getIRManager().refresh();
         pingProcessor.setSelectedIRFile (file);
         pingProcessor.loadIRFromFile (file);
+        irSynthComponent.setDirty (false);
+        pingProcessor.setIRSynthDirty (false);
         refreshIRList();
         refreshPresetList();
         irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
@@ -1740,9 +1794,22 @@ void PingEditor::timerCallback()
     outputLevelMeter.setOutputLevels (pingProcessor.getOutputLevelDb (0), pingProcessor.getOutputLevelDb (1));
     outputLevelMeter.setErLevels     (pingProcessor.getErLevelDb     (0), pingProcessor.getErLevelDb     (1));
     outputLevelMeter.setTailLevels   (pingProcessor.getTailLevelDb   (0), pingProcessor.getTailLevelDb   (1));
-    // Minimal: payload only, like LicenceScreen - no toTitleCase, no file, no stored state
     juce::String name = pingProcessor.getLicenceNameFromPayload();
     licenceLabel.setText (name.isNotEmpty() ? ("Licensed to: " + name) : juce::String ("Licensed"), juce::dontSendNotification);
+
+    if (! presetCombo.hasKeyboardFocus (true) && ! presetCombo.isPopupActive())
+    {
+        juce::String txt = presetCombo.getText();
+        if (pingProcessor.isPresetDirty())
+        {
+            if (! txt.endsWith (" *"))
+                presetCombo.setText (txt + " *", juce::dontSendNotification);
+        }
+        else if (txt.endsWith (" *"))
+        {
+            presetCombo.setText (txt.dropLastCharacters (2), juce::dontSendNotification);
+        }
+    }
 }
 
 void PingEditor::updateAllReadouts()

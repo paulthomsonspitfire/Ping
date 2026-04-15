@@ -44,6 +44,9 @@ public:
     /** Returns the current main-page ER/Tail levels in dB for baked renders. */
     void setBakeLevelsGetter (std::function<std::pair<float, float>()> fn) { bakeLevelsGetter = std::move (fn); }
 
+    /** Called whenever any IR synth parameter is modified by the user. */
+    void setOnParamModified (std::function<void()> fn) { onParamModifiedFn = std::move (fn); }
+
     /** Refresh the IR combo from the given names (e.g. from IRManager). */
     void setIRList (const juce::StringArray& names);
 
@@ -59,6 +62,10 @@ public:
         const int id = irCombo.getSelectedId();
         return id >= 1 ? irCombo.getItemText (id) : juce::String();
     }
+
+    /** IR synth dirty state (parameters changed since last load/save/calculate). */
+    bool isDirty() const { return dirty; }
+    void setDirty (bool d) { dirty = d; }
 
     /** Current params (read from UI). */
     IRSynthParams getParams() const;
@@ -84,6 +91,7 @@ private:
     std::function<void (const juce::String&)> onSaveIRFn;
     std::function<void (int)> onLoadIRFn;
     std::function<std::pair<float, float>()> bakeLevelsGetter;
+    std::function<void()> onParamModifiedFn;
 
     // Background texture (same brushed-steel image as the main plugin UI)
     juce::Image bgTexture;
@@ -137,6 +145,9 @@ private:
     juce::ProgressBar progressBar { progressValue };
     juce::Label progressLabel;
     juce::TextButton doneButton { "Main Menu" };
+
+    bool dirty = false;
+    juce::String cleanIRName;
 
     juce::ThreadPool synthPool { 1 };
     std::atomic<bool> synthRunning { false };

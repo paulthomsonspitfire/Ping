@@ -29,11 +29,13 @@ public:
     void mouseMove (const juce::MouseEvent& e) override;
 
     void setParamsGetter (std::function<IRSynthParams()> fn) { getParams = std::move (fn); }
+    void setOnPlacementChanged (std::function<void()> fn) { onPlacementChanged = std::move (fn); }
     TransducerState getTransducerState() const { return transducers; }
     void setTransducerState (const TransducerState& t) { transducers = t; }
 
 private:
     std::function<IRSynthParams()> getParams;
+    std::function<void()> onPlacementChanged;
     TransducerState transducers;
     int dragIndex = -1;           // 0..3
     bool dragRotate = false;

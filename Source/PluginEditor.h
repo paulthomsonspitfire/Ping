@@ -36,6 +36,7 @@ private:
     void savePreset (const juce::String& name);
     void saveSynthIR (const juce::String& name);
     void finishSaveSynthIR (const juce::String& name);
+    void showPresetSaveAsDialog (const juce::String& defaultName);
     void setMainPanelControlsVisible (bool visible);
 
     PingProcessor& pingProcessor;

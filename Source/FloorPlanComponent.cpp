@@ -206,6 +206,8 @@ void FloorPlanComponent::mouseDrag (const juce::MouseEvent& e)
 
 void FloorPlanComponent::mouseUp (const juce::MouseEvent&)
 {
+    if (dragIndex >= 0 && onPlacementChanged)
+        onPlacementChanged();
     dragIndex = -1;
 }
 

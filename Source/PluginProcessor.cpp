@@ -264,11 +264,21 @@ PingProcessor::PingProcessor()
                                        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
+    apvts.state.addListener (this);
     irManager.refresh();
     loadStoredLicence();
 }
 
-PingProcessor::~PingProcessor() {}
+PingProcessor::~PingProcessor()
+{
+    apvts.state.removeListener (this);
+}
+
+void PingProcessor::valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&)
+{
+    if (! isRestoringState.load())
+        presetDirty.store (true);
+}
 
 juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParameterLayout()
 {
@@ -2179,6 +2189,8 @@ void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
         if (selectedIRFile != juce::File())
             xml->setAttribute ("irFilePath", selectedIRFile.getFullPathName());
         xml->setAttribute ("reverse", reverse);
+        if (lastPresetName.isNotEmpty())
+            xml->setAttribute ("presetName", lastPresetName);
         if (irFromSynth && rawSynthBuffer.getNumSamples() > 0)
         {
             auto* synth = xml->createNewChildElement ("synthIR");
@@ -2211,6 +2223,7 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
     {
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
         reverse = xml->getBoolAttribute ("reverse", false);
+        lastPresetName = xml->getStringAttribute ("presetName", "Default");
 
         // Restore selected IR file from saved path.
         selectedIRFile = juce::File();
@@ -2307,7 +2320,10 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
     // Clear isRestoringState AFTER all queued parameterChanged notifications have fired.
     // MessageManager::callAsync posts to the end of the message-thread FIFO; apvts.replaceState()
     // queues its async notifications before this call, so they will all be processed first.
-    juce::MessageManager::callAsync ([this]() { isRestoringState.store (false); });
+    juce::MessageManager::callAsync ([this]() {
+        isRestoringState.store (false);
+        presetDirty.store (false);
+    });
 }
 
 bool PingProcessor::isLicensed() const

@@ -7,7 +7,8 @@
 #include "IRSynthEngine.h"
 #include "LicenceVerifier.h"
 
-class PingProcessor : public juce::AudioProcessor
+class PingProcessor : public juce::AudioProcessor,
+                      private juce::ValueTree::Listener
 {
 public:
     PingProcessor();
@@ -82,6 +83,18 @@ public:
     /** Last IR Synth parameters (room, materials, placement). Persisted with plugin state. */
     const IRSynthParams& getLastIRSynthParams() const { return lastIRSynthParams; }
     void setLastIRSynthParams (const IRSynthParams& p) { lastIRSynthParams = p; }
+
+    /** Last loaded preset name — survives editor destroy/recreate and session save/load. */
+    juce::String getLastPresetName() const { return lastPresetName; }
+    void setLastPresetName (const juce::String& n) { lastPresetName = n; }
+
+    /** Preset dirty flag — set when any APVTS parameter changes after a preset load/save. */
+    bool isPresetDirty() const noexcept { return presetDirty.load(); }
+    void setPresetDirty (bool d) noexcept { presetDirty.store (d); }
+
+    /** IR Synth dirty flag — set when any synth parameter changes after an IR load/save/calculate. */
+    bool isIRSynthDirty() const noexcept { return irSynthDirty.load(); }
+    void setIRSynthDirty (bool d) noexcept { irSynthDirty.store (d); }
 
     bool isLicensed() const;
     void setLicence (const LicenceResult& result, const juce::String& serial, const juce::String& displayName = {});
@@ -296,6 +309,7 @@ private:
     float tailLfoPhase = 0.0f;
     juce::File lastLoadedIRFile;
     IRSynthParams lastIRSynthParams;
+    juce::String lastPresetName { "Default" };
 
     // IR load crossfade: prevents partial-swap distortion when switching IRs while audio plays.
     // The 8 convolvers (tsEr* / tsTail*) load asynchronously via JUCE background threads and
@@ -314,6 +328,10 @@ private:
     // Without this, a preset load causes 3 × 8 = 24 loadImpulseResponse calls in milliseconds,
     // swamping the NUPC background thread and causing persistent crackling.
     std::atomic<bool> isRestoringState { false };
+    std::atomic<bool> presetDirty { false };
+    std::atomic<bool> irSynthDirty { false };
+
+    void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override;
 
     // Set to true the first time prepareToPlay completes.  Used in setStateInformation to
     // distinguish an initial session load (prepareToPlay not yet run) from a live preset switch.
