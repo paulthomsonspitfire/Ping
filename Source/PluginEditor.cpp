@@ -1527,8 +1527,12 @@ void PingEditor::refreshPresetList()
         presetCombo.addItem (e.file.getFileNameWithoutExtension(), i + 2);
     }
 
-    // ── Restore selection from processor (survives editor destroy/recreate) ──
-    juce::String restoreName = current.isNotEmpty() ? current : pingProcessor.getLastPresetName();
+    // ── Restore selection — prefer processor's lastPresetName (authoritative after save/load) ──
+    if (current.endsWith (" *"))
+        current = current.dropLastCharacters (2);
+    juce::String authoritative = pingProcessor.getLastPresetName();
+    juce::String restoreName = authoritative.isNotEmpty() && authoritative != "Default"
+                                 ? authoritative : (current.isNotEmpty() ? current : authoritative);
     if (restoreName.isEmpty() || restoreName == "Default")
     {
         presetCombo.setSelectedId (1, juce::dontSendNotification);
@@ -1719,11 +1723,7 @@ void PingEditor::showPresetSaveAsDialog (const juce::String& defaultName)
             {
                 juce::String name = aw->getTextEditorContents ("presetName").trim();
                 if (name.isNotEmpty())
-                {
                     savePreset (name);
-                    pingProcessor.setPresetDirty (false);
-                    refreshPresetList();
-                }
             }
             delete aw;
         }), true);

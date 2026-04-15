@@ -264,17 +264,21 @@ PingProcessor::PingProcessor()
                                        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
-    apvts.state.addListener (this);
+    for (auto* param : getParameters())
+        if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (param))
+            apvts.addParameterListener (p->paramID, this);
     irManager.refresh();
     loadStoredLicence();
 }
 
 PingProcessor::~PingProcessor()
 {
-    apvts.state.removeListener (this);
+    for (auto* param : getParameters())
+        if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (param))
+            apvts.removeParameterListener (p->paramID, this);
 }
 
-void PingProcessor::valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&)
+void PingProcessor::parameterChanged (const juce::String&, float)
 {
     if (! isRestoringState.load())
         presetDirty.store (true);
@@ -587,7 +591,22 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
             reloadSynthIR();
         else if (selectedIRFile.existsAsFile())
             loadIRFromFile (selectedIRFile);
-        // else: no IR loaded yet (fresh plugin with no state) — nothing to do.
+        else if (! stateWasRestored.load())
+        {
+            auto defaultPreset = PresetManager::getSystemFactoryPresetFolder()
+                                     .getChildFile ("Halls")
+                                     .getChildFile ("Orch Beauty Med Hall.xml");
+            if (defaultPreset.existsAsFile())
+            {
+                juce::MemoryBlock data;
+                if (defaultPreset.loadFileAsData (data))
+                {
+                    setStateInformation (data.getData(), (int) data.getSize());
+                    lastPresetName = "Orch Beauty Med Hall";
+                    presetDirty.store (false);
+                }
+            }
+        }
     });
 }
 
@@ -2218,6 +2237,7 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
     // loadImpulseResponse calls in milliseconds — NUPC background thread overload → crackling.
     // callAsync clears the flag AFTER all queued notifications have been processed (FIFO).
     isRestoringState.store (true);
+    stateWasRestored.store (true);
 
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
     {

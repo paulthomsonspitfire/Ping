@@ -8,7 +8,7 @@
 #include "LicenceVerifier.h"
 
 class PingProcessor : public juce::AudioProcessor,
-                      private juce::ValueTree::Listener
+                      private juce::AudioProcessorValueTreeState::Listener
 {
 public:
     PingProcessor();
@@ -328,10 +328,11 @@ private:
     // Without this, a preset load causes 3 × 8 = 24 loadImpulseResponse calls in milliseconds,
     // swamping the NUPC background thread and causing persistent crackling.
     std::atomic<bool> isRestoringState { false };
+    std::atomic<bool> stateWasRestored { false };
     std::atomic<bool> presetDirty { false };
     std::atomic<bool> irSynthDirty { false };
 
-    void valueTreePropertyChanged (juce::ValueTree&, const juce::Identifier&) override;
+    void parameterChanged (const juce::String& parameterID, float newValue) override;
 
     // Set to true the first time prepareToPlay completes.  Used in setStateInformation to
     // distinguish an initial session load (prepareToPlay not yet run) from a live preset switch.

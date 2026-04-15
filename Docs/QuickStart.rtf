@@ -13,6 +13,31 @@
 \pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640
 \line \par
 
+\f1\fs24 macOS Security (Unsigned Plugin)\f0\fs22\par
+\par
+Because P!NG is not yet notarized by Apple, macOS will block the installer and the plugin on first run. You have two ways to allow it:\par
+\par
+\b Running the installer\b0  \'96 do not double-click the .pkg. Instead, right-click (or Control-click) the .pkg file and choose \b Open\b0 , then click \b Open\b0  again in the dialog that appears.\par
+\par
+\b Option A \'96 System Settings\b0\par
+\par
+1. After installing, open \b System Settings > Privacy & Security\b0  and scroll to the Security section at the bottom.\par
+2. You will see a message such as \'93\'93P!NG.component\'94 was blocked from use because it is not from an identified developer.\'94\par
+3. Click \b Allow Anyway\b0  and authenticate with your password.\par
+4. The first time your DAW loads P!NG it will ask you to confirm once more \'96 click \b Open\b0 .\par
+5. Repeat if a second entry appears for the VST3.\par
+\par
+\b Option B \'96 Terminal\b0\par
+\par
+Open Terminal (Applications > Utilities > Terminal) and run these two commands, entering your password when prompted:\par
+\par
+\f1\fs20     sudo xattr -rd com.apple.quarantine "/Library/Audio/Plug-Ins/Components/P!NG.component"\par
+    sudo xattr -rd com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/P!NG.vst3"\f0\fs22\par
+\par
+This removes the quarantine flag from both plugin formats at once. Rescan plugins in your DAW afterwards (in Logic: Preferences > Plug-In Manager > Reset & Rescan).\par
+\par
+\line \par
+
 \f1\fs24 IR Folder\f0\fs22\par
 \par
 P!NG loads impulse responses from:\par
