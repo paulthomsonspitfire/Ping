@@ -301,20 +301,20 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::tailLevel, "Tail",
         juce::NormalisableRange<float> (-48.0f, 6.0f, 0.1f), 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::reverseTrim, "Reverse Trim", 0.0f, 0.95f, 0.0f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Freq, "Band 0 Freq (Hz)", 20.0f, 20000.0f, 400.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Freq, "Band 0 Freq (Hz)", 20.0f, 20000.0f, 220.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Gain, "Band 0 Gain (dB)", -12.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band0Q, "Band 0 Q", 0.3f, 10.0f, 0.707f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band1Freq, "Band 1 Freq (Hz)", 20.0f, 20000.0f, 1000.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band1Freq, "Band 1 Freq (Hz)", 20.0f, 20000.0f, 1600.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band1Gain, "Band 1 Gain (dB)", -12.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band1Q, "Band 1 Q", 0.3f, 10.0f, 0.707f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band2Freq, "Band 2 Freq (Hz)", 20.0f, 20000.0f, 4000.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band2Freq, "Band 2 Freq (Hz)", 20.0f, 20000.0f, 4800.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band2Gain, "Band 2 Gain (dB)", -12.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band2Q, "Band 2 Q", 0.3f, 10.0f, 0.707f));
     // Low shelf (b3) and High shelf (b4)
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band3Freq, "Low Shelf Freq (Hz)", 20.0f, 1200.0f, 200.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band3Freq, "Low Shelf Freq (Hz)", 20.0f, 1200.0f, 80.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band3Gain, "Low Shelf Gain (dB)", -12.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band3Q, "Low Shelf Slope", 0.3f, 2.0f, 0.707f));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band4Freq, "High Shelf Freq (Hz)", 2000.0f, 20000.0f, 8000.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band4Freq, "High Shelf Freq (Hz)", 2000.0f, 20000.0f, 12000.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band4Gain, "High Shelf Gain (dB)", -12.0f, 12.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::band4Q, "High Shelf Slope", 0.3f, 2.0f, 0.707f));
     layout.add (std::make_unique<juce::AudioParameterBool> (IDs::erCrossfeedOn, "ER Crossfeed On", false));
@@ -2222,6 +2222,31 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
     {
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
+
+        // EQ frequency migration: if a band's gain is 0 dB (inactive), reset its
+        // frequency to the current default.  Old presets had different defaults
+        // (e.g. 400/1000/4000/200/8000); bands at 0 dB are inaudible, so this is
+        // a silent fixup that gives a better starting point when the user dials in gain.
+        struct BandDefault { const juce::String& freqId; const juce::String& gainId; float defaultFreq; };
+        const BandDefault bandDefaults[] = {
+            { IDs::band3Freq, IDs::band3Gain,   80.0f },
+            { IDs::band0Freq, IDs::band0Gain,  220.0f },
+            { IDs::band1Freq, IDs::band1Gain, 1600.0f },
+            { IDs::band2Freq, IDs::band2Gain, 4800.0f },
+            { IDs::band4Freq, IDs::band4Gain, 12000.0f },
+        };
+        for (const auto& bd : bandDefaults)
+        {
+            if (auto* gainParam = apvts.getRawParameterValue (bd.gainId))
+            {
+                if (std::abs (gainParam->load()) < 0.01f)
+                {
+                    if (auto* p = apvts.getParameter (bd.freqId))
+                        p->setValueNotifyingHost (p->convertTo0to1 (bd.defaultFreq));
+                }
+            }
+        }
+
         reverse = xml->getBoolAttribute ("reverse", false);
         lastPresetName = xml->getStringAttribute ("presetName", "Default");
 
