@@ -1443,7 +1443,9 @@ Section headings consume no IDs. The index into `getEntries()` is always `select
 
 Selection is restored by file path: `pingProcessor.getSelectedIRFile()` is compared against `entries[i].file`. Falls back to entry index 0 (first available) if the file is not found.
 
-### `refreshIRList()` — must use `dontSendNotification` on `clear()`
+### `refreshIRList()` — display-only, never triggers an IR reload
+
+`refreshIRList()` populates the combo items and calls `updateIRComboSelection()` to sync the selection display. It does **not** call `loadSelectedIR()`. This is critical: `refreshIRList()` is called from the editor constructor, and opening/closing/switching the plugin UI must not trigger `loadImpulseResponse` on the convolvers. Doing so arms the `irLoadFadeBlocksRemaining` crossfade counter, which fades the wet signal to silence — killing any active reverb tail every time the user opens the UI or switches tracks in the DAW. IR loading is the processor's responsibility (via `setStateInformation`, `prepareToPlay`'s `callAsync`, or explicit user actions like combo selection).
 
 `irCombo.clear()` **must** be called as `irCombo.clear(juce::dontSendNotification)`. Without this, clearing the combo fires `comboBoxChanged`, which calls `loadSelectedIR()`, which wipes `selectedIRFile` via `setSelectedIRFile(juce::File())` — destroying the restored file reference before `updateIRComboSelection()` can use it. Same issue applies to any other combo that has a listener wired up.
 

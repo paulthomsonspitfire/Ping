@@ -521,7 +521,7 @@ PingEditor::PingEditor (PingProcessor& p)
     apvts.addParameterListener ("stretch", this);
     apvts.addParameterListener ("decay", this);
 
-    refreshIRList();     // populates combo and restores selection; calls loadSelectedIR()
+    refreshIRList();     // populates combo and restores selection (display only — no IR reload)
     refreshPresetList();
     reverseButton.setToggleState (pingProcessor.getReverse(), juce::dontSendNotification);
     startTimerHz (8);
@@ -1868,33 +1868,8 @@ void PingEditor::refreshIRList()
         irCombo.addItem (e.file.getFileNameWithoutExtension(), i + 2);
     }
 
-    // ── Restore selection ─────────────────────────────────────────────────────
-    if (pingProcessor.isIRFromSynth())
-    {
-        irCombo.setSelectedId (1, juce::dontSendNotification);
-        loadSelectedIR();
-        return;
-    }
-
-    juce::File selectedFile = pingProcessor.getSelectedIRFile();
-    if (selectedFile != juce::File())
-    {
-        for (int i = 0; i < entries.size(); ++i)
-        {
-            if (entries[i].file == selectedFile)
-            {
-                irCombo.setSelectedId (i + 2, juce::dontSendNotification);
-                loadSelectedIR();
-                return;
-            }
-        }
-    }
-
-    // No saved selection or file not found — pick first available entry if any
-    if (! entries.isEmpty())
-        irCombo.setSelectedId (2, juce::dontSendNotification);
-
-    loadSelectedIR();
+    // ── Restore selection (display only — no IR reload) ─────────────────────
+    updateIRComboSelection();
 }
 
 void PingEditor::updateIRComboSelection()
