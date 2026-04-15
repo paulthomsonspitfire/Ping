@@ -118,11 +118,35 @@ PingEditor::PingEditor (PingProcessor& p)
     savePresetButton.setColour (juce::TextButton::buttonColourId, panelBg);
     savePresetButton.setColour (juce::TextButton::textColourOffId, textDim);
 
+    addAndMakeVisible (exportPresetButton);
+    exportPresetButton.setComponentID ("ExportPreset");
+    exportPresetButton.setColour (juce::TextButton::buttonColourId, panelBg);
+    exportPresetButton.setColour (juce::TextButton::textColourOffId, textDim);
+    exportPresetButton.onClick = [this] { exportPreset(); };
+
+    addAndMakeVisible (importPresetButton);
+    importPresetButton.setComponentID ("ImportPreset");
+    importPresetButton.setColour (juce::TextButton::buttonColourId, panelBg);
+    importPresetButton.setColour (juce::TextButton::textColourOffId, textDim);
+    importPresetButton.onClick = [this] { importPreset(); };
+
     addAndMakeVisible (presetLabel);
     presetLabel.setText ("PRESET", juce::dontSendNotification);
     presetLabel.setJustificationType (juce::Justification::centredRight);
     presetLabel.setColour (juce::Label::textColourId, textDim);
     presetLabel.setFont (juce::FontOptions (14.0f));
+
+    addAndMakeVisible (exportIRButton);
+    exportIRButton.setComponentID ("ExportIR");
+    exportIRButton.setColour (juce::TextButton::buttonColourId, panelBg);
+    exportIRButton.setColour (juce::TextButton::textColourOffId, textDim);
+    exportIRButton.onClick = [this] { exportIR(); };
+
+    addAndMakeVisible (importIRButton);
+    importIRButton.setComponentID ("ImportIR");
+    importIRButton.setColour (juce::TextButton::buttonColourId, panelBg);
+    importIRButton.setColour (juce::TextButton::textColourOffId, textDim);
+    importIRButton.onClick = [this] { importIR(); };
 
     addAndMakeVisible (reverseButton);
     reverseButton.setComponentID ("Reverse");
@@ -143,12 +167,14 @@ PingEditor::PingEditor (PingProcessor& p)
     irSynthButton.setColour (juce::TextButton::textColourOffId, textDim);
     irSynthButton.onClick = [this]
     {
+        const bool savedDirty = pingProcessor.isIRSynthDirty();
         irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
+        pingProcessor.setIRSynthDirty (savedDirty);
         irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
         auto selectedFile = pingProcessor.getSelectedIRFile();
         if (selectedFile != juce::File())
             irSynthComponent.setSelectedIRDisplayName (selectedFile.getFileNameWithoutExtension());
-        irSynthComponent.setDirty (pingProcessor.isIRSynthDirty());
+        irSynthComponent.setDirty (savedDirty);
         setMainPanelControlsVisible (false);
         irSynthComponent.setVisible (true);
         irSynthComponent.toFront (true);
@@ -186,6 +212,12 @@ PingEditor::PingEditor (PingProcessor& p)
     {
         saveSynthIR (name);
     });
+    irSynthComponent.setOnExportIR ([this] { exportIR(); });
+    irSynthComponent.setOnImportIR ([this]
+    {
+        importIR();
+        irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
+    });
     irSynthComponent.setOnParamModified ([this]
     {
         irSynthComponent.setDirty (true);
@@ -220,8 +252,10 @@ PingEditor::PingEditor (PingProcessor& p)
         float tailDb = tailParam != nullptr ? tailParam->load() : 0.0f;
         return std::pair<float, float> { erDb, tailDb };
     });
+    const bool savedIRSynthDirty = pingProcessor.isIRSynthDirty();
     irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
-    irSynthComponent.setDirty (pingProcessor.isIRSynthDirty());
+    pingProcessor.setIRSynthDirty (savedIRSynthDirty);
+    irSynthComponent.setDirty (savedIRSynthDirty);
 
     // Sliders - rotary style
     auto makeSlider = [this] (juce::Slider& s, const juce::String& name)
@@ -1008,17 +1042,20 @@ void PingEditor::resized()
         }
     }
 
-    // Preset combo + Save button: right-aligned in header
-    // Layout (right to left): [Save 48] [preset name 200] [PRESET label 62]
+    // Preset combo + Save/Export/Import buttons: right-aligned in header
+    // Layout (right to left): [Import 50] [Export 50] [Save 48] [preset name 200] [PRESET label 62]
     const int saveButtonW  = 48;
     const int presetComboW = 200;
+    const int eiButtonW    = 50;
     {
         const int pComboH = 24;
         const int pTopY   = topRow.getY() + (topRowH - pComboH) / 2;
-        savePresetButton.setBounds   (w - 12 - saveButtonW,                           pTopY, saveButtonW,  pComboH);
-        presetCombo.setBounds        (savePresetButton.getX() - 6 - presetComboW,     pTopY, presetComboW, pComboH);
+        importPresetButton.setBounds (w - 12 - eiButtonW,                              pTopY, eiButtonW,    pComboH);
+        exportPresetButton.setBounds (importPresetButton.getX() - 4 - eiButtonW,       pTopY, eiButtonW,    pComboH);
+        savePresetButton.setBounds   (exportPresetButton.getX() - 4 - saveButtonW,     pTopY, saveButtonW,  pComboH);
+        presetCombo.setBounds        (savePresetButton.getX() - 6 - presetComboW,      pTopY, presetComboW, pComboH);
         const int pLabelW = 62;
-        presetLabel.setBounds        (presetCombo.getX() - pLabelW - 4,               pTopY, pLabelW,      pComboH);
+        presetLabel.setBounds        (presetCombo.getX() - pLabelW - 4,                pTopY, pLabelW,      pComboH);
     }
 
     const int presetCenterX = presetCombo.getX() + presetCombo.getWidth() / 2;
@@ -1199,6 +1236,13 @@ void PingEditor::resized()
             const int waveCentreX = dryWetSlider.getBounds().getCentreX();   // = w/2
             reverseButton.setBounds (waveCentreX - wavePanelW / 2,
                                      revBtnY, revBtnW, revBtnH);
+
+            const int irEiBtnW = 56;
+            const int irEiBtnH = revBtnH;
+            const int irEiRightEdge = waveCentreX + wavePanelW / 2;
+            importIRButton.setBounds (irEiRightEdge - irEiBtnW, revBtnY, irEiBtnW, irEiBtnH);
+            exportIRButton.setBounds (importIRButton.getX() - 4 - irEiBtnW, revBtnY, irEiBtnW, irEiBtnH);
+
             waveformComponent.setBounds (waveCentreX - wavePanelW / 2, waveformY,
                                          wavePanelW, wavePanelH);
         }
@@ -1653,6 +1697,8 @@ void PingEditor::setMainPanelControlsVisible (bool visible)
     shimVolumeLabel.setVisible (visible);
     shimVolumeReadout.setVisible (visible);
     shimOnButton.setVisible (visible);
+    exportIRButton.setVisible (visible);
+    importIRButton.setVisible (visible);
 }
 
 void PingEditor::savePreset (const juce::String& name)
@@ -1726,6 +1772,195 @@ void PingEditor::showPresetSaveAsDialog (const juce::String& defaultName)
             }
             delete aw;
         }), true);
+}
+
+void PingEditor::exportPreset()
+{
+    juce::String name = presetCombo.getText().trim();
+    if (name.endsWith ("*"))
+        name = name.dropLastCharacters (1).trim();
+    if (name.isEmpty())
+        name = "Preset";
+
+    auto chooser = std::make_shared<juce::FileChooser> (
+        "Export Preset", juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
+                             .getChildFile (name + ".xml"),
+        "*.xml");
+
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode
+                          | juce::FileBrowserComponent::canSelectFiles,
+        [this, chooser] (const juce::FileChooser&)
+        {
+            auto dest = chooser->getResult();
+            if (dest == juce::File())
+                return;
+
+            if (irSynthComponent.isVisible())
+                pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
+
+            juce::MemoryBlock data;
+            pingProcessor.getStateInformation (data);
+
+            if (dest.replaceWithData (data.getData(), data.getSize()))
+                PingProcessor::fixImportedFilePermissions (dest);
+        });
+}
+
+void PingEditor::importPreset()
+{
+    auto chooser = std::make_shared<juce::FileChooser> (
+        "Import Preset",
+        juce::File::getSpecialLocation (juce::File::userDesktopDirectory),
+        "*.xml");
+
+    chooser->launchAsync (juce::FileBrowserComponent::openMode
+                          | juce::FileBrowserComponent::canSelectFiles,
+        [this, chooser] (const juce::FileChooser&)
+        {
+            auto src = chooser->getResult();
+            if (src == juce::File() || ! src.existsAsFile())
+                return;
+
+            auto targetDir = PresetManager::getPresetDirectory();
+            targetDir.createDirectory();
+
+            auto targetName = src.getFileNameWithoutExtension();
+            auto targetFile = targetDir.getChildFile (targetName + ".xml");
+
+            int suffix = 2;
+            while (targetFile.existsAsFile())
+            {
+                targetFile = targetDir.getChildFile (targetName + " (" + juce::String (suffix) + ").xml");
+                ++suffix;
+            }
+
+            if (src.copyFileTo (targetFile))
+            {
+                PingProcessor::fixImportedFilePermissions (targetFile);
+                refreshPresetList();
+                loadPreset (targetFile.getFileNameWithoutExtension());
+            }
+        });
+}
+
+void PingEditor::exportIR()
+{
+    auto selectedFile = pingProcessor.getSelectedIRFile();
+    juce::String defaultName;
+
+    if (selectedFile != juce::File() && selectedFile.existsAsFile())
+        defaultName = selectedFile.getFileNameWithoutExtension();
+    else if (pingProcessor.isIRFromSynth() && pingProcessor.getCurrentIRBuffer().getNumSamples() > 0)
+        defaultName = "Synthesized IR";
+    else
+        return;
+
+    auto chooser = std::make_shared<juce::FileChooser> (
+        "Export IR",
+        juce::File::getSpecialLocation (juce::File::userDesktopDirectory)
+            .getChildFile (defaultName + ".wav"),
+        "*.wav");
+
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode
+                          | juce::FileBrowserComponent::canSelectFiles,
+        [this, chooser, selectedFile] (const juce::FileChooser&)
+        {
+            auto dest = chooser->getResult();
+            if (dest == juce::File())
+                return;
+
+            if (selectedFile != juce::File() && selectedFile.existsAsFile())
+            {
+                selectedFile.copyFileTo (dest);
+                PingProcessor::fixImportedFilePermissions (dest);
+
+                auto srcSidecar = selectedFile.getSiblingFile (
+                    selectedFile.getFileNameWithoutExtension() + ".ping");
+                if (srcSidecar.existsAsFile())
+                {
+                    auto destSidecar = dest.getSiblingFile (
+                        dest.getFileNameWithoutExtension() + ".ping");
+                    srcSidecar.copyFileTo (destSidecar);
+                    PingProcessor::fixImportedFilePermissions (destSidecar);
+                }
+            }
+            else
+            {
+                const auto& buf = pingProcessor.getCurrentIRBuffer();
+                double sr = pingProcessor.getCurrentIRSampleRate();
+
+                juce::WavAudioFormat wavFormat;
+                auto* rawStream = new juce::FileOutputStream (dest);
+                if (! rawStream->openedOk())
+                {
+                    delete rawStream;
+                    return;
+                }
+
+                std::unique_ptr<juce::AudioFormatWriter> writer (
+                    wavFormat.createWriterFor (rawStream, sr,
+                                               (unsigned int) buf.getNumChannels(), 24, {}, 0));
+                if (writer)
+                    writer->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
+
+                PingProcessor::fixImportedFilePermissions (dest);
+            }
+        });
+}
+
+void PingEditor::importIR()
+{
+    auto chooser = std::make_shared<juce::FileChooser> (
+        "Import IR",
+        juce::File::getSpecialLocation (juce::File::userDesktopDirectory),
+        "*.wav;*.aiff;*.aif");
+
+    chooser->launchAsync (juce::FileBrowserComponent::openMode
+                          | juce::FileBrowserComponent::canSelectFiles,
+        [this, chooser] (const juce::FileChooser&)
+        {
+            auto src = chooser->getResult();
+            if (src == juce::File() || ! src.existsAsFile())
+                return;
+
+            auto targetDir = IRManager::getIRFolder();
+            if (! targetDir.exists())
+                targetDir.createDirectory();
+
+            auto targetName = src.getFileNameWithoutExtension();
+            auto targetFile = targetDir.getChildFile (targetName + src.getFileExtension());
+
+            int suffix = 2;
+            while (targetFile.existsAsFile())
+            {
+                targetFile = targetDir.getChildFile (
+                    targetName + " (" + juce::String (suffix) + ")" + src.getFileExtension());
+                ++suffix;
+            }
+
+            if (src.copyFileTo (targetFile))
+            {
+                PingProcessor::fixImportedFilePermissions (targetFile);
+
+                auto srcSidecar = src.getSiblingFile (
+                    src.getFileNameWithoutExtension() + ".ping");
+                if (srcSidecar.existsAsFile())
+                {
+                    auto destSidecar = targetFile.getSiblingFile (
+                        targetFile.getFileNameWithoutExtension() + ".ping");
+                    srcSidecar.copyFileTo (destSidecar);
+                    PingProcessor::fixImportedFilePermissions (destSidecar);
+                }
+
+                pingProcessor.getIRManager().refresh();
+                refreshIRList();
+
+                pingProcessor.setSelectedIRFile (targetFile);
+                pingProcessor.loadIRFromFile (targetFile);
+                updateIRComboSelection();
+                updateWaveform();
+            }
+        });
 }
 
 void PingEditor::saveSynthIR (const juce::String& name)

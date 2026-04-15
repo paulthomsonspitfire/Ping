@@ -71,6 +71,10 @@ public:
     /** Load IRSynthParams from a .ping sidecar if it exists. Returns default params if not found. */
     static IRSynthParams loadIRSynthParamsFromSidecar (const juce::File& irFile);
 
+    /** Fix permissions (0644) and strip macOS quarantine on an imported file.
+        Ensures the plugin can read files received via AirDrop, email, etc. */
+    static void fixImportedFilePermissions (const juce::File& f);
+
     bool getReverse() const { return reverse; }
     void setReverse (bool v) { reverse = v; }
 

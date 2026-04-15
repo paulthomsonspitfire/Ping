@@ -37,6 +37,10 @@ private:
     void saveSynthIR (const juce::String& name);
     void finishSaveSynthIR (const juce::String& name);
     void showPresetSaveAsDialog (const juce::String& defaultName);
+    void exportPreset();
+    void importPreset();
+    void exportIR();
+    void importIR();
     void setMainPanelControlsVisible (bool visible);
 
     PingProcessor& pingProcessor;
@@ -46,9 +50,13 @@ private:
     juce::Label    irComboLabel;
     juce::ComboBox presetCombo;
     juce::TextButton savePresetButton { "Save" };
+    juce::TextButton exportPresetButton { "Export" };
+    juce::TextButton importPresetButton { "Import" };
     juce::Label presetLabel;
     juce::TextButton reverseButton { "REVERSE" };
     juce::TextButton irSynthButton { "IR SYNTH" };
+    juce::TextButton exportIRButton { "Export IR" };
+    juce::TextButton importIRButton { "Import IR" };
 
     juce::Slider dryWetSlider;
     juce::Slider predelaySlider, decaySlider, modDepthSlider;

@@ -38,6 +38,12 @@ public:
     /** Called when user saves a synthesized IR. Passes name; caller saves from processor. */
     void setOnSaveIR (std::function<void (const juce::String&)> fn) { onSaveIRFn = std::move (fn); }
 
+    /** Called when user clicks Export IR. Caller handles the file chooser. */
+    void setOnExportIR (std::function<void()> fn) { onExportIRFn = std::move (fn); }
+
+    /** Called when user clicks Import IR. Caller handles the file chooser. */
+    void setOnImportIR (std::function<void()> fn) { onImportIRFn = std::move (fn); }
+
     /** Called when user selects an IR to load. Passes 0-based index into the list. */
     void setOnLoadIR (std::function<void (int)> fn) { onLoadIRFn = std::move (fn); }
 
@@ -89,6 +95,8 @@ private:
     OnCompleteFn onComplete;
     std::function<void()> onDoneFn;
     std::function<void (const juce::String&)> onSaveIRFn;
+    std::function<void()> onExportIRFn;
+    std::function<void()> onImportIRFn;
     std::function<void (int)> onLoadIRFn;
     std::function<std::pair<float, float>()> bakeLevelsGetter;
     std::function<void()> onParamModifiedFn;
@@ -140,6 +148,8 @@ private:
     juce::ComboBox irCombo;
     juce::Label irPresetLabel;
     juce::TextButton saveIRButton { "Save" };
+    juce::TextButton exportIRButton { "Export" };
+    juce::TextButton importIRButton { "Import" };
     juce::TextButton previewButton { "Calculate IR" };
     double progressValue = 0.0;
     juce::ProgressBar progressBar { progressValue };
@@ -147,6 +157,7 @@ private:
     juce::TextButton doneButton { "Main Menu" };
 
     bool dirty = false;
+    bool suppressingParamNotifications = false;
     juce::String cleanIRName;
 
     juce::ThreadPool synthPool { 1 };

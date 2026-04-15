@@ -183,7 +183,7 @@ IRSynthComponent::IRSynthComponent()
     floorPlanComponent.setParamsGetter ([this] { return getParams(); });
     floorPlanComponent.setOnPlacementChanged ([this] { if (onParamModifiedFn) onParamModifiedFn(); });
 
-    auto notifyParamChanged = [this] { if (onParamModifiedFn) onParamModifiedFn(); };
+    auto notifyParamChanged = [this] { if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn(); };
     for (auto* s : { &widthSlider, &depthSlider, &heightSlider, &windowsSlider,
                      &audienceSlider, &diffusionSlider, &organSlider, &balconiesSlider })
         s->onValueChange = notifyParamChanged;
@@ -278,6 +278,20 @@ IRSynthComponent::IRSynthComponent()
     saveIRButton.addListener (this);
     saveIRButton.setColour (juce::TextButton::buttonColourId, panelBg);
     saveIRButton.setColour (juce::TextButton::textColourOffId, textDim);
+
+    addAndMakeVisible (exportIRButton);
+    exportIRButton.setColour (juce::TextButton::buttonColourId, panelBg);
+    exportIRButton.setColour (juce::TextButton::textColourOffId, textDim);
+    exportIRButton.onClick = [this] { if (onExportIRFn) onExportIRFn(); };
+
+    addAndMakeVisible (importIRButton);
+    importIRButton.setColour (juce::TextButton::buttonColourId, panelBg);
+    importIRButton.setColour (juce::TextButton::textColourOffId, textDim);
+    importIRButton.onClick = [this]
+    {
+        if (onImportIRFn)
+            onImportIRFn();
+    };
 
     addAndMakeVisible (previewButton);
     previewButton.addListener (this);
@@ -392,10 +406,13 @@ void IRSynthComponent::resized()
     }
     const int rt60EndX = x;
 
-    // Save button at centre
+    // Save / Export / Import buttons at centre
     const int saveIRW = 50;
+    const int eiW     = 52;
     saveIRButton.setBounds (barCentreX - saveIRW / 2, barY + 6, saveIRW, 24);
-    int leftX = barCentreX + saveIRW / 2 + 12;
+    exportIRButton.setBounds (saveIRButton.getRight() + 4, barY + 6, eiW, 24);
+    importIRButton.setBounds (exportIRButton.getRight() + 4, barY + 6, eiW, 24);
+    int leftX = importIRButton.getRight() + 12;
 
     // IR combo: placed just to the left of Save button, with gap
     const int irComboW = juce::jmin (140, (int) (0.18f * barW));
@@ -405,7 +422,7 @@ void IRSynthComponent::resized()
     const int irPresetLabelW = 56;
     irPresetLabel.setBounds (irCombo.getX() - irPresetLabelW - 4, barY + 6, irPresetLabelW, 24);
 
-    // Calculate IR button just to the right of Save
+    // Calculate IR button just to the right of Export/Import
     const int previewW = 100;
     previewButton.setBounds (leftX, barY + 6, previewW, 24);
     leftX += previewW + 16;
@@ -543,6 +560,8 @@ IRSynthParams IRSynthComponent::getParams() const
 
 void IRSynthComponent::setParams (const IRSynthParams& p)
 {
+    suppressingParamNotifications = true;
+
     setComboTo (shapeCombo, p.shape, shapeOptions, 6);
     widthSlider.setValue (p.width, juce::dontSendNotification);
     depthSlider.setValue (p.depth, juce::dontSendNotification);
@@ -570,6 +589,8 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     setComboTo (micPatternCombo, p.mic_pattern, micOptions, 4);
     erOnlyButton.setToggleState (p.er_only, juce::dontSendNotification);
     sampleRateCombo.setSelectedId (p.sample_rate == 44100 ? 1 : 2, juce::dontSendNotification);
+
+    suppressingParamNotifications = false;
 }
 
 void IRSynthComponent::timerCallback()
@@ -657,7 +678,7 @@ void IRSynthComponent::comboBoxChanged (juce::ComboBox* combo)
         if (id >= 1)
             onLoadIRFn (id - 1);
     }
-    else if (combo != &irCombo && onParamModifiedFn)
+    else if (combo != &irCombo && ! suppressingParamNotifications && onParamModifiedFn)
     {
         onParamModifiedFn();
     }

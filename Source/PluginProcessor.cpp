@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <sys/stat.h>
 
 static void writeIRSynthParamsSidecar (const juce::File& wavFile, const IRSynthParams& p);
 
@@ -2206,6 +2207,15 @@ IRSynthParams PingProcessor::loadIRSynthParamsFromSidecar (const juce::File& irF
             return irSynthParamsFromXml (ir);
     }
     return IRSynthParams();
+}
+
+void PingProcessor::fixImportedFilePermissions (const juce::File& f)
+{
+    if (! f.exists()) return;
+    ::chmod (f.getFullPathName().toRawUTF8(), 0644);
+    juce::ChildProcess cp;
+    cp.start ({ "xattr", "-d", "com.apple.quarantine", f.getFullPathName() });
+    cp.waitForProcessToFinish (2000);
 }
 
 void PingProcessor::getStateInformation (juce::MemoryBlock& destData)

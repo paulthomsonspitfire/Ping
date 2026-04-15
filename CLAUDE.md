@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.4.7 (see `CMakeLists.txt`)
+**Current version:** 2.4.8 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -1267,6 +1267,7 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **EQ frequency defaults are migrated silently on preset load** — `setStateInformation` checks each EQ band after `replaceState`: if the band's gain is 0 dB (±0.01), its frequency is reset to the current default (Low 80 Hz, Mid1 220 Hz, Mid2 1600 Hz, Mid3 4800 Hz, High 12000 Hz). Bands at 0 dB have no audible effect regardless of frequency, so the reset is inaudible. This migrates old presets that had the previous defaults (200/400/1000/4000/8000) to better starting points without modifying any band the user has actually dialled in. Uses `setValueNotifyingHost` + `convertTo0to1` to correctly set the normalised value.
 - **Preset dirty indicator (" *" asterisk) on main preset combo** — `PingProcessor` implements `AudioProcessorParameter::Listener` and registers on **every** parameter in the constructor (iterating `getParameters()` + `param->addListener(this)`). `parameterValueChanged` sets `presetDirty = true` (skipped during `isRestoringState`). This fires synchronously from any thread whenever any parameter changes. The original `ValueTree::Listener` approach failed because `apvts.replaceState()` disconnects listeners from the old tree's parameter children. The intermediate `APVTS::Listener` approach also failed because its timer-based dispatch fires after `isRestoringState` is cleared. The editor timer (8 Hz) appends " *" to `presetCombo` text when dirty and the combo popup is not open, and strips it when clean. The display guard must only check `isPopupActive()` — do NOT check `hasKeyboardFocus(true)` (see the "Dirty indicator display guard" key design decision). Dirty is cleared on preset load (`loadPreset`), preset save (`savePreset`), and at the end of `setStateInformation` (via `callAsync`, same FIFO as `isRestoringState`). When Save is clicked and `presetDirty` is true, `showPresetSaveAsDialog` presents an `AlertWindow` with a text editor pre-filled with the clean name (asterisk stripped). On confirm, the preset is saved with the user-entered name and dirty is cleared. When not dirty, Save behaves as before (direct save). The asterisk is purely a display feature — always strip " *" from any combo text before using it as a name.
 - **IR Synth dirty indicator (" *" asterisk) on IR synth combo** — `IRSynthComponent` has a local `dirty` flag and a `cleanIRName` member. `PingProcessor` stores `irSynthDirty` (atomic bool) for cross-editor-lifecycle persistence. All IR synth parameter controls (8 sliders, 7 combos, erOnly toggle, FloorPlanComponent placement drag) wire change notifications through `onParamModifiedFn`, which sets both `irSynthComponent.dirty` and `processor.irSynthDirty`. Dirty is cleared on IR load from combo, IR save (`finishSaveSynthIR`). After Calculate IR, dirty is set to true (the IR is fresh but unsaved). The timer (4 Hz) appends/strips " *" on `irCombo` using the same popup-only guard as the main combo (see "Dirty indicator display guard" key design decision). When Save is clicked and dirty, an `AlertWindow` prompts for the save name (pre-filled, asterisk stripped). `FloorPlanComponent` fires `onPlacementChanged` in `mouseUp` when a transducer was being dragged. The 7 synth-parameter combos (`shapeCombo`, `floorCombo`, `ceilingCombo`, `wallCombo`, `vaultCombo`, `micPatternCombo`, `sampleRateCombo`) are registered as `ComboBox::Listener` on `IRSynthComponent`; `comboBoxChanged` fires `onParamModifiedFn` for any combo that is not `irCombo`.
+- **`IRSynthComponent::setParams` suppresses dirty notifications** — `setParams` sets `suppressingParamNotifications = true` before updating sliders and combos, and clears it after. Both the `notifyParamChanged` lambda (slider `onValueChange` + `erOnlyButton.onClick`) and `comboBoxChanged` check this flag. Without it, JUCE's internal `Value::Listener` re-entrant callbacks from `Slider::setValue` or `ComboBox::setSelectedId` (even with `dontSendNotification`) can fire `onParamModifiedFn`, setting `irSynthDirty = true`. This caused the IR Synth page to open with a spurious dirty indicator. Callers that need to preserve the dirty state across a `setParams` call (editor constructor, `irSynthButton.onClick`) save `isIRSynthDirty()` before `setParams` and restore it after — belt-and-suspenders against any notification leak.
 
 ---
 
@@ -1578,6 +1579,48 @@ The overwrite prompt fires only when the exact target file already exists and th
 
 ---
 
+## Preset and IR Import/Export
+
+Users can share presets and IRs via Export/Import buttons in the UI. The import path fixes file permissions and strips macOS quarantine attributes to prevent silent load failures.
+
+### Permission fix helper
+
+`PingProcessor::fixImportedFilePermissions(const juce::File& f)` is a static utility called by all import paths:
+1. Sets file permissions to `0644` (owner read/write, others read) via `chmod`.
+2. Strips `com.apple.quarantine` extended attribute via `xattr -d` (ignores failure if absent).
+
+Files received via AirDrop, email, Messages, or downloaded from the web may have restrictive permissions (`0600`) or quarantine attributes. JUCE's `createReaderFor` silently returns nullptr for unreadable files, causing silent load failures.
+
+### UI layout
+
+**Main editor header bar** — Export and Import buttons for presets sit to the right of the Save button, right-aligned in the header. Layout (right to left): `[Import 50] [Export 50] [Save 48] [preset combo 200] [PRESET label 62]`.
+
+**Main editor centre column** — Export IR and Import IR buttons sit in the Reverse button row, right-aligned to the waveform's right edge. Hidden when the IR Synth panel is visible (via `setMainPanelControlsVisible`).
+
+**IR Synth bottom bar** — Export and Import buttons sit between Save and Calculate IR in the bottom bar. These trigger the same `exportIR()` / `importIR()` methods on the editor via callbacks (`onExportIRFn`, `onImportIRFn`).
+
+### Export Preset
+
+Uses JUCE `FileChooser` (async save dialog). Writes the full plugin state (via `getStateInformation`) to the chosen location. The exported file is a standard JUCE binary preset (same format as user-saved presets). Synth IRs are embedded in the preset state as base64 — no separate IR file needed.
+
+### Import Preset
+
+Uses JUCE `FileChooser` (async open dialog, `.xml` filter). Copies the selected file into `~/Library/Audio/Presets/Ping/` with collision avoidance (appends ` (2)`, ` (3)`, etc.). Fixes permissions on the imported file, refreshes the preset list, and loads the imported preset.
+
+### Export IR
+
+Handles two cases:
+- **File-based IR**: Copies the `.wav` file and its `.ping` sidecar (if present) to the chosen location.
+- **Synth IR (no file on disk)**: Writes the current IR buffer as a 24-bit WAV to the chosen location.
+
+Fixes permissions on all exported files.
+
+### Import IR
+
+Uses JUCE `FileChooser` (async open dialog, `.wav`/`.aiff` filter). Copies the selected file and its `.ping` sidecar (if present, checked as a sibling file) into `~/Library/Audio/Impulse Responses/Ping/` with collision avoidance. Fixes permissions, refreshes the IR list, selects and loads the imported IR. When triggered from the IR Synth panel, also refreshes the 4-channel IR list.
+
+---
+
 ## Key design decisions — factory content
 
 - **`/Library/Application Support/` for factory content, not `~/`** — the `.pkg` installer runs as root so can write there; users cannot write there, making factory content permanently read-only. No per-user copying at launch. All users on a multi-user Mac share the same factory content automatically.
@@ -1619,3 +1662,6 @@ The overwrite prompt fires only when the exact target file already exists and th
 - **Default factory preset loads on fresh instances** — when `prepareToPlay`'s `callAsync` fires and no IR is loaded (no synth IR, no selected file, `stateWasRestored == false`), the processor loads `Orch Beauty Med Hall.xml` from the factory Halls preset folder. This gives new plugin instances a usable reverb out of the box. The `stateWasRestored` flag (set in `setStateInformation`) prevents this from overriding a DAW session restore. The default preset is loaded via `setStateInformation` so all parameters and the IR are fully initialised.
 - **Dirty detection uses `AudioProcessorParameter::Listener`, not `ValueTree::Listener` or APVTS Listener** — the processor registers as an `AudioProcessorParameter::Listener` on every parameter (iterating `getParameters()` + `param->addListener(this)`). `parameterValueChanged` fires **synchronously** from any thread whenever any parameter changes, regardless of APVTS internals. Since `presetDirty` is `std::atomic<bool>`, this is thread-safe. The original `ValueTree::Listener` on `apvts.state` failed after `replaceState()` because the listener was disconnected from the new tree's parameter children. The intermediate `AudioProcessorValueTreeState::Listener` approach also failed because it relies on a timer-based callback that can fire after `isRestoringState` is cleared, creating a race condition. `AudioProcessorParameter::Listener` fires during `replaceState` itself (while `isRestoringState` is still `true`), so the guard always works. A `hasParameterChangedSinceSnapshot()` fallback in the editor timer catches any edge cases where the listener didn't fire.
 - **Dirty indicator display guard must NOT check `hasKeyboardFocus(true)`** — the preset combo (`presetCombo`) is editable (`setEditableText(true)`), so after the user selects a preset from the dropdown, the combo's internal Label retains keyboard focus. JUCE `Slider` has `setWantsKeyboardFocus(false)` by default, so dragging a slider does NOT steal focus from the combo. JUCE `Button` has `setWantsKeyboardFocus(true)` by default, so clicking a button DOES steal focus. The timer display guard must use only `isPopupActive()` — not `hasKeyboardFocus(true)` — otherwise the asterisk will appear for button toggles but never for slider/knob moves (because the combo retains focus). The same applies to the IR Synth's `irCombo` dirty display in `IRSynthComponent::timerCallback`. Do not reintroduce `hasKeyboardFocus(true)` to either display guard.
+- **Import always copies to user directories with permission fix** — `importPreset()` copies to `~/Library/Audio/Presets/Ping/`; `importIR()` copies to `~/Library/Audio/Impulse Responses/Ping/`. Both call `fixImportedFilePermissions` (`chmod 0644` + strip quarantine) on every imported file. Collision avoidance appends ` (2)`, ` (3)`, etc. Never import directly into factory directories.
+- **Export writes to a user-chosen location** — `exportPreset()` writes the full plugin state via `getStateInformation`. `exportIR()` copies the file-based IR + sidecar, or writes the synth IR buffer as WAV. Permission fix is applied to exported files for consistency.
+- **IR Synth Export/Import buttons use editor callbacks** — `IRSynthComponent` stores `onExportIRFn` and `onImportIRFn` function objects wired to `PingEditor::exportIR()` and `PingEditor::importIR()`. The import callback also refreshes the 4-channel IR list so the newly imported IR appears in the IR Synth combo.
