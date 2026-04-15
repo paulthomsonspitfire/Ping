@@ -59,10 +59,18 @@ void IRManager::scanFolder()
             addFilesFromDir (sub, sub.getFileName(), true);
     }
 
-    // ── Pass 2: user folder (flat) ────────────────────────────────────────────
+    // ── Pass 2: user folder + one level of subcategory subfolders ──────────────
     auto userFolder = getIRFolder();
     if (userFolder.isDirectory())
+    {
         addFilesFromDir (userFolder, {}, false);
+
+        juce::Array<juce::File> userSubDirs;
+        userFolder.findChildFiles (userSubDirs, juce::File::findDirectories, false);
+        userSubDirs.sort();
+        for (const auto& sub : userSubDirs)
+            addFilesFromDir (sub, sub.getFileName(), false);
+    }
 }
 
 void IRManager::refresh()

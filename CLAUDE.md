@@ -1294,7 +1294,10 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
         Scoring Stages/
         Tight Spaces/
 
-~/Library/Audio/Impulse Responses/Ping/               ← user IRs (flat, no subcategories)
+~/Library/Audio/Impulse Responses/Ping/               ← user IRs
+    <name>.wav                       ← IRs saved with no folder
+    Vocals/                          ← user-created subfolders (optional)
+        <name>.wav
 ~/Library/Audio/Presets/Ping/  ← user presets
     <name>.xml                       ← presets saved with no folder
     Vocals/                          ← user-created subfolders (optional)
@@ -1373,7 +1376,7 @@ All legacy methods (`getDisplayNames`, `getIRFileAt`, `getIRFiles`, `getNumIRs`)
 `scanFolder()` does two passes. Factory entries come first, user entries second:
 
 1. **Factory folder** — root files (no category), then immediate subdirectories sorted alphabetically (each becomes a category name). All entries have `isFactory = true`.
-2. **User folder** — flat (no subcategories). All entries have `isFactory = false`.
+2. **User folder** — root files (no category), then immediate subdirectories sorted alphabetically (each becomes a category name). All entries have `isFactory = false`.
 
 The IR Synth panel (`IRSynthComponent`) uses `getDisplayNames4Channel()` which filters `irEntries` by channel count — it therefore automatically includes both factory and user 4-channel IRs.
 

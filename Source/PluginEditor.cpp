@@ -2329,6 +2329,7 @@ void PingEditor::refreshIRList()
 
     // ── User section ──────────────────────────────────────────────────────────
     bool userHeaderAdded = false;
+    lastCategory = {};
     for (int i = 0; i < entries.size(); ++i)
     {
         const auto& e = entries[i];
@@ -2338,6 +2339,12 @@ void PingEditor::refreshIRList()
         {
             irCombo.addSectionHeading ("Your IRs");
             userHeaderAdded = true;
+        }
+        if (e.category != lastCategory)
+        {
+            if (e.category.isNotEmpty())
+                irCombo.addSectionHeading ("  " + e.category);
+            lastCategory = e.category;
         }
         irCombo.addItem (e.file.getFileNameWithoutExtension(), i + 2);
     }
