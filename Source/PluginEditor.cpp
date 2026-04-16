@@ -182,6 +182,12 @@ PingEditor::PingEditor (PingProcessor& p)
         setMainPanelControlsVisible (false);
         irSynthComponent.setVisible (true);
         irSynthComponent.toFront (true);
+
+        juce::MessageManager::callAsync ([this, savedDirty]
+        {
+            pingProcessor.setIRSynthDirty (savedDirty);
+            irSynthComponent.setDirty (savedDirty);
+        });
     };
 
     addChildComponent (irSynthComponent);
@@ -260,6 +266,15 @@ PingEditor::PingEditor (PingProcessor& p)
     irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
     pingProcessor.setIRSynthDirty (savedIRSynthDirty);
     irSynthComponent.setDirty (savedIRSynthDirty);
+
+    juce::MessageManager::callAsync ([this]()
+    {
+        if (! irSynthComponent.isVisible())
+        {
+            pingProcessor.setIRSynthDirty (false);
+            irSynthComponent.setDirty (false);
+        }
+    });
 
     // Sliders - rotary style
     auto makeSlider = [this] (juce::Slider& s, const juce::String& name)
