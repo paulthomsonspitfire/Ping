@@ -54,6 +54,8 @@ public:
 
     /** Display names for 4-channel IRs only. Indices match getIRFiles4Channel(). */
     juce::StringArray getDisplayNames4Channel() const;
+    /** Structured entries for 4-channel IRs only, preserving category/factory metadata. */
+    juce::Array<IREntry> getEntries4Channel() const;
     /** Files that have 4 channels. */
     juce::Array<juce::File> getIRFiles4Channel() const;
     /** Get file at index into the 4-channel subset. */

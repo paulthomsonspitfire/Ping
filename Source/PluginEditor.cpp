@@ -170,7 +170,7 @@ PingEditor::PingEditor (PingProcessor& p)
         const bool savedDirty = pingProcessor.isIRSynthDirty();
         irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
         pingProcessor.setIRSynthDirty (savedDirty);
-        irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
+        irSynthComponent.setIRList (pingProcessor.getIRManager().getEntries4Channel());
         auto selectedFile = pingProcessor.getSelectedIRFile();
         if (selectedFile != juce::File())
             irSynthComponent.setSelectedIRDisplayName (selectedFile.getFileNameWithoutExtension());
@@ -222,7 +222,7 @@ PingEditor::PingEditor (PingProcessor& p)
     irSynthComponent.setOnImportIR ([this]
     {
         importIR();
-        irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
+        irSynthComponent.setIRList (pingProcessor.getIRManager().getEntries4Channel());
     });
     irSynthComponent.setOnParamModified ([this]
     {
@@ -2203,7 +2203,7 @@ void PingEditor::finishSaveSynthIR (const juce::String& name)
         pingProcessor.setIRSynthDirty (false);
         refreshIRList();
         refreshPresetList();
-        irSynthComponent.setIRList (pingProcessor.getIRManager().getDisplayNames4Channel());
+        irSynthComponent.setIRList (pingProcessor.getIRManager().getEntries4Channel());
         irSynthComponent.setSelectedIRDisplayName (name);
         updateWaveform();
     }

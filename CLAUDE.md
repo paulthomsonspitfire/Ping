@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.4.8 (see `CMakeLists.txt`)
+**Current version:** 2.4.9 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -1369,7 +1369,7 @@ static juce::File getSystemFactoryIRFolder();
 const juce::Array<IREntry>& getEntries() const;   // full structured list
 ```
 
-All legacy methods (`getDisplayNames`, `getIRFileAt`, `getIRFiles`, `getNumIRs`) are kept intact — they iterate `irEntries` extracting `.file`. `getDisplayNames4Channel()` and `getIRFiles4Channel()` used by `IRSynthComponent` are unaffected.
+All legacy methods (`getDisplayNames`, `getIRFileAt`, `getIRFiles`, `getNumIRs`) are kept intact — they iterate `irEntries` extracting `.file`. `getEntries4Channel()` returns structured `IREntry` objects (with category/factory metadata preserved) for 4-channel IRs, used by `IRSynthComponent` to build sectioned combo headings matching the main editor. `getDisplayNames4Channel()` and `getIRFiles4Channel()` are kept for backward-compatibility.
 
 ### Scan order
 
@@ -1378,7 +1378,7 @@ All legacy methods (`getDisplayNames`, `getIRFileAt`, `getIRFiles`, `getNumIRs`)
 1. **Factory folder** — root files (no category), then immediate subdirectories sorted alphabetically (each becomes a category name). All entries have `isFactory = true`.
 2. **User folder** — root files (no category), then immediate subdirectories sorted alphabetically (each becomes a category name). All entries have `isFactory = false`.
 
-The IR Synth panel (`IRSynthComponent`) uses `getDisplayNames4Channel()` which filters `irEntries` by channel count — it therefore automatically includes both factory and user 4-channel IRs.
+The IR Synth panel (`IRSynthComponent`) uses `getEntries4Channel()` which filters `irEntries` by channel count — it therefore automatically includes both factory and user 4-channel IRs. The IR Synth combo now displays the same sectioned layout (Factory / Your IRs / subcategory headings) as the main editor's IR combo. IDs are `entryIndex + 1` (section headings don't consume IDs); `comboBoxChanged` sends `onLoadIRFn(id - 1)` which maps to the same index in `getIRFiles4Channel()`.
 
 ---
 

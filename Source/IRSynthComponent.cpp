@@ -684,13 +684,54 @@ void IRSynthComponent::comboBoxChanged (juce::ComboBox* combo)
     }
 }
 
-void IRSynthComponent::setIRList (const juce::StringArray& names)
+void IRSynthComponent::setIRList (const juce::Array<IRManager::IREntry>& entries)
 {
     irCombo.clear (juce::dontSendNotification);
-    for (int i = 0; i < names.size(); ++i)
-        irCombo.addItem (names[i], i + 1);
+
+    bool factoryHeaderAdded = false;
+    juce::String lastCategory;
+    for (int i = 0; i < entries.size(); ++i)
+    {
+        const auto& e = entries[i];
+        if (! e.isFactory) break;
+
+        if (! factoryHeaderAdded)
+        {
+            irCombo.addSectionHeading ("Factory");
+            factoryHeaderAdded = true;
+        }
+        if (e.category != lastCategory)
+        {
+            if (e.category.isNotEmpty())
+                irCombo.addSectionHeading ("  " + e.category);
+            lastCategory = e.category;
+        }
+        irCombo.addItem (e.file.getFileNameWithoutExtension(), i + 1);
+    }
+
+    bool userHeaderAdded = false;
+    lastCategory = {};
+    for (int i = 0; i < entries.size(); ++i)
+    {
+        const auto& e = entries[i];
+        if (e.isFactory) continue;
+
+        if (! userHeaderAdded)
+        {
+            irCombo.addSectionHeading ("Your IRs");
+            userHeaderAdded = true;
+        }
+        if (e.category != lastCategory)
+        {
+            if (e.category.isNotEmpty())
+                irCombo.addSectionHeading ("  " + e.category);
+            lastCategory = e.category;
+        }
+        irCombo.addItem (e.file.getFileNameWithoutExtension(), i + 1);
+    }
+
     irCombo.setEditableText (true);
-    irCombo.setText ("", juce::dontSendNotification);  // Empty by default to avoid accidental overwrite
+    irCombo.setText ("", juce::dontSendNotification);
 }
 
 void IRSynthComponent::setSelectedIRDisplayName (const juce::String& name)

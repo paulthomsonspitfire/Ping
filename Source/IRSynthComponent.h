@@ -6,6 +6,7 @@
 #include <utility>
 #include "IRSynthEngine.h"
 #include "FloorPlanComponent.h"
+#include "IRManager.h"
 
 /**
  * UI component for the IR Synthesiser. Provides controls for room geometry,
@@ -53,8 +54,8 @@ public:
     /** Called whenever any IR synth parameter is modified by the user. */
     void setOnParamModified (std::function<void()> fn) { onParamModifiedFn = std::move (fn); }
 
-    /** Refresh the IR combo from the given names (e.g. from IRManager). */
-    void setIRList (const juce::StringArray& names);
+    /** Refresh the IR combo from structured 4-channel entries (preserves category/factory sections). */
+    void setIRList (const juce::Array<IRManager::IREntry>& entries);
 
     /** Set the IR combo to show the given display name (e.g. when loading from main UI). */
     void setSelectedIRDisplayName (const juce::String& name);
@@ -66,7 +67,7 @@ public:
     juce::String getSelectedIRName() const
     {
         const int id = irCombo.getSelectedId();
-        return id >= 1 ? irCombo.getItemText (id) : juce::String();
+        return id >= 1 ? irCombo.getItemText (id - 1) : juce::String();
     }
 
     /** IR synth dirty state (parameters changed since last load/save/calculate). */

@@ -120,6 +120,20 @@ juce::StringArray IRManager::getDisplayNames4Channel() const
     return names;
 }
 
+juce::Array<IRManager::IREntry> IRManager::getEntries4Channel() const
+{
+    juce::Array<IREntry> out;
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    for (const auto& e : irEntries)
+    {
+        std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (e.file));
+        if (r && r->numChannels == 4)
+            out.add (e);
+    }
+    return out;
+}
+
 juce::Array<juce::File> IRManager::getIRFiles4Channel() const
 {
     juce::Array<juce::File> out;
