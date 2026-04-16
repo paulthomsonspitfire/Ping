@@ -433,10 +433,10 @@ void IRSynthComponent::resized()
     doneButton.setBounds (rightX - doneW, barY + 6, doneW, 24);
     rightX -= doneW + 12;
 
-    // Progress bar right-justified (before Main Menu), shifted 30px left for visual balance
+    // Progress bar right-justified (before Main Menu), shifted 15px left for visual balance
     const int progW = std::min (200, rightX - leftX - 12);
-    progressBar.setBounds (rightX - progW - 30, barY + 8, progW, 16);
-    progressLabel.setBounds (rightX - progW - 30, barY + 26, progW, 14);
+    progressBar.setBounds (rightX - progW - 15, barY + 8, progW, 16);
+    progressLabel.setBounds (rightX - progW - 15, barY + 26, progW, 14);
 }
 
 void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
