@@ -100,23 +100,13 @@ PingEditor::PingEditor (PingProcessor& p)
     savePresetButton.setComponentID ("SavePreset");
     savePresetButton.onClick = [this]
     {
-        juce::String name = presetCombo.getText().trim();
-        if (name.endsWith ("*"))
-            name = name.dropLastCharacters (1).trim();
-        if (name.isEmpty())
-            return;
-
-        ensureSynthIRSaved ([this, name]
+        ensurePresetNamed ([this] (const juce::String& name)
         {
-            if (pingProcessor.isPresetDirty())
-            {
-                showPresetSaveAsDialog (name);
-            }
-            else
+            ensureSynthIRSaved ([this, name]
             {
                 savePreset (name);
                 refreshPresetList();
-            }
+            });
         });
     };
     savePresetButton.setColour (juce::TextButton::buttonColourId, panelBg);
@@ -126,7 +116,13 @@ PingEditor::PingEditor (PingProcessor& p)
     exportPresetButton.setComponentID ("ExportPreset");
     exportPresetButton.setColour (juce::TextButton::buttonColourId, panelBg);
     exportPresetButton.setColour (juce::TextButton::textColourOffId, textDim);
-    exportPresetButton.onClick = [this] { ensureSynthIRSaved ([this] { exportPreset(); }); };
+    exportPresetButton.onClick = [this]
+    {
+        ensurePresetNamed ([this] (const juce::String& name)
+        {
+            ensureSynthIRSaved ([this, name] { exportPreset (name); });
+        });
+    };
 
     addAndMakeVisible (importPresetButton);
     importPresetButton.setComponentID ("ImportPreset");
@@ -1772,22 +1768,35 @@ void PingEditor::savePreset (const juce::String& name)
     }
 }
 
-void PingEditor::showPresetSaveAsDialog (const juce::String& defaultName)
+void PingEditor::ensurePresetNamed (std::function<void (const juce::String&)> continuation)
 {
-    auto* aw = new juce::AlertWindow ("Save Preset As", "Enter a name for the preset:",
-                                      juce::MessageBoxIconType::NoIcon, this);
-    aw->addTextEditor ("presetName", defaultName, "Name:");
-    aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    juce::String current = presetCombo.getText().trim();
+    if (current.endsWith ("*"))
+        current = current.dropLastCharacters (1).trim();
+    if (current.isEmpty())
+        current = "My Preset";
+
+    auto* aw = new juce::AlertWindow (
+        "Name Your Preset",
+        "Enter a name for the preset:",
+        juce::MessageBoxIconType::NoIcon, this);
+    aw->addTextEditor ("presetName", current, "Name:");
+    aw->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
     aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
+    auto cont = std::make_shared<std::function<void (const juce::String&)>> (std::move (continuation));
+
     aw->enterModalState (true, juce::ModalCallbackFunction::create (
-        [this, aw] (int result)
+        [this, aw, cont] (int result)
         {
             if (result == 1)
             {
                 juce::String name = aw->getTextEditorContents ("presetName").trim();
                 if (name.isNotEmpty())
-                    savePreset (name);
+                {
+                    presetCombo.setText (name, juce::dontSendNotification);
+                    (*cont) (name);
+                }
             }
             delete aw;
         }), true);
@@ -1829,13 +1838,9 @@ void PingEditor::ensureSynthIRSaved (std::function<void()> continuation)
         }), true);
 }
 
-void PingEditor::exportPreset()
+void PingEditor::exportPreset (const juce::String& presetName)
 {
-    juce::String name = presetCombo.getText().trim();
-    if (name.endsWith ("*"))
-        name = name.dropLastCharacters (1).trim();
-    if (name.isEmpty())
-        name = "Preset";
+    juce::String name = presetName;
 
     auto chooser = std::make_shared<juce::FileChooser> (
         "Export Preset — choose a folder",

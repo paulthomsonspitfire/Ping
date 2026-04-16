@@ -36,9 +36,9 @@ private:
     void savePreset (const juce::String& name);
     void saveSynthIR (const juce::String& name);
     void finishSaveSynthIR (const juce::String& name);
-    void showPresetSaveAsDialog (const juce::String& defaultName);
+    void ensurePresetNamed (std::function<void (const juce::String&)> continuation);
     void ensureSynthIRSaved (std::function<void()> continuation);
-    void exportPreset();
+    void exportPreset (const juce::String& presetName);
     void importPreset();
     void exportIR();
     void importIR();
