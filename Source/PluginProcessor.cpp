@@ -2238,6 +2238,7 @@ void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
         while (auto* old = xml->getChildByName ("synthIR"))
             xml->removeChildElement (old, true);
 
+        xml->removeAttribute ("irFilePath");
         if (selectedIRFile != juce::File())
             xml->setAttribute ("irFilePath", selectedIRFile.getFullPathName());
         xml->setAttribute ("reverse", reverse);

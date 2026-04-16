@@ -1831,7 +1831,8 @@ void PingEditor::ensureSynthIRSaved (std::function<void()> continuation)
                 if (irName.isNotEmpty())
                 {
                     finishSaveSynthIR (irName);
-                    (*cont)();
+                    if (pingProcessor.getSelectedIRFile() != juce::File())
+                        (*cont)();
                 }
             }
             delete aw;
