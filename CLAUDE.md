@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.5.0 (see `CMakeLists.txt`)
+**Current version:** 2.6.0 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -77,6 +77,7 @@ g++ -std=c++17 -O2 \
 |------|--------------|
 | `Tests/PingEngineTests.cpp` | `IRSynthEngine` — determinism, output dimensions, NaN/Inf, RT60 plausibility, channel distinctness, ER-only silence, FDN decay, golden regression lock |
 | `Tests/PingDSPTests.cpp` | Hybrid-mode DSP building blocks — `SimpleAllpass` (Plate/Bloom), Cloud LFO rate spacing, Shimmer grain engine pitch and stability |
+| `Tests/PingMultiMicTests.cpp` | Multi-mic paths — IR_14 bit-identity lock, IR_15–21 aux-path engine tests, DSP_15/16/17/18/19 mixer and HP biquad (v2.6.0+, see "Multi-mic paths" section) |
 | `Tests/TestHelpers.h` | Shared utilities: `TestRng`, `windowRMS`, `hasNaNorInf`, `l2diff`, `peakFrequencyHz` |
 
 ### Test inventory
@@ -1108,6 +1109,107 @@ double rz = std::min(3.0, He * 0.9);
 These were previously `He * 0.55` for both (a symmetric geometric approximation). The 1 m / 3 m values model a standard orchestral recording setup: instruments on the floor at roughly seated/standing height, and a Decca tree or outrigger array at ~3 m above the floor. Changing these values shifts the direct-path distance and all reflection geometry, which moves the IR onset and changes IR_11's golden onset index — re-run `./PingTests "[capture]" -s` after any `sz`/`rz` change.
 
 Sidecar files: `.ping` (JSON) stored alongside each synthesised WAV, containing the `IRSynthParams` used to generate it. Loaded by `loadIRSynthParamsFromSidecar()` to recall IR Synth panel state.
+
+---
+
+## Multi-mic paths (v2.6.0)
+
+v2.6.0 extends the synthesis engine, convolution graph, UI, and state persistence so that up to four independent mic-pair IRs can be rendered from a single room: **MAIN**, **DIRECT**, **OUTRIG**, **AMBIENT**. Each path is a full 4-channel true-stereo IR (iLL, iRL, iLR, iRR). A four-strip mixer (`MicMixerComponent`) sits where `OutputLevelMeter` used to be and sums the four paths into the final wet bus.
+
+This section documents the concrete shape of that work — the deeper architectural reasoning lives in `Multi-Mic-Implementation-Brief.md` and the step-by-step task breakdown in `Multi-Mic-Work-Plan.md`.
+
+### Engine (`IRSynthEngine`)
+
+`synthIR` is a dispatcher that calls up to four helper synth functions, in parallel when any aux path is enabled:
+
+- `synthMainPath (const IRSynthParams&, IRSynthProgressFn cb)` → `IRSynthResult` (the historical body of `synthIR`, unchanged, guarded by IR_14 for bit-identity).
+- `synthExtraPath (const IRSynthParams&, sx1, sy1, sx2, sy2, rx1, ry1, rx2, ry2, rheight, sheight, pattern, angL, angR, seedBase, onProgress)` → `MicIRChannels` (OUTRIG and AMBIENT; same engine as MAIN, different placement).
+- `synthDirectPath (const IRSynthParams&)` → `MicIRChannels` (order-0 only — direct arrivals, no reflections, no FDN, shares MAIN placement and mic pattern).
+
+`synthIR` uses `std::async` for parallel dispatch. Determinism is preserved (tested by IR_16) because each path uses a distinct seed base: MAIN is 42, OUTRIG is 52, AMBIENT is 62, DIRECT is 72 — even with identical placement, the per-band RNG seeds differ so parallel ordering has no effect on the output.
+
+`IRSynthResult` gains three `MicIRChannels` members (`direct`, `outrig`, `ambient`) plus a `synthesised` bool per path. `IRSynthParams` gains per-path `*_enabled` flags and per-path placement fields: `source1_x/y`, `source2_x/y`, and so on, for each aux mic pair. When a path is disabled, its `MicIRChannels` arrive with `synthesised = false` and empty vectors — the processor skips loading those convolvers.
+
+`er_only` is **global** — setting it suppresses late energy on MAIN, DIRECT, OUTRIG, and AMBIENT simultaneously (tested by IR_21). This matches the brief's decision: if the user wants ER-only, they want it on every path.
+
+### Convolvers
+
+Each path owns a full 4-convolver quad (LL/RL/LR/RR for ER, same for Tail). For DIRECT the Tail convolvers are unused (engine produces order-0 only, so the ER split captures the entire direct-path content and the Tail buffer is silent). The processor therefore declares **16 ER convolvers + 16 Tail convolvers = 32 `juce::dsp::Convolution` objects** (plus the existing stereo fallback pair for 2-channel WAVs, making 34 total).
+
+`loadMicPathFromFile` and the `loadIRFromBuffer` extension accept a `MicPath` enum (`Main | Direct | Outrig | Ambient`) and route the ER/Tail split into the appropriate convolver group.
+
+```cpp
+enum class MicPath { Main, Direct, Outrig, Ambient };
+```
+
+Each path has its own `rawSynth*Buffer` so Reverse, Trim, Stretch, and Decay reapply correctly on any path, not just MAIN. `reloadSynthIR()` re-calls `loadIRFromBuffer` for each path that has a stored raw buffer.
+
+### processBlock — four-strip mixer
+
+After convolution, `processBlock` produces four per-path stereo buffers (MAIN sums ER+Tail + crossfeed, the three aux paths sum ER+Tail directly), runs each through its strip's HP → gain → pan, then sums into the wet bus:
+
+```
+wet[i] = Σ_p (strip_p.contributes ? post_pan_p[i] : 0)
+```
+
+Strip gates follow the brief: `pathOn && !mute && (anySolo ? solo : true)`. MAIN's `On` flag defaults `true`; aux paths default `false`, so a fresh plugin instance collapses to the old MAIN-only behaviour. DSP_19 guards this pass-through.
+
+Per-strip SmoothedValues ramp target gain to zero when the strip is gated off (20 ms) so toggles are click-free. Each strip has its own 2nd-order Butterworth high-pass (`HP2ndOrder`) — shared design across all strips, per-channel state (DSP_16/17).
+
+Peak meters are exposed as `std::atomic<float>` per path per channel (8 atomics) and read from the UI timer — no locking or blocking on the audio thread.
+
+### Parameters (new APVTS params — layered on top of the existing list)
+
+| Strip | On | Gain (dB) | Pan | Mute | Solo | HP On |
+|-------|----|-----------|-----|------|------|-------|
+| MAIN    | `mainOn` (true)    | `mainGain` (0)    | `mainPan` (0)    | `mainMute`    | `mainSolo`    | `mainHPOn` (false) |
+| DIRECT  | `directOn` (false) | `directGain` (0)  | `directPan` (0)  | `directMute`  | `directSolo`  | `directHPOn` (false) |
+| OUTRIG  | `outrigOn` (false) | `outrigGain` (0)  | `outrigPan` (0)  | `outrigMute`  | `outrigSolo`  | `outrigHPOn` (**true**) |
+| AMBIENT | `ambientOn` (false)| `ambientGain` (0) | `ambientPan` (0) | `ambientMute` | `ambientSolo` | `ambientHPOn` (**true**) |
+
+Gain range: −48 to +6 dB (0.1 dB step). Pan range: −1 to +1 (constant-power law). HP defaults to `true` on OUTRIG/AMBIENT because those paths typically capture more low-frequency rumble; `false` on MAIN/DIRECT matches their conventional mixing role.
+
+### `MicMixerComponent` (new UI)
+
+Four vertical mixer strips replacing the old `OutputLevelMeter`, same bounds (300×153, `rowStartX`, bottom of the left column). Each strip renders:
+
+- Power toggle (top) — binds to `*On`.
+- Pan knob — constant-power.
+- Vertical gain fader with integrated L/R peak meters either side — same hit-zone as a typical DAW channel strip.
+- Gain dB readout label.
+- Mute, Solo, HP small buttons below.
+
+All six controls bind directly to APVTS. The component runs an internal 30 Hz timer that reads the processor's atomic peak floats and repaints meters. No per-strip scaling on the UI side — the whole component keeps the 300×153 footprint so no other UI element moves.
+
+### State persistence
+
+`getStateInformation` / `setStateInformation` handle per-path raw buffers the same way MAIN's `rawSynthBuffer` was handled: each non-empty `rawSynth*Buffer` is base64-encoded into a `<synthIRMain>` / `<synthIRDirect>` / `<synthIROutrig>` / `<synthIRAmbient>` child element. `audioEnginePrepared` gates the restore: child buffers are captured by `setStateInformation` without calling `loadImpulseResponse`, then a `callAsync` posted from the end of `prepareToPlay` reloads every path through `loadMicPathFromFile` / `reloadMicPath` once the audio engine is fully ready.
+
+All new `*On`, `*Gain`, `*Pan`, `*Mute`, `*Solo`, `*HPOn` APVTS parameters serialise through the existing APVTS XML pathway. Old presets missing these keys get defaults from the layout, which collapse to MAIN-only — backward compat is preserved without migration code.
+
+### Tests
+
+- **IR_14** — MAIN path full-IR bit-identity regression lock, captured pre-refactor. Guards against any accidental engine change touching the MAIN path.
+- **IR_15 … IR_21** — aux-path engine tests (path structure, determinism under parallel dispatch, DIRECT order-0 only, DIRECT arrival timing, DIRECT polar colouration, OUTRIG/AMBIENT independence from MAIN, global `er_only`).
+- **DSP_15** — constant-power pan law.
+- **DSP_16 / DSP_17** — `HP2ndOrder` correctness + click-free toggle.
+- **DSP_18** — mute / solo gate logic.
+- **DSP_19** — path summation preserves MAIN-only pass-through (processBlock analogue of IR_14, uses header-only `MicPathSummer`).
+
+All these live in `Tests/PingMultiMicTests.cpp` (with DSP_16/17 on `HP2ndOrder.h`).
+
+### Key design decisions — multi-mic
+
+- **Parallel synthesis uses `std::async`** — the dispatcher launches up to 3 aux futures plus MAIN, then `.get()` each. Progress callbacks from parallel helpers are thread-safe (static mutex). Determinism is preserved (IR_16) because each helper uses a distinct seed base (42/52/62/72); RNG is local per call, not shared, so dispatch order cannot affect output.
+- **DIRECT = order-0 only, not a separate engine** — `synthDirectPath` wraps the same `calcRefs` used by MAIN with `maxOrder = 0` and skips FDN entirely. This guarantees DIRECT inherits MAIN's mic polar behaviour (tested by IR_19) and bandpass colouration, so enabling DIRECT always produces a plausible near-field tap of the same room.
+- **DIRECT shares MAIN's mic pattern and angles** — there is no `direct_pattern` parameter. This was the "share_main" option in the design Q&A and keeps the mixer conceptually as "four views of the same room", not "four separate mic setups".
+- **`er_only` is global** — it gates late-energy contributions on all four paths simultaneously (IR_21). A per-path version was considered and rejected as confusing.
+- **HP is a strip feature, not a path feature** — `HP2ndOrder` lives in the processor's mixer, not in the engine. Switching HP on/off re-enables the biquad in place; state continues to update while disabled, so re-enable is click-free (DSP_17).
+- **Defaults collapse to MAIN-only** — `directOn/outrigOn/ambientOn` all default `false`; `mainOn` defaults `true`. Existing user presets and fresh plugin instances behave exactly like v2.5.0 on first load. Only when the user explicitly enables an aux path does the mixer do any extra work.
+- **32 convolvers is not a DSP cost concern in the normal case** — unused convolvers hold empty buffers (`loadImpulseResponse` is never called for disabled paths), so `juce::dsp::Convolution::process` is a no-op memcpy. Full DSP cost only materialises when all four paths have loaded IRs *and* are contributing to the bus.
+- **`MicPath` enum lives in `PingProcessor`** — the engine layer stays JUCE-agnostic (`PING_TESTING_BUILD`), so the dispatching enum is in the processor. The engine just returns `MicIRChannels` structs and lets the caller decide where to route them.
+- **Peak meters use `std::atomic<float>`, not a FIFO** — cheap, lock-free, and the UI only needs the latest value (meters update at 30 Hz, not sample-accurate). An 8-slot atomic array is tolerable even on dense GUI refresh.
+- **DSP_19 is a header-only mixer-sum test, not a full processBlock reference** — extracting the full mixer into a JUCE-free struct would require duplicating per-strip HP/gain/pan state. Instead, `MicPathSummer` validates the accumulator semantics (silent aux paths contribute nothing, sums are linear, non-contributing strips stay out of the bus regardless of buffer content). Combined with IR_14 (MAIN engine unchanged) and DSP_15/16/17/18 (per-strip component correctness), this is sufficient to catch regressions in the mixer's add-path.
 
 ---
 
