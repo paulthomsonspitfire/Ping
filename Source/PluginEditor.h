@@ -8,7 +8,7 @@
 #include "PresetManager.h"
 #include "WaveformComponent.h"
 #include "LicenceScreen.h"
-#include "OutputLevelMeter.h"
+#include "MicMixerComponent.h"
 #include "IRSynthComponent.h"
 
 class PingEditor : public juce::AudioProcessorEditor,
@@ -138,7 +138,7 @@ private:
 
     WaveformComponent waveformComponent;
     IRSynthComponent irSynthComponent;
-    OutputLevelMeter outputLevelMeter;
+    MicMixerComponent micMixerComponent { pingProcessor };
     juce::Label licenceLabel;
     juce::Label versionLabel;
     juce::Image           bgTexture;

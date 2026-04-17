@@ -102,6 +102,8 @@ target_sources(Ping
         Source/FloorPlanComponent.cpp
         Source/IRSynthComponent.h
         Source/IRSynthComponent.cpp
+        Source/MicMixerComponent.h
+        Source/MicMixerComponent.cpp
 )
 
 target_compile_definitions(Ping

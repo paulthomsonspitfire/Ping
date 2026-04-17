@@ -2006,6 +2006,19 @@ float PingProcessor::getTailLevelDb (int channel) const
     return juce::Decibels::gainToDecibels (peak);
 }
 
+float PingProcessor::getPathPeak (MicPath path, int channel) const noexcept
+{
+    const std::atomic<float>* peakStore = nullptr;
+    switch (path)
+    {
+        case MicPath::Main:    peakStore = (channel == 0) ? &mainPeakL    : &mainPeakR;    break;
+        case MicPath::Direct:  peakStore = (channel == 0) ? &directPeakL  : &directPeakR;  break;
+        case MicPath::Outrig:  peakStore = (channel == 0) ? &outrigPeakL  : &outrigPeakR;  break;
+        case MicPath::Ambient: peakStore = (channel == 0) ? &ambientPeakL : &ambientPeakR; break;
+    }
+    return peakStore != nullptr ? peakStore->load() : 0.0f;
+}
+
 void PingProcessor::pushWetSampleForSpectrum (float s) noexcept
 {
     if (spectrumBlockReady.load()) return;

@@ -138,6 +138,11 @@ public:
     float getErLevelDb     (int channel) const;  // 0 = L, 1 = R
     float getTailLevelDb   (int channel) const;  // 0 = L, 1 = R
 
+    /** Per-path post-mixer peak values (0..1+). Channel 0 = L, 1 = R.
+        Updated every processBlock from the per-path mix (post gain, post pan,
+        post HP, post mute/solo gating). Used by MicMixerComponent meters. */
+    float getPathPeak (MicPath path, int channel) const noexcept;
+
     /** Pull wet-spectrum samples for GUI (lock-free). Returns num samples copied, or 0 if not ready. */
     int pullSpectrumSamples (float* dest, int maxSamples);
 

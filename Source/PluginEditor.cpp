@@ -587,7 +587,7 @@ PingEditor::PingEditor (PingProcessor& p)
     waveformComponent.setOnTrimChanged ([this] { loadSelectedIR(); });
     addAndMakeVisible (waveformComponent);
     addAndMakeVisible (eqGraph);
-    addAndMakeVisible (outputLevelMeter);
+    addAndMakeVisible (micMixerComponent);
 
     addAndMakeVisible (licenceLabel);
     licenceLabel.setJustificationType (juce::Justification::centredLeft);
@@ -1102,14 +1102,6 @@ void PingEditor::resized()
     const int presetCenterX = presetCombo.getX() + presetCombo.getWidth() / 2;
     juce::ignoreUnused (presetCenterX);
 
-    // Top-bar meter strip (thin horizontal, between spitfire and ping logo)
-    const int meterGap = 6;
-    const int meterH = 5;
-    int meterX = spitfireBounds.getRight() + meterGap;
-    int meterW = juce::jmax (0, pingBounds.getX() - meterX - meterGap);
-    int meterY = spitfireBounds.getY() + (spitfireBounds.getHeight() - meterH) / 2;
-    outputLevelMeter.setBounds (meterX, meterY, meterW, meterH);
-
     b.removeFromTop ((int) (0.01f * ch));
 
     // —— Main block: knobs (left), Dry/Wet + IR combo (centre), waveform below IR combo ——
@@ -1504,14 +1496,16 @@ void PingEditor::resized()
     licenceLabel.setBounds (12,       h - 18, w / 2 - 12, 16);
     versionLabel.setBounds (w / 2,    h - 18, w / 2 - 12, 16);
 
-    // —— Level meter panel — bottom-left ——
-    // Bottom sits 20 px above the licence label (licence at h − 18, so meter bottom = h − 38).
+    // —— Mic mixer panel — bottom-left (replaces former output meters) ——
+    // Footprint is exactly the old OutputLevelMeter 300×153 area so no other UI
+    // elements move. Per-path L/R peak meters are drawn inside each mixer strip,
+    // so the removed output-level display is preserved in form.
     {
         const int meterW = 300;
         const int meterH = 153;
         const int meterX = rowStartX;
         const int meterY = h - 38 - meterH + 15;   // = h − 176
-        outputLevelMeter.setBounds (meterX, meterY, meterW, meterH);
+        micMixerComponent.setBounds (meterX, meterY, meterW, meterH);
     }
 }
 
@@ -2241,10 +2235,7 @@ void PingEditor::timerCallback()
         pingProcessor.setLastIRSynthParams (irSynthComponent.getParams());
     updateWaveform();
     updateAllReadouts();
-    outputLevelMeter.setInputLevels  (pingProcessor.getInputLevelDb  (0), pingProcessor.getInputLevelDb  (1));
-    outputLevelMeter.setOutputLevels (pingProcessor.getOutputLevelDb (0), pingProcessor.getOutputLevelDb (1));
-    outputLevelMeter.setErLevels     (pingProcessor.getErLevelDb     (0), pingProcessor.getErLevelDb     (1));
-    outputLevelMeter.setTailLevels   (pingProcessor.getTailLevelDb   (0), pingProcessor.getTailLevelDb   (1));
+    // Per-path peak meters are updated inside MicMixerComponent's own 30 Hz timer.
     juce::String name = pingProcessor.getLicenceNameFromPayload();
     licenceLabel.setText (name.isNotEmpty() ? ("Licensed to: " + name) : juce::String ("Licensed"), juce::dontSendNotification);
 
