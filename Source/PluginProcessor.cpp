@@ -1577,7 +1577,11 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         // ── MAIN ────────────────────────────────────────────────────────────
         float mainPkL = 0.f, mainPkR = 0.f;
         float erPkL = 0.f, erPkR = 0.f, tailPkL = 0.f, tailPkR = 0.f;
-        if (mainOnRaw)
+        // Gated on mainIRLoaded: juce::dsp::Convolution defaults to a unity IR
+        // (pass-through) before loadImpulseResponse(); without this gate, enabling
+        // MAIN before any IR exists would feed the post-predelay dry signal straight
+        // into the wet bus.
+        if (mainOnRaw && mainIRLoaded.load())
         {
             juce::AudioBuffer<float> lEr (1, numSamples), rEr (1, numSamples);
             juce::AudioBuffer<float> lTail (1, numSamples), rTail (1, numSamples);
@@ -1680,8 +1684,9 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         updatePeak (mainPeakR,      mainPkR);
 
         // ── DIRECT ──────────────────────────────────────────────────────────
+        // Gated on directIRLoaded — see MAIN block above for rationale.
         float directPkL = 0.f, directPkR = 0.f;
-        if (directOnRaw)
+        if (directOnRaw && directIRLoaded.load())
         {
             juce::AudioBuffer<float> dL (1, numSamples), dR (1, numSamples);
             runFour (tsDirectConvLL, tsDirectConvRL, tsDirectConvLR, tsDirectConvRR, dL, dR);
@@ -1715,8 +1720,9 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         updatePeak (directPeakR, directPkR);
 
         // ── OUTRIG ──────────────────────────────────────────────────────────
+        // Gated on outrigIRLoaded — see MAIN block above for rationale.
         float outrigPkL = 0.f, outrigPkR = 0.f;
-        if (outrigOnRaw)
+        if (outrigOnRaw && outrigIRLoaded.load())
         {
             juce::AudioBuffer<float> oEL (1, numSamples), oER (1, numSamples);
             juce::AudioBuffer<float> oTL (1, numSamples), oTR (1, numSamples);
@@ -1754,8 +1760,9 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         updatePeak (outrigPeakR, outrigPkR);
 
         // ── AMBIENT ─────────────────────────────────────────────────────────
+        // Gated on ambientIRLoaded — see MAIN block above for rationale.
         float ambientPkL = 0.f, ambientPkR = 0.f;
-        if (ambientOnRaw)
+        if (ambientOnRaw && ambientIRLoaded.load())
         {
             juce::AudioBuffer<float> aEL (1, numSamples), aER (1, numSamples);
             juce::AudioBuffer<float> aTL (1, numSamples), aTR (1, numSamples);
@@ -2255,6 +2262,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no,
                 juce::dsp::Convolution::Normalise::no);
         }
+        directIRLoaded.store (true);
         return;
     }
 
@@ -2564,6 +2572,10 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             tsTail[c]->loadImpulseResponse (makeMonoTail (c), bufferSampleRate,
                 juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no,
                 juce::dsp::Convolution::Normalise::no);
+
+        if      (path == MicPath::Main)    mainIRLoaded   .store (true);
+        else if (path == MicPath::Outrig)  outrigIRLoaded .store (true);
+        else if (path == MicPath::Ambient) ambientIRLoaded.store (true);
 
         // Build a stereo combined-tail IR for the regular tailConvolver (main path only —
         // this convolver drives the waveform thumbnail / secondary tail. Non-main mic paths

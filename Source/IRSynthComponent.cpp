@@ -175,7 +175,7 @@ IRSynthComponent::IRSynthComponent()
     bakeBalanceButton.addListener (this);
     bakeBalanceButton.setColour (juce::TextButton::buttonColourId, panelBg);
     bakeBalanceButton.setColour (juce::TextButton::textColourOffId, textDim);
-    micPatternLabel.setText ("Mic Pattern", juce::dontSendNotification);
+    micPatternLabel.setText ("Pattern", juce::dontSendNotification);
     sampleRateLabel.setText ("Sample Rate", juce::dontSendNotification);
 
     // ── Mic path toggles + OUTRIG / AMBIENT pattern + height controls ────────
@@ -304,6 +304,21 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (ambientHeightLabel);
     addAndMakeVisible (outrigHeightReadout);
     addAndMakeVisible (ambientHeightReadout);
+
+    // Info labels used in the MAIN / DIRECT columns of the Mic Paths strip.
+    // Styled to match section headers: small, dim text.
+    addAndMakeVisible (mainPathInfoLabel);
+    mainPathInfoLabel.setText ("", juce::dontSendNotification);
+    mainPathInfoLabel.setJustificationType (juce::Justification::topLeft);
+    mainPathInfoLabel.setColour (juce::Label::textColourId, textDim);
+    mainPathInfoLabel.setFont (juce::FontOptions (10.0f));
+
+    addAndMakeVisible (directPathInfoLabel);
+    directPathInfoLabel.setText ("Order-0 only (direct arrival)\nShares MAIN pair position",
+                                 juce::dontSendNotification);
+    directPathInfoLabel.setJustificationType (juce::Justification::topLeft);
+    directPathInfoLabel.setColour (juce::Label::textColourId, textDim);
+    directPathInfoLabel.setFont (juce::FontOptions (10.0f));
 
     // Bottom bar: RT60 | IR combo + Save | Preview | Progress | Done
     const char* const rt60Freqs[] = { "125", "250", "500", "1k", "2k", "4k" };
@@ -443,10 +458,21 @@ void IRSynthComponent::paint (juce::Graphics& g)
     drawSectionHeader (interiorHeaderBounds, "Interior");
     drawSectionHeader (optionsHeaderBounds,  "Options");
     drawSectionHeader (roomHeaderBounds,     "Room Geometry");
-    drawSectionHeader (micPathsHeaderBounds, "Mic Paths");
-    drawSectionHeader (directHeaderBounds,   "Direct");
-    drawSectionHeader (outrigHeaderBounds,   "Outrigger");
-    drawSectionHeader (ambientHeaderBounds,  "Ambient");
+
+    // Mic Paths strip: thin top rule + per-column section headers.
+    if (micPathsStripBounds.getWidth() > 0)
+    {
+        g.setColour (juce::Colour (0xff2e2e2e));
+        g.drawLine ((float) micPathsStripBounds.getX(),
+                    (float) micPathsStripBounds.getY() + 0.5f,
+                    (float) micPathsStripBounds.getRight(),
+                    (float) micPathsStripBounds.getY() + 0.5f,
+                    1.0f);
+    }
+    drawSectionHeader (mainHeaderBounds,    "Main");
+    drawSectionHeader (directHeaderBounds,  "Direct");
+    drawSectionHeader (outrigHeaderBounds,  "Outrigger");
+    drawSectionHeader (ambientHeaderBounds, "Ambient");
 }
 
 void IRSynthComponent::resized()
@@ -455,6 +481,17 @@ void IRSynthComponent::resized()
     const int barH = 52;
     auto contentArea = b.removeFromTop (b.getHeight() - barH);
     auto barArea = b;
+
+    // ── Horizontal Mic Paths strip ──────────────────────────────────────────
+    // Carved off the bottom of contentArea (above barArea). Spans the full
+    // content width so MAIN / DIRECT / OUTRIG / AMBIENT read left-to-right
+    // and pair naturally with the MicMixerComponent column order on the
+    // main page. A thin gap separates it from the FloorPlan / left column
+    // above, and the bottom bar below.
+    const int stripH   = 112;   // header + toggle + 2 control rows + padding
+    const int stripGap = 8;
+    auto micStripArea = contentArea.removeFromBottom (stripH);
+    contentArea.removeFromBottom (stripGap);  // visual separation
 
     // ── Left / right column split ───────────────────────────────────────────
     // Left column: all acoustic-character + room-geometry controls (~35% width).
@@ -465,6 +502,7 @@ void IRSynthComponent::resized()
 
     layoutControls (leftCol);
     floorPlanComponent.setBounds (rightCol.reduced (8));
+    layoutMicPathsStrip (micStripArea);
 
     // ── Bottom bar ──────────────────────────────────────────────────────────
     const int barY = barArea.getY();
@@ -573,15 +611,13 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
     rowSlider (y, balconiesLabel, balconiesSlider, balconiesReadout); y += rowH + secGap;
 
     // ── OPTIONS ─────────────────────────────────────────────────────────────
-    // Mic Pattern and Sample Rate each get a label row + control row (tighter
-    // than a full combo-row, matching the old Character-tab right-column style).
+    // MAIN mic pattern has moved into the MAIN column of the Mic Paths strip
+    // (alongside Outrig/Ambient patterns), so Options here only holds Sample
+    // Rate, ER-only toggle, and the bake-balance action.
     optionsHeaderBounds = { x0, y, ctrlW, headerH };
     y += headerH + 2;
 
     const int optComboW = juce::jmin (140, comboW);
-
-    micPatternLabel.setBounds (x0, y, ctrlW, rowH - 4);              y += rowH - 2;
-    micPatternCombo.setBounds (x0, y, optComboW, rowH);              y += rowH + secGap / 2;
 
     sampleRateLabel.setBounds (x0, y, ctrlW, rowH - 4);              y += rowH - 2;
     sampleRateCombo.setBounds (x0, y, juce::jmin (100, optComboW), rowH); y += rowH + secGap / 2;
@@ -594,52 +630,145 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
     y += headerH + 2;
 
     // Shape combo spans the full control width
-    shapeCombo.setBounds (x0, y, ctrlW, rowH);                       y += rowH + gap;
+    shapeCombo.setBounds (x0, y, ctrlW, rowH);                       y += rowH + 2;
 
-    // Dimension rows: name label + editable value label, then slider below
+    // Dimension rows: name label + slider + editable value label on a single
+    // row, matching the vertical rhythm of audience/diffusion in Contents.
     auto dimRow = [&] (juce::Label& nameLbl, juce::Label& valueLbl, juce::Slider& slider)
     {
+        const int nameW     = 52;
         const int valueBoxW = 48;
-        nameLbl.setBounds  (x0,        y, 52,         rowH);
-        valueLbl.setBounds (x0 + 54,   y, valueBoxW,  rowH);
-        y += rowH + 2;
-        slider.setBounds   (x0,        y, ctrlW,      rowH);
-        y += rowH + gap;
+        const int sW        = juce::jmax (60, ctrlW - nameW - valueBoxW - gap * 2);
+        nameLbl .setBounds (x0,                              y, nameW,     rowH);
+        slider  .setBounds (x0 + nameW + gap,                y, sW,        rowH);
+        valueLbl.setBounds (x0 + nameW + gap + sW + gap,     y, valueBoxW, rowH);
+        y += rowH;
     };
     dimRow (widthLabel,  widthValueLabel,  widthSlider);
     dimRow (depthLabel,  depthValueLabel,  depthSlider);
     dimRow (heightLabel, heightValueLabel, heightSlider);
 
-    y += secGap;
+    // Mic paths have moved out of the left column into a horizontal strip
+    // along the bottom of the content area — see layoutMicPathsStrip().
+}
 
-    // ── MIC PATHS ────────────────────────────────────────────────────────────
-    // DIRECT / OUTRIGGER / AMBIENT — each a small sub-section with a header
-    // and a single power toggle. OUTRIGGER and AMBIENT also expose a pattern
-    // combo and a physical height slider; their L/R x/y positions are edited
-    // via the FloorPlanComponent.
-    micPathsHeaderBounds = { x0, y, ctrlW, headerH };
-    y += headerH + 4;
+void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
+{
+    // Four equal-width columns in left-to-right order: MAIN, DIRECT, OUTRIG, AMBIENT.
+    // Each column contains a section header, optional toggle, and optional control rows.
+    micPathsStripBounds = b;
 
-    // DIRECT — inherits MAIN position / pattern / angles; no extra controls.
-    directHeaderBounds = { x0, y, ctrlW, headerH };
-    directEnableButton.setBounds (x0 + ctrlW - 140, y, 140, headerH);
-    y += headerH + 2;
-    // No further DIRECT rows.
-    y += secGap;
+    const int rowH     = 22;
+    const int headerH  = 16;
+    const int labelW   = 52;   // narrower than left column (less horizontal room)
+    const int readoutW = 38;
+    const int gap      = 6;
+    const int colGap   = 10;
+    const int inset    = 6;
 
-    // OUTRIGGER — enable toggle in header row, then pattern + height rows.
-    outrigHeaderBounds = { x0, y, ctrlW, headerH };
-    outrigEnableButton.setBounds (x0 + ctrlW - 140, y, 140, headerH);
-    y += headerH + 2;
-    rowCombo  (y, outrigPatternLabel, outrigPatternCombo);               y += rowH;
-    rowSlider (y, outrigHeightLabel,  outrigHeightSlider, outrigHeightReadout); y += rowH + secGap;
+    const int stripX   = b.getX();
+    const int stripY   = b.getY() + 8;   // leave 8 px for separator line in paint()
+    const int stripW   = b.getWidth();
 
-    // AMBIENT — enable toggle in header row, then pattern + height rows.
-    ambientHeaderBounds = { x0, y, ctrlW, headerH };
-    ambientEnableButton.setBounds (x0 + ctrlW - 140, y, 140, headerH);
-    y += headerH + 2;
-    rowCombo  (y, ambientPatternLabel, ambientPatternCombo);                     y += rowH;
-    rowSlider (y, ambientHeightLabel,  ambientHeightSlider, ambientHeightReadout); y += rowH;
+    const int colW = (stripW - colGap * 3) / 4;
+
+    // Per-column helpers — capture colX so each column lays out its own controls.
+    auto layoutMainCol = [&] (int colX)
+    {
+        const int x0    = colX + inset;
+        const int ctrlW = colW - inset * 2;
+        int y = stripY;
+
+        mainHeaderBounds = { x0, y, ctrlW, headerH };
+        y += headerH + 4;
+
+        // MAIN always on — skip an enable toggle and place Pattern on the same
+        // row the Outrig/Ambient toggles occupy so the three Pattern combos
+        // line up horizontally across the strip.
+        y += rowH + 2;
+
+        micPatternLabel.setBounds (x0, y, labelW, rowH);
+        micPatternCombo.setBounds (x0 + labelW + gap, y,
+                                   ctrlW - labelW - gap, rowH);
+        y += rowH + 2;
+
+        // Info note explaining the two MAIN mics (L/R) are placed on the
+        // floor plan to the right.
+        mainPathInfoLabel.setBounds (x0, y, ctrlW, rowH);
+    };
+
+    auto layoutDirectCol = [&] (int colX)
+    {
+        const int x0    = colX + inset;
+        const int ctrlW = colW - inset * 2;
+        int y = stripY;
+
+        directHeaderBounds = { x0, y, ctrlW, headerH };
+        y += headerH + 4;
+
+        directEnableButton.setBounds (x0, y, ctrlW, rowH);
+        y += rowH + 2;
+
+        directPathInfoLabel.setBounds (x0, y, ctrlW, rowH * 2);
+    };
+
+    auto layoutOutrigCol = [&] (int colX)
+    {
+        const int x0    = colX + inset;
+        const int ctrlW = colW - inset * 2;
+        int y = stripY;
+
+        outrigHeaderBounds = { x0, y, ctrlW, headerH };
+        y += headerH + 4;
+
+        outrigEnableButton.setBounds (x0, y, ctrlW, rowH);
+        y += rowH + 2;
+
+        // Pattern row — label + combo
+        outrigPatternLabel.setBounds (x0, y, labelW, rowH);
+        outrigPatternCombo.setBounds (x0 + labelW + gap, y,
+                                      ctrlW - labelW - gap, rowH);
+        y += rowH + 2;
+
+        // Height row — label + slider + readout
+        const int slW = ctrlW - labelW - gap - readoutW - gap;
+        outrigHeightLabel.setBounds  (x0, y, labelW, rowH);
+        outrigHeightSlider.setBounds (x0 + labelW + gap, y, slW, rowH);
+        outrigHeightReadout.setBounds(x0 + labelW + gap + slW + gap, y, readoutW, rowH);
+    };
+
+    auto layoutAmbientCol = [&] (int colX)
+    {
+        const int x0    = colX + inset;
+        const int ctrlW = colW - inset * 2;
+        int y = stripY;
+
+        ambientHeaderBounds = { x0, y, ctrlW, headerH };
+        y += headerH + 4;
+
+        ambientEnableButton.setBounds (x0, y, ctrlW, rowH);
+        y += rowH + 2;
+
+        ambientPatternLabel.setBounds (x0, y, labelW, rowH);
+        ambientPatternCombo.setBounds (x0 + labelW + gap, y,
+                                       ctrlW - labelW - gap, rowH);
+        y += rowH + 2;
+
+        const int slW = ctrlW - labelW - gap - readoutW - gap;
+        ambientHeightLabel.setBounds  (x0, y, labelW, rowH);
+        ambientHeightSlider.setBounds (x0 + labelW + gap, y, slW, rowH);
+        ambientHeightReadout.setBounds(x0 + labelW + gap + slW + gap, y, readoutW, rowH);
+    };
+
+    const int col0X = stripX;
+    const int col1X = stripX + (colW + colGap) * 1;
+    const int col2X = stripX + (colW + colGap) * 2;
+    const int col3X = stripX + (colW + colGap) * 3;
+
+    layoutMainCol    (col0X);
+    layoutDirectCol  (col1X);
+    layoutOutrigCol  (col2X);
+    layoutAmbientCol (col3X);
 }
 
 IRSynthParams IRSynthComponent::getParams() const

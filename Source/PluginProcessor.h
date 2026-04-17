@@ -143,6 +143,22 @@ public:
         post HP, post mute/solo gating). Used by MicMixerComponent meters. */
     float getPathPeak (MicPath path, int channel) const noexcept;
 
+    /** True iff a real IR has been loaded for the given path (i.e. the path's
+        convolver is no longer at unity pass-through). Used by MicMixerComponent
+        to disable a strip's power switch when no IR has been calculated for
+        that path — preventing the user from enabling a silent path. */
+    bool isPathIRLoaded (MicPath path) const noexcept
+    {
+        switch (path)
+        {
+            case MicPath::Main:    return mainIRLoaded   .load();
+            case MicPath::Direct:  return directIRLoaded .load();
+            case MicPath::Outrig:  return outrigIRLoaded .load();
+            case MicPath::Ambient: return ambientIRLoaded.load();
+        }
+        return false;
+    }
+
     /** Pull wet-spectrum samples for GUI (lock-free). Returns num samples copied, or 0 if not ready. */
     int pullSpectrumSamples (float* dest, int maxSamples);
 
@@ -359,6 +375,18 @@ private:
     juce::AudioBuffer<float> rawSynthDirectBuffer;   // raw copy of last DIRECT synth IR
     juce::AudioBuffer<float> rawSynthOutrigBuffer;   // raw copy of last OUTRIG synth IR
     juce::AudioBuffer<float> rawSynthAmbientBuffer;  // raw copy of last AMBIENT synth IR
+
+    // Per-path "IR loaded" flags. Required because juce::dsp::Convolution defaults to
+    // a unity (pass-through) impulse response until loadImpulseResponse() is called.
+    // Without these flags, enabling a DIRECT/OUTRIG/AMBIENT mixer strip before that path
+    // has ever been synthesised produces a dry pass-through of the post-predelay signal
+    // instead of silence. processBlock skips the per-path mixer contribution when the
+    // corresponding flag is false; setFromSynth / loadIRFromBuffer flip it true when a
+    // real IR is loaded (or a synth path is explicitly cleared).
+    std::atomic<bool> mainIRLoaded    { false };
+    std::atomic<bool> directIRLoaded  { false };
+    std::atomic<bool> outrigIRLoaded  { false };
+    std::atomic<bool> ambientIRLoaded { false };
     double rawSynthSampleRate = 48000.0;           // shared — all four paths share the same SR
     double currentSampleRate = 48000.0;
     juce::File selectedIRFile;   // empty = synth IR or nothing loaded

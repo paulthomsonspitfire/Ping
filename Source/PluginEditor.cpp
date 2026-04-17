@@ -204,6 +204,14 @@ PingEditor::PingEditor (PingProcessor& p)
         pingProcessor.setLastIRSynthParams (irSynthComponent.getLastRenderParams());
         pingProcessor.loadIRFromBuffer (std::move (buf), (double) result.sampleRate, true);
 
+        // Calculate IR just swapped the convolver content, so the currently
+        // named preset (if any) would now audibly differ on re-save. Mark
+        // preset dirty so the main combo shows " *". Guarded against state
+        // restore via isRestoringState — editor callbacks don't normally
+        // fire during restore, but the guard is cheap insurance.
+        if (! pingProcessor.getIsRestoringState())
+            pingProcessor.setPresetDirty (true);
+
         // Multi-mic paths: if any auxiliary path was synthesised (direct, outrig,
         // ambient), load its 4-channel IR into the matching convolvers. When the
         // path was not synthesised (synthesised == false) we leave its raw buffer
@@ -274,6 +282,11 @@ PingEditor::PingEditor (PingProcessor& p)
             pingProcessor.setIRSynthDirty (false);
             refreshIRList();
             updateWaveform();
+
+            // A different IR is now loaded into the convolver, so the saved
+            // preset would restore audibly differently — mark preset dirty.
+            if (! pingProcessor.getIsRestoringState())
+                pingProcessor.setPresetDirty (true);
         }
     });
     irSynthComponent.setBakeLevelsGetter ([this]
@@ -1497,14 +1510,15 @@ void PingEditor::resized()
     versionLabel.setBounds (w / 2,    h - 18, w / 2 - 12, 16);
 
     // —— Mic mixer panel — bottom-left (replaces former output meters) ——
-    // Footprint is exactly the old OutputLevelMeter 300×153 area so no other UI
-    // elements move. Per-path L/R peak meters are drawn inside each mixer strip,
-    // so the removed output-level display is preserved in form.
+    // Width still matches the old OutputLevelMeter footprint (300 px) so other
+    // UI elements don't move horizontally, but the panel has been extended
+    // upward to close some of the gap between it and the bottom of the Bloom
+    // group box above. Per-path L/R peak meters are drawn inside each strip.
     {
         const int meterW = 300;
-        const int meterH = 153;
+        const int meterH = 208;                        // was 193 — +15 px more for a taller fader column
         const int meterX = rowStartX;
-        const int meterY = h - 38 - meterH + 15;   // = h − 176
+        const int meterY = h - 38 - 153 + 15 - 40 - 15; // bottom edge unchanged; top moved up another 15 px
         micMixerComponent.setBounds (meterX, meterY, meterW, meterH);
     }
 }
@@ -1541,6 +1555,13 @@ void PingEditor::comboBoxChanged (juce::ComboBox* combo)
             pingProcessor.setSelectedIRFile (juce::File());  // Synthesized IR selected
             irSynthComponent.setSelectedIRDisplayName ("");
         }
+
+        // User picked a different IR from the main combo — the convolver
+        // content has changed, so any currently-named preset would now
+        // restore audibly differently. `selectedIRFile` is part of preset
+        // state (getStateInformation serialises it), so mark dirty.
+        if (! pingProcessor.getIsRestoringState())
+            pingProcessor.setPresetDirty (true);
     }
     else if (combo == &presetCombo)
     {

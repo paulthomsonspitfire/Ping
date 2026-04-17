@@ -51,11 +51,12 @@ private:
         juce::Label         nameLabel;
         juce::ToggleButton  powerBtn;
         juce::Slider        panKnob;
+        juce::Label         panReadout;   // "C" / "L23" / "R17" — MIDI-style -64..+63 scale
         juce::Slider        gainFader;
         juce::Label         gainReadout;
         juce::TextButton    muteBtn      { "M" };
         juce::TextButton    soloBtn      { "S" };
-        juce::TextButton    hpBtn        { "HP" };
+        juce::TextButton    hpBtn;                  // custom HPF icon (drawn via LookAndFeel)
 
         // APVTS attachments (owning)
         std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> onAttach;

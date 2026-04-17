@@ -12,9 +12,10 @@ namespace
     // OUTRIG mics (4/5) — soft purple pair (L slightly cooler than R).
     const juce::Colour colOutrigL { 0xffb09aff };
     const juce::Colour colOutrigR { 0xffc8a6ff };
-    // AMBIENT mics (6/7) — amber pair (L slightly darker than R).
-    const juce::Colour colAmbientL { 0xffcfa95e };
-    const juce::Colour colAmbientR { 0xffe8c57a };
+    // AMBIENT mics (6/7) — fresh green pair (L slightly darker than R).
+    // Mixer strip uses the same green accent so key ↔ puck ↔ mixer all match.
+    const juce::Colour colAmbientL { 0xff6fc26f };
+    const juce::Colour colAmbientR { 0xff9ee89e };
     const juce::Colour colWall  { 0xffc8a96e };
     const juce::Colour colFill1 { 0xf214142a };
     const juce::Colour colFill2 { 0xf20c0c1e };

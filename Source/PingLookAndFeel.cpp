@@ -94,11 +94,25 @@ void PingLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b
 {
     juce::String id = button.getComponentID();
     if (id == "ERCrossfeedSwitch" || id == "TailCrossfeedSwitch" || id == "PlateSwitch"
-        || id == "BloomSwitch" || id == "CloudSwitch" || id == "ShimmerSwitch")
+        || id == "BloomSwitch" || id == "CloudSwitch" || id == "ShimmerSwitch"
+        || id == "PathPowerToggle")
     {
         auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
         bool on      = button.getToggleState();
         bool hovered = shouldDrawButtonAsHighlighted;
+
+        // Per-button accent override: mic-mixer path toggles stash their
+        // strip colour in button properties so each column can glow in its
+        // own accent (MAIN cyan, DIRECT orange, OUTRIG violet, AMBIENT green).
+        // Effect switches (Plate/Bloom/…) don't set this, so they fall back
+        // to the plugin-wide ice-blue accent.
+        juce::Colour activeAccent = accentIce;
+        juce::Colour activeLed    = accentLed;
+        if (button.getProperties().contains ("pathAccent"))
+        {
+            activeAccent = juce::Colour::fromString (button.getProperties().getWithDefault ("pathAccent", accentIce.toString()).toString());
+            activeLed    = activeAccent.brighter (0.25f);
+        }
 
         const float cx  = bounds.getCentreX();
         const float cy  = bounds.getCentreY();
@@ -125,15 +139,15 @@ void PingLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b
         // LED radial glow when on
         if (on)
         {
-            juce::ColourGradient ledGlow (accentLed.withAlpha (0.85f), cx, cy,
-                                          accentIce.withAlpha (0.0f),
+            juce::ColourGradient ledGlow (activeLed.withAlpha (0.85f), cx, cy,
+                                          activeAccent.withAlpha (0.0f),
                                           cx + bgR, cy, true);
             g.setGradientFill (ledGlow);
             g.fillEllipse (cx - bgR, cy - bgR, bgR * 2.0f, bgR * 2.0f);
         }
 
-        // Border — ice-blue when on, dim grey when off
-        juce::Colour borderCol = on ? (hovered ? accentIce.brighter (0.1f) : accentIce)
+        // Border — accent when on, dim grey when off
+        juce::Colour borderCol = on ? (hovered ? activeAccent.brighter (0.1f) : activeAccent)
                                     : (hovered ? juce::Colour (0xff606060) : juce::Colour (0xff404040));
         g.setColour (borderCol);
         g.drawEllipse (cx - bgR, cy - bgR, bgR * 2.0f, bgR * 2.0f, on ? 1.5f : 1.0f);
@@ -142,7 +156,7 @@ void PingLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b
         const float iconR   = bgR * 0.58f;   // ring radius
         const float gapHalf = 0.60f;          // ~34° gap half-angle at 12 o'clock
         const float strokeW = dim * 0.13f;    // stroke width scaled to button size
-        juce::Colour iconCol = on ? accentIce
+        juce::Colour iconCol = on ? activeAccent
                                   : (hovered ? juce::Colour (0xff888888) : juce::Colour (0xff555555));
         g.setColour (iconCol);
 
@@ -191,7 +205,94 @@ void PingLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& butto
         return;
     }
 
+    if (id == "HPFButton")
+    {
+        // Draw the standard HPF symbol: a horizontal line on the right with
+        // a diagonal slope on the left side (cuts down toward low frequencies).
+        const bool on = button.getToggleState();
+        const juce::Colour iconCol = on ? button.findColour (juce::TextButton::textColourOnId)
+                                        : button.findColour (juce::TextButton::textColourOffId);
+        auto b = button.getLocalBounds().toFloat().reduced (4.0f);
+        if (b.getWidth() < 6.f || b.getHeight() < 4.f) return;
+
+        // The symbol occupies the central horizontal band of the button.
+        const float cy       = b.getCentreY() + 1.0f; // sits slightly below centre for balance
+        const float x0       = b.getX();
+        const float x1       = b.getRight();
+        const float kneeFrac = 0.45f;                 // where the diagonal meets the flat top
+        const float kneeX    = x0 + (x1 - x0) * kneeFrac;
+        const float topY     = b.getY() + b.getHeight() * 0.12f;
+        const float strokeW  = juce::jmax (1.2f, b.getHeight() * 0.09f);
+
+        juce::Path p;
+        p.startNewSubPath (x0,    cy);       // lower-left starting point (the "down" end)
+        p.lineTo          (kneeX, topY);     // diagonal up to the knee
+        p.lineTo          (x1,    topY);     // flat top out to the right (the pass band)
+        g.setColour (iconCol);
+        g.strokePath (p, juce::PathStrokeType (strokeW, juce::PathStrokeType::curved,
+                                                juce::PathStrokeType::rounded));
+        return;
+    }
+
     juce::LookAndFeel_V4::drawButtonText (g, button, isOver, isDown);
+}
+
+void PingLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
+                                        float sliderPos, float minSliderPos, float maxSliderPos,
+                                        const juce::Slider::SliderStyle style, juce::Slider& slider)
+{
+    const juce::String id = slider.getComponentID();
+
+    // Custom column-of-dots fader used by the mic mixer strips. Matches the
+    // styling of the rotary knobs (small dots on a dark track) and lights
+    // from the bottom up to the current level in the strip accent colour.
+    if (id == "MixerFader" && style == juce::Slider::LinearVertical)
+    {
+        auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat();
+        if (bounds.getHeight() < 8.0f) return;
+
+        // Level from the slider's own value, so the visual scale matches the dB
+        // mapping exactly (including skew) regardless of the raw pixel sliderPos.
+        const float level = juce::jlimit (0.0f, 1.0f,
+            (float) slider.valueToProportionOfLength (slider.getValue()));
+
+        const juce::Colour activeCol = slider.findColour (juce::Slider::thumbColourId);
+        const juce::Colour dimCol    = trackColour.withAlpha (0.55f);
+
+        // Finer granularity than the previous column: smaller dots and more
+        // of them so the level reads as a smooth lit bar rather than big pills.
+        const float dotR = 1.5f;
+        // Aim for ~3.0 px vertical spacing between dot centres — that's 2x the
+        // dot diameter, giving a crisp rhythm without the dots merging.
+        const int numDots = juce::jlimit (20, 56, (int) std::round (bounds.getHeight() / 3.0f));
+
+        const float cx   = bounds.getCentreX();
+        // Bottom dot sits flush against the fader/meter bottom edge (the two
+        // share the same Y bounds in MicMixerComponent::layoutStrip), so the
+        // bottom of the lit column aligns pixel-exactly with the meter base.
+        const float botY = bounds.getBottom() - dotR;
+        const float topY = bounds.getY()      + dotR + 1.0f;
+        const float run  = botY - topY;
+        if (run <= 0.f) return;
+
+        int activeCount = (int) std::round (level * (float) numDots);
+        if (level > 0.001f) activeCount = juce::jmax (activeCount, 1);
+
+        for (int i = 0; i < numDots; ++i)
+        {
+            // i=0 at top (max), i=numDots-1 at bottom (min).
+            const float frac = (float) i / (float) (numDots - 1);
+            const float py   = topY + frac * run;
+            const int   fromBottomIndex = numDots - 1 - i;
+            const bool  active = fromBottomIndex < activeCount;
+            g.setColour (active ? activeCol : dimCol);
+            g.fillEllipse (cx - dotR, py - dotR, dotR * 2.0f, dotR * 2.0f);
+        }
+        return;
+    }
+
+    juce::LookAndFeel_V4::drawLinearSlider (g, x, y, width, height,
+                                            sliderPos, minSliderPos, maxSliderPos, style, slider);
 }
 
 void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
@@ -224,16 +325,45 @@ void PingLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wid
     g.setColour (juce::Colour (0x18000000));
     g.drawEllipse (centreX - knobRadius, centreY - knobRadius, knobRadius * 2, knobRadius * 2, 1.0f);
 
-    // Dotted ring around perimeter — orange for active range, grey for inactive
+    // Dotted ring around perimeter — accent for active range, grey for inactive
     const int numDots = (width >= 72) ? 36 : 28;
     const float dotRadius = (width >= 72) ? 1.8f : 1.4f;
     const float dotDist = knobRadius - 4.0f;
 
+    // Bipolar knobs (e.g. the mic mixer pan controls) light up from the
+    // 12 o'clock midpoint outward toward the current position, so centre
+    // reads as zero and both sides can be distinguished visually.
+    const bool bipolar = slider.getComponentID() == "PanKnob";
+    const float midAngle = 0.5f * (rotaryStartAngle + rotaryEndAngle);
+    // Tolerance for "exactly at centre" — about half a dot spacing.
+    const float centreTol = 0.5f * ((rotaryEndAngle - rotaryStartAngle) / (float) numDots);
+    const bool atCentre = bipolar && std::abs (angle - midAngle) <= centreTol;
+
     for (int i = 0; i < numDots; ++i)
     {
         float a = rotaryStartAngle + (float) i / (float) numDots * (rotaryEndAngle - rotaryStartAngle);
-        bool inActiveRange = (rotaryStartAngle <= rotaryEndAngle) ? (a >= rotaryStartAngle && a <= angle)
-                                                                 : (a <= rotaryStartAngle && a >= angle);
+
+        bool inActiveRange;
+        if (bipolar)
+        {
+            if (atCentre)
+            {
+                // Light only the dot closest to 12 o'clock (midpoint).
+                inActiveRange = std::abs (a - midAngle) <= centreTol;
+            }
+            else
+            {
+                // Light dots between midpoint and current angle, in whichever direction.
+                const float lo = std::min (midAngle, angle);
+                const float hi = std::max (midAngle, angle);
+                inActiveRange = (a >= lo && a <= hi);
+            }
+        }
+        else
+        {
+            inActiveRange = (rotaryStartAngle <= rotaryEndAngle) ? (a >= rotaryStartAngle && a <= angle)
+                                                                  : (a <= rotaryStartAngle && a >= angle);
+        }
 
         g.setColour (inActiveRange ? fill : trackColour.withAlpha (0.6f));
         float px = centreX + dotDist * std::sin (a);

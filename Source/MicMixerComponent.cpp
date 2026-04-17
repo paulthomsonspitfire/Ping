@@ -14,10 +14,13 @@ namespace
     const juce::Colour kMeterBack    { 0xff151515 };
 
     // Strip accent colours matching the four mic path colours shown on the floor plan.
+    // OUTRIG pucks on the floor plan are violet (0xffb09aff / 0xffc8a6ff) and
+    // AMBIENT pucks are green (0xff6fc26f / 0xff9ee89e), so the mixer accents
+    // mirror that so the key, pucks, and mixer strip all read as one colour.
     const juce::Colour kAccentMain    { 0xff8cd6ef }; // icy blue (existing plugin accent)
     const juce::Colour kAccentDirect  { 0xffe87a2d }; // warm orange
-    const juce::Colour kAccentOutrig  { 0xff7bd67b }; // fresh green
-    const juce::Colour kAccentAmbient { 0xffc987e8 }; // soft violet
+    const juce::Colour kAccentOutrig  { 0xffc987e8 }; // soft violet (matches violet pucks)
+    const juce::Colour kAccentAmbient { 0xff7bd67b }; // fresh green (matches green pucks)
 
     constexpr float kMeterMinDb = -60.0f;
     constexpr float kMeterMaxDb =   6.0f;
@@ -59,38 +62,75 @@ void MicMixerComponent::initStrip (int idx, const StripIDs& ids)
     auto& vts = processor.getAPVTS();
 
     // ── Name label ────────────────────────────────────────────────────────
+    // Channel name is drawn as accent-coloured text — the old filled header box
+    // has been removed so the strip reads as a cleaner glance-row of labels.
     s.nameLabel.setText (ids.label, juce::dontSendNotification);
     s.nameLabel.setJustificationType (juce::Justification::centred);
-    s.nameLabel.setColour (juce::Label::textColourId, kTextBright);
+    s.nameLabel.setColour (juce::Label::textColourId, ids.accent);
     s.nameLabel.setFont (juce::FontOptions (10.0f).withStyle ("Bold"));
     s.nameLabel.setInterceptsMouseClicks (false, false);
     addAndMakeVisible (s.nameLabel);
 
     // ── Power toggle ──────────────────────────────────────────────────────
+    // Matches Plate / Bloom / Cloud / Shimmer power-button styling via
+    // PingLookAndFeel::drawToggleButton, but uses per-strip accent via a
+    // "pathAccent" property so each column glows in its own colour.
     s.powerBtn.setClickingTogglesState (true);
     s.powerBtn.setComponentID ("PathPowerToggle");
+    s.powerBtn.getProperties().set ("pathAccent", ids.accent.toString());
     s.powerBtn.setTooltip ("Path on/off");
     addAndMakeVisible (s.powerBtn);
     s.onAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>
         (vts, ids.onID, s.powerBtn);
 
     // ── Pan knob ──────────────────────────────────────────────────────────
+    // ComponentID "PanKnob" triggers bipolar dot-lighting in drawRotarySlider:
+    // dots light from the 12 o'clock midpoint outward to the current position,
+    // so centre reads as the zero reference.
     s.panKnob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     s.panKnob.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
     s.panKnob.setRotaryParameters (juce::MathConstants<float>::pi * 1.2f,
                                    juce::MathConstants<float>::pi * 2.8f,
                                    true);
+    s.panKnob.setComponentID ("PanKnob");
     s.panKnob.setColour (juce::Slider::rotarySliderFillColourId, ids.accent);
     s.panKnob.setTooltip ("Pan (L ↔ R)");
     addAndMakeVisible (s.panKnob);
     s.panAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
         (vts, ids.panID, s.panKnob);
 
+    // Pan readout label — "C" at centre, "L<n>" / "R<n>" on the MIDI-style
+    // -64..+63 scale. Placed directly below the pan knob, above the fader
+    // column so it never overlaps the fader's top dot.
+    s.panReadout.setJustificationType (juce::Justification::centred);
+    s.panReadout.setColour (juce::Label::textColourId, ids.accent);
+    s.panReadout.setFont (juce::FontOptions (8.5f));
+    s.panReadout.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (s.panReadout);
+
+    auto refreshPan = [this, idx]
+    {
+        auto& strip = strips[(size_t) idx];
+        const float raw = (float) strip.panKnob.getValue();          // -1..+1
+        juce::String txt;
+        // 0.5/64 ≈ 0.0078 — anything below this rounds to 0 on either side.
+        if (std::abs (raw) < 0.008f)                    txt = "C";
+        else if (raw < 0.f)  txt = "L" + juce::String (juce::jlimit (1, 64, (int) std::round (-raw * 64.f)));
+        else                 txt = "R" + juce::String (juce::jlimit (1, 63, (int) std::round ( raw * 63.f)));
+        strip.panReadout.setText (txt, juce::dontSendNotification);
+    };
+    s.panKnob.onValueChange = refreshPan;
+    refreshPan();
+
     // ── Gain fader ────────────────────────────────────────────────────────
+    // ComponentID "MixerFader" triggers the column-of-dots rendering in
+    // PingLookAndFeel::drawLinearSlider. `thumbColourId` is used as the
+    // lit-dot colour, matching the strip accent.
     s.gainFader.setSliderStyle (juce::Slider::LinearVertical);
     s.gainFader.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
-    s.gainFader.setColour (juce::Slider::trackColourId,           juce::Colour (0xff2a2d33));
-    s.gainFader.setColour (juce::Slider::backgroundColourId,      juce::Colour (0xff16181c));
+    s.gainFader.setComponentID ("MixerFader");
+    s.gainFader.setColour (juce::Slider::trackColourId,           juce::Colour (0x00000000));
+    s.gainFader.setColour (juce::Slider::backgroundColourId,      juce::Colour (0x00000000));
     s.gainFader.setColour (juce::Slider::thumbColourId,           ids.accent);
     s.gainFader.setTooltip ("Gain (dB)");
     addAndMakeVisible (s.gainFader);
@@ -129,6 +169,9 @@ void MicMixerComponent::initStrip (int idx, const StripIDs& ids)
     initTinyToggle (s.muteBtn,  juce::Colour (0xffdc2626)); // red when muted
     initTinyToggle (s.soloBtn,  juce::Colour (0xffe8dc28)); // yellow when soloed
     initTinyToggle (s.hpBtn,    ids.accent);                 // accent when HP engaged
+    // HPFButton componentID swaps the "HP" text for the standard HPF icon
+    // (horizontal line with a down-left diagonal) in PingLookAndFeel.
+    s.hpBtn.setComponentID ("HPFButton");
 
     s.muteBtn.setTooltip ("Mute");
     s.soloBtn.setTooltip ("Solo");
@@ -157,13 +200,14 @@ void MicMixerComponent::resized()
 
 void MicMixerComponent::layoutStrip (Strip& s, juce::Rectangle<int> area)
 {
-    // Vertical breakdown (approximate Y budget within 153-4 = 149 px):
+    // Vertical breakdown (approximate Y budget within 208-4 = 204 px):
     //   12  name
     //   14  power toggle
     //    2  gap
-    //   22  pan knob
+    //   32  pan knob   (larger — ~half the size of a typical UI knob)
+    //   10  pan readout ("C" / "L23" / "R17")
     //    2  gap
-    //   72  fader + meters column
+    //  ~106 fader + meters column   (bottom-aligned)
     //    2  gap
     //   10  gain readout
     //    2  gap
@@ -179,43 +223,53 @@ void MicMixerComponent::layoutStrip (Strip& s, juce::Rectangle<int> area)
 
     col.removeFromTop (2);
 
-    // Pan knob — small rotary, 22 px tall centred.
-    auto panRow = col.removeFromTop (22);
-    const int panSize = 22;
-    s.panKnob.setBounds (panRow.withSizeKeepingCentre (panSize, panSize));
+    // Pan knob — 32 px, left-offset within the strip so it sits over the
+    // fader column rather than centred. Readout sits directly beneath it.
+    const int panSize     = 32;
+    const int panLeftPad  = 6;       // inset from strip left edge
+    auto panRow = col.removeFromTop (panSize);
+    s.panKnob.setBounds (panRow.getX() + panLeftPad, panRow.getY(), panSize, panSize);
+    // Readout sits under the knob, same width — small text, won't crash fader top.
+    auto panReadoutRow = col.removeFromTop (10);
+    s.panReadout.setBounds (panReadoutRow.getX() + panLeftPad - 4,
+                            panReadoutRow.getY(),
+                            panSize + 8,            // slight extension so "L64" fits
+                            panReadoutRow.getHeight());
 
     col.removeFromTop (2);
 
-    // Fader block: fader on left ~55% of column width, meters on right ~45%.
+    // Bottom-up: reserve button row and gain readout first, so the fader
+    // block below is the only thing that stretches with strip height.
     auto btnRow     = col.removeFromBottom (14);
     col.removeFromBottom (2);
     auto readoutRow = col.removeFromBottom (10);
     col.removeFromBottom (2);
 
-    const int faderBlockH = col.getHeight();
-    auto faderBlock = col; // all remaining vertical space
+    // Remaining = fader + meter area. Fader takes ~60% of the width, meters
+    // ~30% (halved vs. previous ~45%) so bars read as fine ticks rather
+    // than wide blocks. Both share the same top/bottom Y so the fader's
+    // bottom dot lines up exactly with the meter's bottom edge.
+    auto faderBlock = col;
+    const int totalW     = faderBlock.getWidth();
+    const int meterAreaW = juce::jmax (10, (int) std::round (totalW * 0.28f));
+    const int gapPx      = 6;
+    const int faderAreaW = juce::jmax (16, totalW - meterAreaW - gapPx);
+    auto faderArea = faderBlock.removeFromLeft (faderAreaW);
+    faderBlock.removeFromLeft (gapPx);
+    s.meterBounds = faderBlock.withWidth (meterAreaW);
 
-    const int faderW = juce::jmax (16, (int) (faderBlock.getWidth() * 0.45f));
-    const int meterPad = 4;
-    auto faderArea = faderBlock.removeFromLeft (faderW + 8);   // 8 px breathing room around fader
-    // Meters occupy the remaining right side
-    faderBlock.removeFromLeft (meterPad);
-    s.meterBounds = faderBlock;
-
-    // Centre the actual slider widget within faderArea (narrow track)
-    const int actualFaderW = juce::jmax (10, faderW - 2);
-    s.faderBounds = faderArea.withSizeKeepingCentre (actualFaderW, faderBlockH);
+    const int actualFaderW = juce::jmax (10, faderAreaW - 2);
+    s.faderBounds = faderArea.withSizeKeepingCentre (actualFaderW, faderArea.getHeight());
     s.gainFader.setBounds (s.faderBounds);
 
-    // Readout
     s.gainReadout.setBounds (readoutRow);
 
     // Mute / Solo / HP — 3 buttons share btnRow
-    const int gap   = 2;
-    const int btnW  = (btnRow.getWidth() - 2 * gap) / 3;
-    auto b1 = btnRow.removeFromLeft (btnW); btnRow.removeFromLeft (gap);
-    auto b2 = btnRow.removeFromLeft (btnW); btnRow.removeFromLeft (gap);
-    auto b3 = btnRow; // remainder
+    const int bgap  = 2;
+    const int btnW  = (btnRow.getWidth() - 2 * bgap) / 3;
+    auto b1 = btnRow.removeFromLeft (btnW); btnRow.removeFromLeft (bgap);
+    auto b2 = btnRow.removeFromLeft (btnW); btnRow.removeFromLeft (bgap);
+    auto b3 = btnRow;
     s.muteBtn.setBounds (b1);
     s.soloBtn.setBounds (b2);
     s.hpBtn  .setBounds (b3);
@@ -237,6 +291,37 @@ void MicMixerComponent::timerCallback()
         s.displayL = (s.peakL > s.displayL) ? s.peakL : (s.displayL * decay + s.peakL * (1.f - decay));
         s.displayR = (s.peakR > s.displayR) ? s.peakR : (s.displayR * decay + s.peakR * (1.f - decay));
 
+        // Gate UI on per-path IR load state — the user can't enable a path
+        // whose IR hasn't been synthesised (Calculate IR must run with the
+        // path's "Enabled" checkbox ticked on the IR Synth page first).
+        const bool loaded = processor.isPathIRLoaded (path);
+        if (s.powerBtn.isEnabled() != loaded)
+        {
+            s.powerBtn.setEnabled (loaded);
+            // Dim the rest of the strip while no IR is available so the whole
+            // column reads as "not active" at a glance.
+            const float alpha = loaded ? 1.0f : 0.35f;
+            s.nameLabel  .setAlpha (alpha);
+            s.panKnob    .setAlpha (alpha);
+            s.panReadout .setAlpha (alpha);
+            s.gainFader  .setAlpha (alpha);
+            s.gainReadout.setAlpha (alpha);
+            s.muteBtn    .setAlpha (alpha);
+            s.soloBtn    .setAlpha (alpha);
+            s.hpBtn      .setAlpha (alpha);
+            s.muteBtn    .setEnabled (loaded);
+            s.soloBtn    .setEnabled (loaded);
+            s.hpBtn      .setEnabled (loaded);
+            s.panKnob    .setEnabled (loaded);
+            s.gainFader  .setEnabled (loaded);
+            // Power button — dim it too (the custom LookAndFeel draw override
+            // doesn't auto-dim on isEnabled() alone; setAlpha handles both).
+            s.powerBtn   .setAlpha (alpha);
+            // Tooltip hints at the reason so a new user knows where to enable it.
+            s.powerBtn.setTooltip (loaded ? juce::String ("Path on/off")
+                                          : juce::String ("IR not calculated — enable this path on the IR Synth page and press Calculate IR"));
+        }
+
         anyChange = true;
     }
     if (anyChange) repaint();
@@ -247,26 +332,18 @@ void MicMixerComponent::paint (juce::Graphics& g)
 {
     for (int i = 0; i < 4; ++i)
     {
-        auto& s   = strips[(size_t) i];
-        auto& ids = stripIDs[(size_t) i];
+        auto& s = strips[(size_t) i];
 
-        // Strip backing panel
+        // Strip backing panel — unchanged, sets the dark glass substrate.
+        // The old filled accent header stripe has been removed: the channel
+        // name itself is now drawn in the strip accent colour (via nameLabel)
+        // so the column reads as colour-at-a-glance without the heavy block.
         auto b = s.stripBounds.toFloat().reduced (1.0f);
         g.setColour (juce::Colour (0x40000000));
         g.fillRoundedRectangle (b, 3.f);
 
-        // Top header stripe in the path accent
-        const float headerH = 14.f;
-        juce::Rectangle<float> header (b.getX(), b.getY(), b.getWidth(), headerH);
-        g.setColour (ids.accent.withAlpha (0.22f));
-        g.fillRoundedRectangle (header, 3.f);
-
-        // Accent underline below header
-        g.setColour (ids.accent.withAlpha (0.75f));
-        g.fillRect (juce::Rectangle<float> (b.getX() + 4.f, b.getY() + headerH - 1.f,
-                                            b.getWidth() - 8.f, 1.f));
-
-        // Border
+        // Hairline frame — kept for column separation against the brushed
+        // steel background; too subtle to feel like a "box".
         g.setColour (kFrameColour);
         g.drawRoundedRectangle (b, 3.f, 1.0f);
 
@@ -314,8 +391,9 @@ void MicMixerComponent::paintMeters (juce::Graphics& g, const Strip& s)
             g.fillRect (fill);
         }
 
-        // Hairline frame
-        g.setColour (kFrameColour);
+        // Hairline frame — half the alpha of the strip's frame so the meter
+        // surround reads as a faint outline rather than a visible box.
+        g.setColour (kFrameColour.withMultipliedAlpha (0.5f));
         g.drawRect (rail, 1.0f);
     };
 

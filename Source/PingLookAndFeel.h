@@ -10,6 +10,9 @@ public:
     void drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
                           float sliderPos, float rotaryStartAngle, float rotaryEndAngle,
                           juce::Slider& slider) override;
+    void drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
+                           float sliderPos, float minSliderPos, float maxSliderPos,
+                           const juce::Slider::SliderStyle style, juce::Slider& slider) override;
     void drawButtonBackground (juce::Graphics& g, juce::Button& button,
                                const juce::Colour&, bool isMouseOver, bool isButtonDown) override;
     void drawToggleButton (juce::Graphics& g, juce::ToggleButton& button,

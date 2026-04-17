@@ -93,6 +93,10 @@ private:
     /** Lay out all controls within the left column. Stores section header bounds for paint(). */
     void layoutControls (juce::Rectangle<int> leftBounds);
 
+    /** Lay out the horizontal Mic Paths strip (MAIN / DIRECT / OUTRIG / AMBIENT columns)
+        along the bottom of the content area. Stores per-column header bounds for paint(). */
+    void layoutMicPathsStrip (juce::Rectangle<int> stripBounds);
+
     OnCompleteFn onComplete;
     std::function<void()> onDoneFn;
     std::function<void (const juce::String&)> onSaveIRFn;
@@ -105,14 +109,18 @@ private:
     // Background texture (same brushed-steel image as the main plugin UI)
     juce::Image bgTexture;
 
-    // Section header bounds – set in layoutControls(), read back in paint()
+    // Section header bounds – set in layoutControls()/layoutMicPathsStrip(), read back in paint()
     juce::Rectangle<int> surfacesHeaderBounds, contentsHeaderBounds,
                          interiorHeaderBounds,  optionsHeaderBounds,
                          roomHeaderBounds,
-                         micPathsHeaderBounds,
+                         // Horizontal Mic Paths strip: 4 columns of path-local controls
+                         // sitting between the floor-plan / left column above and the
+                         // bottom bar below. Each column owns its own section header.
+                         mainHeaderBounds,
                          directHeaderBounds,
                          outrigHeaderBounds,
-                         ambientHeaderBounds;
+                         ambientHeaderBounds,
+                         micPathsStripBounds;   // whole-strip rect (for top separator)
 
     // Right-column floor-plan visualiser (always visible, not tab-gated)
     FloorPlanComponent floorPlanComponent;
@@ -152,15 +160,20 @@ private:
     // DIRECT has no position/pattern/height controls — it reuses the MAIN
     // pair. OUTRIG and AMBIENT each expose a pattern combo and height
     // slider; their L/R x/y positions come from the FloorPlanComponent.
-    juce::ToggleButton directEnableButton  { "Direct path" };
-    juce::ToggleButton outrigEnableButton  { "Outrigger mics" };
-    juce::ToggleButton ambientEnableButton { "Ambient mics" };
+    juce::ToggleButton directEnableButton  { "Enabled" };
+    juce::ToggleButton outrigEnableButton  { "Enabled" };
+    juce::ToggleButton ambientEnableButton { "Enabled" };
 
     juce::ComboBox outrigPatternCombo, ambientPatternCombo;
     juce::Label    outrigPatternLabel, ambientPatternLabel;
     juce::Slider   outrigHeightSlider, ambientHeightSlider;
     juce::Label    outrigHeightLabel, ambientHeightLabel;
     juce::Label    outrigHeightReadout, ambientHeightReadout;
+
+    // Information labels shown in the MAIN and DIRECT columns of the strip.
+    // MAIN has no per-column controls (it is always synthesised and configured
+    // elsewhere); DIRECT has only an enable toggle (it inherits MAIN pair).
+    juce::Label mainPathInfoLabel, directPathInfoLabel;
 
     // Bottom bar
     juce::Label rt60Label;
