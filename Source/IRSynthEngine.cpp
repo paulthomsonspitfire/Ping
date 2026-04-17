@@ -66,20 +66,54 @@ const double IRSynthEngine::BA[8]  = { 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09,
 const double IRSynthEngine::BSA[8] = { 0.30, 0.45, 0.60, 0.72, 0.68, 0.58, 0.48, 0.40 };
 const double IRSynthEngine::AIR[8] = { 0.0003, 0.001, 0.002, 0.005, 0.011, 0.026, 0.066, 0.200 };
 
-// Mic polar pattern — verbatim from JS MIC
-static std::map<std::string, std::pair<double,double>> s_mic;
-static const std::map<std::string, std::pair<double,double>>& initMIC()
+// Mic polar pattern — per-octave-band {o, d} pairs.
+// Bands: [125, 250, 500, 1k, 2k, 4k, 8k, 16k] Hz.
+// Constraint: o + d = 1.0 at every band — on-axis gain is frequency-flat;
+// only off-axis rejection varies with frequency.
+static std::map<std::string, std::array<std::pair<double,double>, 8>> s_mic;
+static const std::map<std::string, std::array<std::pair<double,double>, 8>>& initMIC()
 {
     if (s_mic.empty())
     {
-        s_mic["omni"]       = {1.0, 0.0};
-        s_mic["subcardioid"]= {0.7, 0.3};
-        s_mic["cardioid"]   = {0.5, 0.5};
-        s_mic["figure8"]    = {0.0, 1.0};
+        // Values derived from published polar pattern measurements for each mic family.
+
+        // Pure pressure transducer — omnidirectional at all frequencies
+        s_mic["omni"] = {{
+            {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00},
+            {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00}
+        }};
+
+        // Wide pickup, broadens further at low end
+        s_mic["subcardioid"] = {{
+            {0.85, 0.15}, {0.82, 0.18}, {0.78, 0.22}, {0.70, 0.30},
+            {0.65, 0.35}, {0.60, 0.40}, {0.55, 0.45}, {0.50, 0.50}
+        }};
+
+        // Large-diaphragm condenser (~1" capsule) — significant narrowing above 1 kHz.
+        // "cardioid" kept as backward-compat alias so older saved presets continue to work.
+        std::array<std::pair<double,double>, 8> ldcData = {{
+            {0.78, 0.22}, {0.68, 0.32}, {0.57, 0.43}, {0.50, 0.50},
+            {0.40, 0.60}, {0.28, 0.72}, {0.16, 0.84}, {0.06, 0.94}
+        }};
+        s_mic["cardioid (LDC)"] = ldcData;
+        s_mic["cardioid"]       = ldcData;  // backward-compat for saved presets
+
+        // Small-diaphragm condenser (~12-16mm capsule) — more consistent directivity across frequency
+        s_mic["cardioid (SDC)"] = {{
+            {0.65, 0.35}, {0.58, 0.42}, {0.53, 0.47}, {0.50, 0.50},
+            {0.44, 0.56}, {0.36, 0.64}, {0.28, 0.72}, {0.18, 0.82}
+        }};
+
+        // Ribbon figure-8 — fairly consistent but slight omni component at very low end
+        // due to cabinet diffraction effects below ~200 Hz
+        s_mic["figure8"] = {{
+            {0.12, 0.88}, {0.06, 0.94}, {0.02, 0.98}, {0.00, 1.00},
+            {0.00, 1.00}, {0.00, 1.00}, {0.00, 1.00}, {0.00, 1.00}
+        }};
     }
     return s_mic;
 }
-const std::map<std::string, std::pair<double,double>>& IRSynthEngine::getMIC() { return initMIC(); }
+const std::map<std::string, std::array<std::pair<double,double>, 8>>& IRSynthEngine::getMIC() { return initMIC(); }
 
 // ── eyring — verbatim from JS ──────────────────────────────────────────────
 double IRSynthEngine::eyring (double vol, double mAbs, double tS)
@@ -90,12 +124,17 @@ double IRSynthEngine::eyring (double vol, double mAbs, double tS)
     return 0.161 * vol / (-tS * l);
 }
 
-// ── micG — verbatim from JS ───────────────────────────────────────────────
-double IRSynthEngine::micG (double az, const std::string& pat, double faceAngle)
+// ── micG — per-octave-band polar pattern gain ─────────────────────────────
+// band ∈ [0, 7] indexing octave bands [125 Hz .. 16 kHz]. Called once per
+// (reflection, band) from calcRefs so each frequency band sees its own
+// off-axis rejection while on-axis (o + d = 1) remains frequency-flat.
+double IRSynthEngine::micG (int band, double az, const std::string& pat, double faceAngle)
 {
-    auto it = getMIC().find(pat);
-    if (it == getMIC().end()) return 1.0;
-    double o = it->second.first, d = it->second.second;
+    const auto& mic = getMIC();
+    auto it = mic.find(pat);
+    if (it == mic.end()) return 1.0;
+    const double o = it->second[band].first;
+    const double d = it->second[band].second;
     return std::max(0.0, o + d * std::cos(az - faceAngle));
 }
 
@@ -210,7 +249,8 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                 if (eo && t >= ec) continue;
                 // Screen-style room coordinates: 0 = right, +pi/2 = down.
                 double az = std::atan2(iy - ry, ix - rx);
-                double mg = micG(az, micPat, micFaceAngle);
+                // micG is now called per-band inside the loop below so each octave
+                // band sees its own off-axis rejection (frequency-dependent polar pattern).
                 // Source directivity: direct (0) and first-order (1) use speaker pattern;
                 // from order 2 onwards, blend to omnidirectional so late reflections
                 // are not over-attenuated by the cardioid.
@@ -234,7 +274,7 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                     a *= std::pow(rW[b], std::abs(nx) + std::abs(ny));
                     if (std::abs(ny) > 0) a *= std::pow(oF, std::abs(ny));
                     if (std::abs(nz) > 0) a *= std::pow(1.0 - vHfA * std::min(b / 3.0, 1.0), std::abs(nz));
-                    amps[b] = a * std::pow(10.0, -AIR[b] * dist / 20.0) * mg * sg * polarity;
+                    amps[b] = a * std::pow(10.0, -AIR[b] * dist / 20.0) * micG(b, az, micPat, micFaceAngle) * sg * polarity;
                 }
                 refs.push_back({ t, amps, az });
 

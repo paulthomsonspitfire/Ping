@@ -23,7 +23,7 @@ namespace
         "Groin / cross vault  (Lyndhurst Hall)", "Fan vault  (King's College)",
         "Coffered dome  (circular hall)"
     };
-    const char* const micOptions[] = { "omni", "subcardioid", "cardioid", "figure8" };
+    const char* const micOptions[] = { "omni", "subcardioid", "cardioid (LDC)", "cardioid (SDC)", "figure8" };
 
     void addOptions (juce::ComboBox& combo, const char* const* opts, int n)
     {
@@ -166,8 +166,8 @@ IRSynthComponent::IRSynthComponent()
     balconiesLabel.setText ("Balconies", juce::dontSendNotification);
 
     // Options
-    addOptions (micPatternCombo, micOptions, 4);
-    micPatternCombo.setSelectedId (3, juce::dontSendNotification); // cardioid
+    addOptions (micPatternCombo, micOptions, 5);
+    micPatternCombo.setSelectedId (3, juce::dontSendNotification); // cardioid (LDC) — 3rd item in new array
     sampleRateCombo.addItem ("44100", 1);
     sampleRateCombo.addItem ("48000", 2);
     sampleRateCombo.setSelectedId (2, juce::dontSendNotification);
@@ -552,7 +552,7 @@ IRSynthParams IRSynthComponent::getParams() const
     p.source_rx = t.cx[1];   p.source_ry = t.cy[1];   p.spkr_angle = t.angle[1];
     p.receiver_lx = t.cx[2]; p.receiver_ly = t.cy[2]; p.micl_angle = t.angle[2];
     p.receiver_rx = t.cx[3]; p.receiver_ry = t.cy[3]; p.micr_angle = t.angle[3];
-    p.mic_pattern = comboSelection (micPatternCombo, micOptions, 4).toStdString();
+    p.mic_pattern = comboSelection (micPatternCombo, micOptions, 5).toStdString();
     p.er_only = erOnlyButton.getToggleState();
     p.sample_rate = sampleRateCombo.getSelectedId() == 1 ? 44100 : 48000;
     return p;
@@ -586,7 +586,11 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     t.cx[3] = p.receiver_rx; t.cy[3] = p.receiver_ry; t.angle[3] = p.micr_angle;
     floorPlanComponent.setTransducerState (t);
     floorPlanComponent.repaint();
-    setComboTo (micPatternCombo, p.mic_pattern, micOptions, 4);
+    // Migrate legacy "cardioid" (written by older plugin versions) to the new "cardioid (LDC)" display key
+    juce::String micPat = juce::String (p.mic_pattern);
+    if (micPat.trim().equalsIgnoreCase ("cardioid"))
+        micPat = "cardioid (LDC)";
+    setComboTo (micPatternCombo, micPat, micOptions, 5);
     erOnlyButton.setToggleState (p.er_only, juce::dontSendNotification);
     sampleRateCombo.setSelectedId (p.sample_rate == 44100 ? 1 : 2, juce::dontSendNotification);
 

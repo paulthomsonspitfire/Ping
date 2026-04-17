@@ -60,7 +60,9 @@ struct IRSynthParams
     double micr_angle = -0.785398163397; // -π/4 up-right
 
     // Options
-    std::string mic_pattern = "cardioid"; // "omni"|"subcardioid"|"cardioid"|"figure8"
+    std::string mic_pattern = "cardioid (LDC)";
+    // "omni"|"subcardioid"|"cardioid (LDC)"|"cardioid (SDC)"|"figure8"
+    // "cardioid" is a legacy alias for "cardioid (LDC)"
     bool        er_only     = false;
     int         sample_rate = 48000;      // 44100 | 48000
     bool        bake_er_tail_balance = false;
@@ -119,13 +121,16 @@ private:
     // Audience/balcony/organ/air absorption arrays [8 bands]
     static const double OA[8], BA[8], BSA[8], AIR[8];
 
-    // Mic polar pattern {omni,subcardioid,cardioid,figure8} → {o, d}
-    static const std::map<std::string, std::pair<double,double>>& getMIC();
+    // Mic polar pattern — per-band {o, d} pairs for 8 octave bands [125..16k Hz].
+    // Patterns: {omni, subcardioid, cardioid (LDC), cardioid (SDC), figure8};
+    // "cardioid" kept as a backward-compat alias for "cardioid (LDC)".
+    // Constraint: o + d = 1.0 at every band (on-axis gain is frequency-flat).
+    static const std::map<std::string, std::array<std::pair<double,double>, 8>>& getMIC();
 
     // ── engine helpers ─────────────────────────────────────────────────────
     static double eyring (double vol, double mAbs, double tS);
 
-    static double micG  (double az, const std::string& pat, double faceAngle);
+    static double micG  (int band, double az, const std::string& pat, double faceAngle);
     static double spkG  (double faceAngle, double azToReceiver);
 
     // Seeded RNG (matches JS mkRng)

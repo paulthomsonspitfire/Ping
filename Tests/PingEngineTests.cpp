@@ -336,17 +336,18 @@ TEST_CASE("IR_11: golden output regression lock", "[engine][golden]")
     // GOLDEN VALUES — captured by IR_GOLDEN_CAPTURE after all tests first went green.
     // onset_offset is the sample index of the first non-silent sample.
     // To update: run ./PingTests "[capture]" -s, paste new values, update the offset.
-    // Updated 2026-04-10: engine Z-heights changed from 55% of He to fixed 1m (speaker) / 3m (mic),
-    // clamped to 90% of He. Small room params (10×8×5 m) give sz=1.0m, rz=min(3.0,4.5)=3.0m.
-    // Previously onset was at sample 371; new mic/speaker geometry shifts first arrival to sample 482.
+    // Updated v2.5.0: frequency-dependent mic polar patterns
+    // (o+d=1 per band; LDC cardioid: {0.5,0.5} at 1kHz, narrows to {0.06,0.94} at 16kHz).
+    // Onset stays at sample 482 because speaker/mic geometry is unchanged — only
+    // per-band off-axis rejection in the mic polar shifted the sample values.
     static const int    onset_offset  = 482;   // first non-zero sample in small room (10×8×5 m)
     static const double golden_iLL[30] = {
-        0.0051792085171578151, 0.025369894752680908, 0.097860988553396241, 0.25438113462715278, 0.46193602239719112,
-        0.55841515240302642, 0.39023380619148984, 0.26246109162711079, 0.30621958959671514, -0.15921141945804507,
-        -0.60958255114003679, -0.12631119879647323, 0.10756329241843518, -0.055029364465391174, 0.10442958729543032,
-        -0.014651727054243625, -0.1110397387312371, 0.031629806881020947, -0.024522139667834154, -0.035829562502841437,
-        -0.0079078490019186456, -0.055520921382296543, -0.031726335385831451, -0.0060684433960605392, -0.01204341685290245,
-        0.0040868559752431687, 0.0025364920747359427, -0.006936442813475812, -0.0051144725539495426, -0.012623325589073961
+        0.0052927134129422404, 0.025850623093826929, 0.098790551473608698, 0.25510989862362599, 0.46033578576352852,
+        0.55445942760216815, 0.3882393874148819, 0.26079919379761762, 0.30054579023705974, -0.15329375949400414,
+        -0.5909881757641684, -0.12294205308476477, 0.10450350710082784, -0.052034920526822626, 0.10158570457510742,
+        -0.014029216253808506, -0.1073193022313957, 0.030432050219118666, -0.023830794009623724, -0.034904119652530902,
+        -0.0081060900095294517, -0.05409658931995532, -0.030988639707726473, -0.0060261163942318041, -0.011655866427774234,
+        0.0039614456144860975, 0.0024202862420677524, -0.0068283180647273241, -0.005204534250850051, -0.012607241189241678
     };
 
     static const bool goldenCaptured = true;    // captured by IR_GOLDEN_CAPTURE — do not change without a reason

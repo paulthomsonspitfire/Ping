@@ -359,8 +359,22 @@ void FloorPlanComponent::paint (juce::Graphics& g)
         float yy = legY + (i + 0.5f) * legRow;  // center icon vertically in row
         const juce::Path& legIcon = (i < 2) ? spkPath : micPath;
         drawTransducerIcon (g, legIcon, iconCx, yy, 0.0f, legIconSz * 0.5f, cols[i]);
+
+        // Label
         g.setColour (legText);
-        g.drawText (legLabels[i], (int) (legX + legIconSz + 6), (int) (legY + i * legRow), 52, (int) legRow,
+        g.drawText (legLabels[i], (int) (legX + legIconSz + 6), (int) (legY + i * legRow), 30, (int) legRow,
+                    juce::Justification::centredLeft, false);
+
+        // Angle readout — 0° = north (up), +CW, −CCW, ±180° = south (audience).
+        // Internal storage uses atan2 screen convention (0 = east, +π/2 = south),
+        // so adding +π/2 rotates the reference to north.
+        double displayDeg = (transducers.angle[i] + kPi / 2.0) * 180.0 / kPi;
+        while (displayDeg >  180.0) displayDeg -= 360.0;
+        while (displayDeg <= -180.0) displayDeg += 360.0;
+        juce::String degStr = juce::String ((int) std::round (displayDeg))
+                              + juce::String::fromUTF8 (u8"\u00b0");
+        g.setColour (cols[i].withAlpha (0.85f));
+        g.drawText (degStr, (int) (legX + legIconSz + 50), (int) (legY + i * legRow), 36, (int) legRow,
                     juce::Justification::centredLeft, false);
     }
 }
