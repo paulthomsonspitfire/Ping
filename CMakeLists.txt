@@ -145,6 +145,7 @@ enable_testing()
 add_executable(PingTests
     Tests/PingEngineTests.cpp
     Tests/PingDSPTests.cpp
+    Tests/PingMultiMicTests.cpp
     Source/IRSynthEngine.cpp
 )
 
