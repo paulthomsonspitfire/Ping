@@ -239,4 +239,10 @@ private:
         double diffusion, int sr, uint32_t seed,
         double roomW, double roomD, double roomH,
         int maxRefCut = -1);  // -1 → same as erCut (old behaviour)
+
+    // ── Multi-mic path synthesis (feature/multi-mic-paths, Phase 1.3) ──────
+    // synthMainPath is the historical body of synthIR, unchanged (bit-identity
+    // guarded by IR_14). synthExtraPath / synthDirectPath are added in later
+    // checkpoints (C4) and will reuse the same helper machinery above.
+    static IRSynthResult synthMainPath (const IRSynthParams& p, IRSynthProgressFn cb);
 };

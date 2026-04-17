@@ -830,8 +830,21 @@ static double shapeDen (const std::string& shape)
     return 1.0;
 }
 
-// ── synthIR — verbatim from JS ─────────────────────────────────────────────
+// ── synthIR — public entry point ───────────────────────────────────────────
+// C3: thin dispatcher that forwards to synthMainPath. Bit-identical to the
+// pre-refactor behaviour (guarded by IR_14). In C5 this will fan out to
+// synthExtraPath / synthDirectPath for OUTRIG / AMBIENT / DIRECT mic paths.
 IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn cb)
+{
+    return synthMainPath (p, cb);
+}
+
+// ── synthMainPath — verbatim from JS (MAIN mic pair) ──────────────────────
+// This is the historical body of synthIR, unchanged. The feature/multi-mic-paths
+// branch introduces sibling synthExtraPath / synthDirectPath helpers (C4) and a
+// parallel dispatcher in synthIR (C5). Bit-identity of MAIN output is locked by
+// IR_14 — do not rearrange floating-point expressions here.
+IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgressFn cb)
 {
     IRSynthResult res;
     res.sampleRate = p.sample_rate;
