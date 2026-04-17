@@ -62,6 +62,43 @@ namespace IDs
     static const juce::String shimIRFeed      { "shimIRFeed" };
     static const juce::String shimVolume      { "shimVolume" };
     static const juce::String shimFeedback    { "shimFeedback" };
+
+    // ── Multi-mic mixer (feature/multi-mic-paths) ────────────────────────────
+    // 4 strips × 6 params each. Gains in dB (-48..+6), pans constant-power
+    // (-1..+1). "On" toggles the path DSP; "Mute"/"Solo"/"HPOn" per strip.
+    // Defaults per brief §2a: MAIN on, DIRECT/OUTRIG/AMBIENT off; HP off on
+    // DIRECT+MAIN, on by default on OUTRIG+AMBIENT (where low-mid rumble is
+    // typical in ambient-mic placements).
+    // IMPORTANT: none of these parameters trigger loadSelectedIR() — only
+    // "stretch" and "decay" do. Adding new param listeners here would invite
+    // the triple-load / NUPC-overload regression documented in CLAUDE.md.
+    static const juce::String mainOn      { "mainOn" };
+    static const juce::String mainGain    { "mainGain" };
+    static const juce::String mainPan     { "mainPan" };
+    static const juce::String mainMute    { "mainMute" };
+    static const juce::String mainSolo    { "mainSolo" };
+    static const juce::String mainHPOn    { "mainHPOn" };
+
+    static const juce::String directOn    { "directOn" };
+    static const juce::String directGain  { "directGain" };
+    static const juce::String directPan   { "directPan" };
+    static const juce::String directMute  { "directMute" };
+    static const juce::String directSolo  { "directSolo" };
+    static const juce::String directHPOn  { "directHPOn" };
+
+    static const juce::String outrigOn    { "outrigOn" };
+    static const juce::String outrigGain  { "outrigGain" };
+    static const juce::String outrigPan   { "outrigPan" };
+    static const juce::String outrigMute  { "outrigMute" };
+    static const juce::String outrigSolo  { "outrigSolo" };
+    static const juce::String outrigHPOn  { "outrigHPOn" };
+
+    static const juce::String ambientOn   { "ambientOn" };
+    static const juce::String ambientGain { "ambientGain" };
+    static const juce::String ambientPan  { "ambientPan" };
+    static const juce::String ambientMute { "ambientMute" };
+    static const juce::String ambientSolo { "ambientSolo" };
+    static const juce::String ambientHPOn { "ambientHPOn" };
 }
 
 // New canonical licence directory: /Library/Application Support/Audio/Ping/
@@ -376,6 +413,47 @@ juce::AudioProcessorValueTreeState::ParameterLayout PingProcessor::createParamet
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimIRFeed,   "Shimmer IR Feed",   0.0f, 1.0f, 0.5f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimVolume,   "Shimmer Volume",    0.0f, 1.0f, 0.0f));
     layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::shimFeedback, "Shimmer Feedback",  0.0f, 0.7f, 0.45f));
+
+    // ── Multi-mic mixer (feature/multi-mic-paths) ────────────────────────────
+    // Per brief §2a. Gains use the same range as erLevel / tailLevel
+    // (-48..+6 dB, 0.1 step). Pans are constant-power (-1..+1, step 0.001).
+    // Defaults follow the brief: MAIN on, extras off; HP off on DIRECT+MAIN,
+    // on by default on OUTRIG+AMBIENT.
+    const juce::NormalisableRange<float> gainRange (-48.0f, 6.0f, 0.1f);
+    const juce::NormalisableRange<float> panRange  (-1.0f, 1.0f, 0.001f);
+
+    // MAIN
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::mainOn,    "MAIN On",    true));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::mainGain,  "MAIN Gain (dB)", gainRange, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::mainPan,   "MAIN Pan",       panRange,  0.0f));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::mainMute,  "MAIN Mute",  false));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::mainSolo,  "MAIN Solo",  false));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::mainHPOn,  "MAIN HP On", false));
+
+    // DIRECT (order-0 only — direct arrivals, no reflections, no FDN)
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::directOn,    "DIRECT On",    false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::directGain,  "DIRECT Gain (dB)", gainRange, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::directPan,   "DIRECT Pan",       panRange,  0.0f));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::directMute,  "DIRECT Mute",  false));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::directSolo,  "DIRECT Solo",  false));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::directHPOn,  "DIRECT HP On", false));
+
+    // OUTRIG (wider stereo pair, full ER + Tail)
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::outrigOn,    "OUTRIG On",    false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::outrigGain,  "OUTRIG Gain (dB)", gainRange, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::outrigPan,   "OUTRIG Pan",       panRange,  0.0f));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::outrigMute,  "OUTRIG Mute",  false));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::outrigSolo,  "OUTRIG Solo",  false));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::outrigHPOn,  "OUTRIG HP On", true));
+
+    // AMBIENT (higher, further-back pair, full ER + Tail)
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::ambientOn,    "AMBIENT On",    false));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::ambientGain,  "AMBIENT Gain (dB)", gainRange, 0.0f));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (IDs::ambientPan,   "AMBIENT Pan",       panRange,  0.0f));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::ambientMute,  "AMBIENT Mute",  false));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::ambientSolo,  "AMBIENT Solo",  false));
+    layout.add (std::make_unique<juce::AudioParameterBool>  (IDs::ambientHPOn,  "AMBIENT HP On", true));
+
     return layout;
 }
 
