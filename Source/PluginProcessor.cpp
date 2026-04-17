@@ -489,6 +489,26 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     erLevelSmoothed.reset (sampleRate, 0.02);
     tailLevelSmoothed.reset (sampleRate, 0.02);
 
+    // Per-path mixer strips — initialise current/target to the knob's linear gain so the
+    // SmoothedValue does not create a 20 ms ramp on the very first processBlock call.
+    // HP is fixed at 110 Hz 2nd-order Butterworth per the multi-mic brief (no cutoff knob).
+    constexpr float kMicStripHPHz = 110.0f;
+    auto initStrip = [this, sampleRate] (juce::SmoothedValue<float>& g,
+                                          HP2ndOrder& hp,
+                                          const juce::String& gainId)
+    {
+        g.reset (sampleRate, 0.02);
+        const float gDb = apvts.getRawParameterValue (gainId)->load();
+        g.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (gDb));
+        hp.prepare (kMicStripHPHz, sampleRate);
+        hp.reset();
+        hp.enabled = false; // actual enabled flag is refreshed per-block in processBlock
+    };
+    initStrip (mainGainSmoothed,    mainHP,    IDs::mainGain);
+    initStrip (directGainSmoothed,  directHP,  IDs::directGain);
+    initStrip (outrigGainSmoothed,  outrigHP,  IDs::outrigGain);
+    initStrip (ambientGainSmoothed, ambientHP, IDs::ambientGain);
+
     predelayLine.reset();
     predelayLine.setMaximumDelayInSamples ((int) (2.0 * sampleRate)); // up to 2 s
     predelayLine.prepare (spec);
@@ -1426,113 +1446,351 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     erLevelSmoothed.setTargetValue (juce::Decibels::decibelsToGain (erDb));
     tailLevelSmoothed.setTargetValue (juce::Decibels::decibelsToGain (tailDb));
 
-    // All IRs use the unified true-stereo 8-convolver path (stereo file IRs are expanded to
-    // 4-channel with zero cross-channels at load time in loadIRFromBuffer).
+    // ── Multi-mic mixer ─────────────────────────────────────────────────────
+    // Per-path convolution + HP + gain + pan mixer. Up to four paths contribute:
+    //   MAIN    — 8 convolvers (tsEr* + tsTail*) with optional ER/Tail crossfeed,
+    //             summed through erLevel/tailLevel × trueStereoWetGain. Always present.
+    //   DIRECT  — 4 convolvers (tsDirectConv*). Order-0 path with no ER/Tail split.
+    //   OUTRIG  — 8 convolvers (tsOutrigEr* + tsOutrigTail*). ER + Tail summed 1:1.
+    //   AMBIENT — 8 convolvers (tsAmbEr*    + tsAmbTail*).    ER + Tail summed 1:1.
+    // Each strip applies its own 110 Hz 2nd-order HP (enabled flag only — the biquad
+    // updates state every sample regardless so toggling is click-free), a smoothed
+    // linear gain, and a constant-power pan. The four mono outputs are summed into the
+    // wet buffer before EQ / decorrelation / Width.
+    //
+    // Mute / Solo / per-path On switches are folded into the smoothed target gain:
+    // when a strip is gated off the target becomes 0 and the SmoothedValue ramps down
+    // over 20 ms. Convolvers are skipped entirely when their path On flag is false,
+    // which is the behaviour expected from a switched-off mic send.
+    //
+    // Defaults (mainOn=true, mainGain=0 dB, mainPan=0, mainHP off, mainMute=mainSolo=
+    // false; all three extras Off) collapse the mixer to MAIN-only, with mainHP as
+    // a pass-through biquad, strip gain 1.0 and constant-power pan (~0.707 per side at
+    // centre). Note that the constant-power pan law gives -3 dB on each channel at
+    // centre relative to the pre-C9 single-path block, which wrote the summed eL+tL
+    // straight into the wet buffer. This is consistent with the multi-mic brief
+    // specification and matches typical mixer pan behaviour.
     {
         juce::AudioBuffer<float> lIn (1, numSamples), rIn (1, numSamples);
         lIn.copyFrom (0, 0, buffer, 0, 0, numSamples);
         rIn.copyFrom (0, 0, buffer, 1, 0, numSamples);
 
+        // Strip parameters (cheap atomic loads; read once per block).
+        const bool  mainOnRaw      = apvts.getRawParameterValue (IDs::mainOn)->load()     > 0.5f;
+        const bool  mainMuted      = apvts.getRawParameterValue (IDs::mainMute)->load()   > 0.5f;
+        const bool  mainSoloFlag   = apvts.getRawParameterValue (IDs::mainSolo)->load()   > 0.5f;
+        const bool  mainHPOnRaw    = apvts.getRawParameterValue (IDs::mainHPOn)->load()   > 0.5f;
+        const float mainGainDb     = apvts.getRawParameterValue (IDs::mainGain)->load();
+        const float mainPanRaw     = apvts.getRawParameterValue (IDs::mainPan)->load();
+
+        const bool  directOnRaw    = apvts.getRawParameterValue (IDs::directOn)->load()   > 0.5f;
+        const bool  directMuted    = apvts.getRawParameterValue (IDs::directMute)->load() > 0.5f;
+        const bool  directSoloFlag = apvts.getRawParameterValue (IDs::directSolo)->load() > 0.5f;
+        const bool  directHPOnRaw  = apvts.getRawParameterValue (IDs::directHPOn)->load() > 0.5f;
+        const float directGainDb   = apvts.getRawParameterValue (IDs::directGain)->load();
+        const float directPanRaw   = apvts.getRawParameterValue (IDs::directPan)->load();
+
+        const bool  outrigOnRaw    = apvts.getRawParameterValue (IDs::outrigOn)->load()   > 0.5f;
+        const bool  outrigMuted    = apvts.getRawParameterValue (IDs::outrigMute)->load() > 0.5f;
+        const bool  outrigSoloFlag = apvts.getRawParameterValue (IDs::outrigSolo)->load() > 0.5f;
+        const bool  outrigHPOnRaw  = apvts.getRawParameterValue (IDs::outrigHPOn)->load() > 0.5f;
+        const float outrigGainDb   = apvts.getRawParameterValue (IDs::outrigGain)->load();
+        const float outrigPanRaw   = apvts.getRawParameterValue (IDs::outrigPan)->load();
+
+        const bool  ambientOnRaw    = apvts.getRawParameterValue (IDs::ambientOn)->load()   > 0.5f;
+        const bool  ambientMuted    = apvts.getRawParameterValue (IDs::ambientMute)->load() > 0.5f;
+        const bool  ambientSoloFlag = apvts.getRawParameterValue (IDs::ambientSolo)->load() > 0.5f;
+        const bool  ambientHPOnRaw  = apvts.getRawParameterValue (IDs::ambientHPOn)->load() > 0.5f;
+        const float ambientGainDb   = apvts.getRawParameterValue (IDs::ambientGain)->load();
+        const float ambientPanRaw   = apvts.getRawParameterValue (IDs::ambientPan)->load();
+
+        const bool anySolo = mainSoloFlag || directSoloFlag || outrigSoloFlag || ambientSoloFlag;
+
+        // A strip "contributes" when its On flag is true, it is not muted, and either no
+        // strip is soloed or this strip is one of the soloed ones. MAIN treats its On
+        // flag identically to the extras (default true).
+        const bool mainContributes    = mainOnRaw    && ! mainMuted    && (! anySolo || mainSoloFlag);
+        const bool directContributes  = directOnRaw  && ! directMuted  && (! anySolo || directSoloFlag);
+        const bool outrigContributes  = outrigOnRaw  && ! outrigMuted  && (! anySolo || outrigSoloFlag);
+        const bool ambientContributes = ambientOnRaw && ! ambientMuted && (! anySolo || ambientSoloFlag);
+
+        // Target linear gain: 0 when gated off so the SmoothedValue ramps down over 20 ms.
+        mainGainSmoothed   .setTargetValue (mainContributes    ? juce::Decibels::decibelsToGain (mainGainDb)    : 0.0f);
+        directGainSmoothed .setTargetValue (directContributes  ? juce::Decibels::decibelsToGain (directGainDb)  : 0.0f);
+        outrigGainSmoothed .setTargetValue (outrigContributes  ? juce::Decibels::decibelsToGain (outrigGainDb)  : 0.0f);
+        ambientGainSmoothed.setTargetValue (ambientContributes ? juce::Decibels::decibelsToGain (ambientGainDb) : 0.0f);
+
+        // Refresh per-strip HP enabled flag (the biquad itself always updates state so
+        // re-enable is click-free — see DSP_17 regression test).
+        mainHP   .enabled = mainHPOnRaw;
+        directHP .enabled = directHPOnRaw;
+        outrigHP .enabled = outrigHPOnRaw;
+        ambientHP.enabled = ambientHPOnRaw;
+
+        // Constant-power pan coefficients (sampled per block — pan changes slowly so a
+        // per-sample smoother is unnecessary).
+        auto panCoeffs = [] (float p, float& pL, float& pR)
+        {
+            p = juce::jlimit (-1.f, 1.f, p);
+            const float a = (p + 1.f) * juce::MathConstants<float>::pi * 0.25f;
+            pL = std::cos (a);
+            pR = std::sin (a);
+        };
+        float mainPanL,   mainPanR,   directPanL, directPanR, outrigPanL, outrigPanR, ambientPanL, ambientPanR;
+        panCoeffs (mainPanRaw,    mainPanL,    mainPanR);
+        panCoeffs (directPanRaw,  directPanL,  directPanR);
+        panCoeffs (outrigPanRaw,  outrigPanL,  outrigPanR);
+        panCoeffs (ambientPanRaw, ambientPanL, ambientPanR);
+
+        // Shared convolver-temp buffer. Use explicit 3-arg AudioBlock constructor so its
+        // size matches numSamples exactly (see CLAUDE.md note on convTmp / NUPC state corruption).
         juce::AudioBuffer<float> tmp (1, numSamples);
-        juce::AudioBuffer<float> lEr (1, numSamples), rEr (1, numSamples);
+        juce::dsp::AudioBlock<float> tmpBlock (tmp.getArrayOfWritePointers(), 1, (size_t) numSamples);
 
-        juce::dsp::AudioBlock<float> tmpBlock (tmp);
-        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
-        tsErConvLL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        lEr.copyFrom (0, 0, tmp, 0, 0, numSamples);
-        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
-        tsErConvRL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        lEr.addFrom (0, 0, tmp, 0, 0, numSamples);
-
-        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
-        tsErConvLR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        rEr.copyFrom (0, 0, tmp, 0, 0, numSamples);
-        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
-        tsErConvRR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        rEr.addFrom (0, 0, tmp, 0, 0, numSamples);
-
-        juce::AudioBuffer<float> lTail (1, numSamples), rTail (1, numSamples);
-        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
-        tsTailConvLL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        lTail.copyFrom (0, 0, tmp, 0, 0, numSamples);
-        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
-        tsTailConvRL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        lTail.addFrom (0, 0, tmp, 0, 0, numSamples);
-
-        tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
-        tsTailConvLR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        rTail.copyFrom (0, 0, tmp, 0, 0, numSamples);
-        tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
-        tsTailConvRR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
-        rTail.addFrom (0, 0, tmp, 0, 0, numSamples);
-
-        if (apvts.getRawParameterValue (IDs::erCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
+        auto runFour = [&] (juce::dsp::Convolution& cLL,
+                             juce::dsp::Convolution& cRL,
+                             juce::dsp::Convolution& cLR,
+                             juce::dsp::Convolution& cRR,
+                             juce::AudioBuffer<float>& outL,
+                             juce::AudioBuffer<float>& outR)
         {
-            float delayMs = apvts.getRawParameterValue (IDs::erCrossfeedDelayMs)->load();
-            float attDb = apvts.getRawParameterValue (IDs::erCrossfeedAttDb)->load();
-            int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1, (int)std::round (delayMs * (float)currentSampleRate / 1000.0f));
-            float gain = juce::Decibels::decibelsToGain (attDb);
-            float* lPtr = lEr.getWritePointer (0);
-            float* rPtr = rEr.getWritePointer (0);
-            for (int i = 0; i < numSamples; ++i)
-            {
-                int readRtoL = (crossfeedErWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
-                int readLtoR = (crossfeedErWriteLtoR - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
-                float l = lPtr[i], r = rPtr[i];
-                lPtr[i] += gain * crossfeedErBufRtoL[(size_t)readRtoL];
-                rPtr[i] += gain * crossfeedErBufLtoR[(size_t)readLtoR];
-                crossfeedErBufRtoL[(size_t)crossfeedErWriteRtoL] = r;
-                crossfeedErBufLtoR[(size_t)crossfeedErWriteLtoR] = l;
-                crossfeedErWriteRtoL = (crossfeedErWriteRtoL + 1) % crossfeedMaxSamples;
-                crossfeedErWriteLtoR = (crossfeedErWriteLtoR + 1) % crossfeedMaxSamples;
-            }
-        }
-        if (apvts.getRawParameterValue (IDs::tailCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
-        {
-            float delayMs = apvts.getRawParameterValue (IDs::tailCrossfeedDelayMs)->load();
-            float attDb = apvts.getRawParameterValue (IDs::tailCrossfeedAttDb)->load();
-            int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1, (int)std::round (delayMs * (float)currentSampleRate / 1000.0f));
-            float gain = juce::Decibels::decibelsToGain (attDb);
-            float* lPtr = lTail.getWritePointer (0);
-            float* rPtr = rTail.getWritePointer (0);
-            for (int i = 0; i < numSamples; ++i)
-            {
-                int readRtoL = (crossfeedTailWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
-                int readLtoR = (crossfeedTailWriteLtoR - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
-                float l = lPtr[i], r = rPtr[i];
-                lPtr[i] += gain * crossfeedTailBufRtoL[(size_t)readRtoL];
-                rPtr[i] += gain * crossfeedTailBufLtoR[(size_t)readLtoR];
-                crossfeedTailBufRtoL[(size_t)crossfeedTailWriteRtoL] = r;
-                crossfeedTailBufLtoR[(size_t)crossfeedTailWriteLtoR] = l;
-                crossfeedTailWriteRtoL = (crossfeedTailWriteRtoL + 1) % crossfeedMaxSamples;
-                crossfeedTailWriteLtoR = (crossfeedTailWriteLtoR + 1) % crossfeedMaxSamples;
-            }
-        }
+            tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
+            cLL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+            outL.copyFrom (0, 0, tmp, 0, 0, numSamples);
+            tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
+            cRL.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+            outL.addFrom (0, 0, tmp, 0, 0, numSamples);
 
-        // All IRs use the true-stereo 8-convolver path. Synthesised IRs are not peak-normalised
-        // (level follows 1/r); ×2.0 brings them to a usable range. Stereo file IRs are pre-scaled
-        // ×0.5 at load time (in loadIRFromBuffer) so their net gain here is ×1.0.
+            tmp.copyFrom (0, 0, lIn, 0, 0, numSamples);
+            cLR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+            outR.copyFrom (0, 0, tmp, 0, 0, numSamples);
+            tmp.copyFrom (0, 0, rIn, 0, 0, numSamples);
+            cRR.process (juce::dsp::ProcessContextReplacing<float> (tmpBlock));
+            outR.addFrom (0, 0, tmp, 0, 0, numSamples);
+        };
+
+        // From here on the buffer holds the accumulated wet signal. Clear it and add
+        // each strip's contribution.
+        buffer.clear();
         const float trueStereoWetGain = 2.0f;
+
+        // ── MAIN ────────────────────────────────────────────────────────────
+        float mainPkL = 0.f, mainPkR = 0.f;
         float erPkL = 0.f, erPkR = 0.f, tailPkL = 0.f, tailPkR = 0.f;
-        for (int i = 0; i < numSamples; ++i)
+        if (mainOnRaw)
         {
-            float erG = erLevelSmoothed.getNextValue();
-            float tailG = tailLevelSmoothed.getNextValue();
-            float eL = lEr.getSample (0, i) * erG   * trueStereoWetGain;
-            float eR = rEr.getSample (0, i) * erG   * trueStereoWetGain;
-            float tL = lTail.getSample (0, i) * tailG * trueStereoWetGain;
-            float tR = rTail.getSample (0, i) * tailG * trueStereoWetGain;
-            erPkL   = juce::jmax (erPkL,   std::abs (eL));
-            erPkR   = juce::jmax (erPkR,   std::abs (eR));
-            tailPkL = juce::jmax (tailPkL, std::abs (tL));
-            tailPkR = juce::jmax (tailPkR, std::abs (tR));
-            buffer.setSample (0, i, eL + tL);
-            buffer.setSample (1, i, eR + tR);
+            juce::AudioBuffer<float> lEr (1, numSamples), rEr (1, numSamples);
+            juce::AudioBuffer<float> lTail (1, numSamples), rTail (1, numSamples);
+            runFour (tsErConvLL,   tsErConvRL,   tsErConvLR,   tsErConvRR,   lEr,   rEr);
+            runFour (tsTailConvLL, tsTailConvRL, tsTailConvLR, tsTailConvRR, lTail, rTail);
+
+            if (apvts.getRawParameterValue (IDs::erCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
+            {
+                const float delayMs = apvts.getRawParameterValue (IDs::erCrossfeedDelayMs)->load();
+                const float attDb   = apvts.getRawParameterValue (IDs::erCrossfeedAttDb)->load();
+                const int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1,
+                    (int) std::round (delayMs * (float) currentSampleRate / 1000.0f));
+                const float gain = juce::Decibels::decibelsToGain (attDb);
+                float* lPtr = lEr.getWritePointer (0);
+                float* rPtr = rEr.getWritePointer (0);
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    int readRtoL = (crossfeedErWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                    int readLtoR = (crossfeedErWriteLtoR - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                    float l = lPtr[i], r = rPtr[i];
+                    lPtr[i] += gain * crossfeedErBufRtoL[(size_t) readRtoL];
+                    rPtr[i] += gain * crossfeedErBufLtoR[(size_t) readLtoR];
+                    crossfeedErBufRtoL[(size_t) crossfeedErWriteRtoL] = r;
+                    crossfeedErBufLtoR[(size_t) crossfeedErWriteLtoR] = l;
+                    crossfeedErWriteRtoL = (crossfeedErWriteRtoL + 1) % crossfeedMaxSamples;
+                    crossfeedErWriteLtoR = (crossfeedErWriteLtoR + 1) % crossfeedMaxSamples;
+                }
+            }
+            if (apvts.getRawParameterValue (IDs::tailCrossfeedOn)->load() > 0.5f && crossfeedMaxSamples > 0)
+            {
+                const float delayMs = apvts.getRawParameterValue (IDs::tailCrossfeedDelayMs)->load();
+                const float attDb   = apvts.getRawParameterValue (IDs::tailCrossfeedAttDb)->load();
+                const int delaySamps = juce::jlimit (0, crossfeedMaxSamples - 1,
+                    (int) std::round (delayMs * (float) currentSampleRate / 1000.0f));
+                const float gain = juce::Decibels::decibelsToGain (attDb);
+                float* lPtr = lTail.getWritePointer (0);
+                float* rPtr = rTail.getWritePointer (0);
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    int readRtoL = (crossfeedTailWriteRtoL - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                    int readLtoR = (crossfeedTailWriteLtoR - delaySamps + crossfeedMaxSamples) % crossfeedMaxSamples;
+                    float l = lPtr[i], r = rPtr[i];
+                    lPtr[i] += gain * crossfeedTailBufRtoL[(size_t) readRtoL];
+                    rPtr[i] += gain * crossfeedTailBufLtoR[(size_t) readLtoR];
+                    crossfeedTailBufRtoL[(size_t) crossfeedTailWriteRtoL] = r;
+                    crossfeedTailBufLtoR[(size_t) crossfeedTailWriteLtoR] = l;
+                    crossfeedTailWriteRtoL = (crossfeedTailWriteRtoL + 1) % crossfeedMaxSamples;
+                    crossfeedTailWriteLtoR = (crossfeedTailWriteLtoR + 1) % crossfeedMaxSamples;
+                }
+            }
+
+            float* bL = buffer.getWritePointer (0);
+            float* bR = buffer.getWritePointer (1);
+            const float* elp = lEr.getReadPointer (0);
+            const float* erp = rEr.getReadPointer (0);
+            const float* tlp = lTail.getReadPointer (0);
+            const float* trp = rTail.getReadPointer (0);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                const float erG   = erLevelSmoothed  .getNextValue();
+                const float tailG = tailLevelSmoothed.getNextValue();
+                const float eL = elp[i] * erG   * trueStereoWetGain;
+                const float eR = erp[i] * erG   * trueStereoWetGain;
+                const float tL = tlp[i] * tailG * trueStereoWetGain;
+                const float tR = trp[i] * tailG * trueStereoWetGain;
+                erPkL   = juce::jmax (erPkL,   std::abs (eL));
+                erPkR   = juce::jmax (erPkR,   std::abs (eR));
+                tailPkL = juce::jmax (tailPkL, std::abs (tL));
+                tailPkR = juce::jmax (tailPkR, std::abs (tR));
+                float sL = eL + tL;
+                float sR = eR + tR;
+                sL = mainHP.process (sL, 0);
+                sR = mainHP.process (sR, 1);
+                const float g = mainGainSmoothed.getNextValue();
+                sL *= g;
+                sR *= g;
+                const float oL = sL * mainPanL;
+                const float oR = sR * mainPanR;
+                bL[i] += oL;
+                bR[i] += oR;
+                mainPkL = juce::jmax (mainPkL, std::abs (oL));
+                mainPkR = juce::jmax (mainPkR, std::abs (oR));
+            }
+        }
+        else
+        {
+            // MAIN off — still advance all smoothers so unmute/re-enable is click-free.
+            for (int i = 0; i < numSamples; ++i)
+            {
+                erLevelSmoothed  .getNextValue();
+                tailLevelSmoothed.getNextValue();
+                mainGainSmoothed .getNextValue();
+            }
         }
         updatePeak (erLevelPeakL,   erPkL);
         updatePeak (erLevelPeakR,   erPkR);
         updatePeak (tailLevelPeakL, tailPkL);
         updatePeak (tailLevelPeakR, tailPkR);
+        updatePeak (mainPeakL,      mainPkL);
+        updatePeak (mainPeakR,      mainPkR);
+
+        // ── DIRECT ──────────────────────────────────────────────────────────
+        float directPkL = 0.f, directPkR = 0.f;
+        if (directOnRaw)
+        {
+            juce::AudioBuffer<float> dL (1, numSamples), dR (1, numSamples);
+            runFour (tsDirectConvLL, tsDirectConvRL, tsDirectConvLR, tsDirectConvRR, dL, dR);
+
+            float* bL = buffer.getWritePointer (0);
+            float* bR = buffer.getWritePointer (1);
+            const float* dlp = dL.getReadPointer (0);
+            const float* drp = dR.getReadPointer (0);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                float sL = dlp[i] * trueStereoWetGain;
+                float sR = drp[i] * trueStereoWetGain;
+                sL = directHP.process (sL, 0);
+                sR = directHP.process (sR, 1);
+                const float g = directGainSmoothed.getNextValue();
+                sL *= g;
+                sR *= g;
+                const float oL = sL * directPanL;
+                const float oR = sR * directPanR;
+                bL[i] += oL;
+                bR[i] += oR;
+                directPkL = juce::jmax (directPkL, std::abs (oL));
+                directPkR = juce::jmax (directPkR, std::abs (oR));
+            }
+        }
+        else
+        {
+            for (int i = 0; i < numSamples; ++i) directGainSmoothed.getNextValue();
+        }
+        updatePeak (directPeakL, directPkL);
+        updatePeak (directPeakR, directPkR);
+
+        // ── OUTRIG ──────────────────────────────────────────────────────────
+        float outrigPkL = 0.f, outrigPkR = 0.f;
+        if (outrigOnRaw)
+        {
+            juce::AudioBuffer<float> oEL (1, numSamples), oER (1, numSamples);
+            juce::AudioBuffer<float> oTL (1, numSamples), oTR (1, numSamples);
+            runFour (tsOutrigErConvLL,   tsOutrigErConvRL,   tsOutrigErConvLR,   tsOutrigErConvRR,   oEL, oER);
+            runFour (tsOutrigTailConvLL, tsOutrigTailConvRL, tsOutrigTailConvLR, tsOutrigTailConvRR, oTL, oTR);
+
+            float* bL = buffer.getWritePointer (0);
+            float* bR = buffer.getWritePointer (1);
+            const float* elp = oEL.getReadPointer (0);
+            const float* erp = oER.getReadPointer (0);
+            const float* tlp = oTL.getReadPointer (0);
+            const float* trp = oTR.getReadPointer (0);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                float sL = (elp[i] + tlp[i]) * trueStereoWetGain;
+                float sR = (erp[i] + trp[i]) * trueStereoWetGain;
+                sL = outrigHP.process (sL, 0);
+                sR = outrigHP.process (sR, 1);
+                const float g = outrigGainSmoothed.getNextValue();
+                sL *= g;
+                sR *= g;
+                const float oL = sL * outrigPanL;
+                const float oR = sR * outrigPanR;
+                bL[i] += oL;
+                bR[i] += oR;
+                outrigPkL = juce::jmax (outrigPkL, std::abs (oL));
+                outrigPkR = juce::jmax (outrigPkR, std::abs (oR));
+            }
+        }
+        else
+        {
+            for (int i = 0; i < numSamples; ++i) outrigGainSmoothed.getNextValue();
+        }
+        updatePeak (outrigPeakL, outrigPkL);
+        updatePeak (outrigPeakR, outrigPkR);
+
+        // ── AMBIENT ─────────────────────────────────────────────────────────
+        float ambientPkL = 0.f, ambientPkR = 0.f;
+        if (ambientOnRaw)
+        {
+            juce::AudioBuffer<float> aEL (1, numSamples), aER (1, numSamples);
+            juce::AudioBuffer<float> aTL (1, numSamples), aTR (1, numSamples);
+            runFour (tsAmbErConvLL,   tsAmbErConvRL,   tsAmbErConvLR,   tsAmbErConvRR,   aEL, aER);
+            runFour (tsAmbTailConvLL, tsAmbTailConvRL, tsAmbTailConvLR, tsAmbTailConvRR, aTL, aTR);
+
+            float* bL = buffer.getWritePointer (0);
+            float* bR = buffer.getWritePointer (1);
+            const float* elp = aEL.getReadPointer (0);
+            const float* erp = aER.getReadPointer (0);
+            const float* tlp = aTL.getReadPointer (0);
+            const float* trp = aTR.getReadPointer (0);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                float sL = (elp[i] + tlp[i]) * trueStereoWetGain;
+                float sR = (erp[i] + trp[i]) * trueStereoWetGain;
+                sL = ambientHP.process (sL, 0);
+                sR = ambientHP.process (sR, 1);
+                const float g = ambientGainSmoothed.getNextValue();
+                sL *= g;
+                sR *= g;
+                const float oL = sL * ambientPanL;
+                const float oR = sR * ambientPanR;
+                bL[i] += oL;
+                bR[i] += oR;
+                ambientPkL = juce::jmax (ambientPkL, std::abs (oL));
+                ambientPkR = juce::jmax (ambientPkR, std::abs (oR));
+            }
+        }
+        else
+        {
+            for (int i = 0; i < numSamples; ++i) ambientGainSmoothed.getNextValue();
+        }
+        updatePeak (ambientPeakL, ambientPkL);
+        updatePeak (ambientPeakR, ambientPkR);
     }
 
     // EQ: low shelf → peak 1 → peak 2 → peak 3 → high shelf

@@ -6,6 +6,7 @@
 #include "IRManager.h"
 #include "IRSynthEngine.h"
 #include "LicenceVerifier.h"
+#include "HP2ndOrder.h"
 
 class PingProcessor : public juce::AudioProcessor,
                       private juce::AudioProcessorParameter::Listener
@@ -332,6 +333,21 @@ private:
     juce::SmoothedValue<float> saturatorDriveSmoothed;
     juce::SmoothedValue<float> erLevelSmoothed;
     juce::SmoothedValue<float> tailLevelSmoothed;
+
+    // Per-mic-path mixer strips (MAIN / DIRECT / OUTRIG / AMBIENT).
+    // Each strip has a smoothed linear gain and a 2nd-order HP. Pan is sampled once per block
+    // (it changes slowly and small per-block steps are inaudible). Mute / Solo / On flags are
+    // folded into the target gain: a strip contributes zero when gated off, knob value otherwise.
+    // Defaults (mainGain = 0 dB, pan = 0, HP off, On=true, Mute=Solo=false, all extras Off)
+    // collapse the mixer to a pure ×1.0 passthrough, so MAIN output stays bit-identical
+    // to the pre-C9 single-path processBlock.
+    juce::SmoothedValue<float> mainGainSmoothed,   directGainSmoothed,   outrigGainSmoothed,   ambientGainSmoothed;
+    HP2ndOrder                 mainHP,             directHP,             outrigHP,             ambientHP;
+    // Atomics for future per-strip level meters (populated in processBlock; read from GUI).
+    std::atomic<float> mainPeakL { 0.f },    mainPeakR { 0.f };
+    std::atomic<float> directPeakL { 0.f },  directPeakR { 0.f };
+    std::atomic<float> outrigPeakL { 0.f },  outrigPeakR { 0.f };
+    std::atomic<float> ambientPeakL { 0.f }, ambientPeakR { 0.f };
 
     juce::AudioBuffer<float> currentIRBuffer;
     juce::AudioBuffer<float> rawSynthBuffer;      // raw (pre-processing) copy of last synth IR (MAIN)
