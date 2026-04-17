@@ -2147,20 +2147,51 @@ juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
     auto folder = IRManager::getIRFolder();
     if (! folder.exists())
         folder.createDirectory();
-    auto file = folder.getChildFile (safeName + ".wav");
-    juce::WavAudioFormat wavFormat;
-    juce::FileOutputStream* rawStream = new juce::FileOutputStream (file);
-    if (! rawStream->openedOk())
+
+    // Writes a 4-channel 24-bit WAV of `src` to `dest`. Returns true on success.
+    auto writeBufferAsWav = [] (const juce::File& dest,
+                                const juce::AudioBuffer<float>& src,
+                                double sampleRate) -> bool
     {
-        delete rawStream;
+        if (src.getNumSamples() == 0) return false;
+        juce::WavAudioFormat wavFormat;
+        auto* rawStream = new juce::FileOutputStream (dest);
+        if (! rawStream->openedOk())
+        {
+            delete rawStream;
+            return false;
+        }
+        std::unique_ptr<juce::AudioFormatWriter> writer (
+            wavFormat.createWriterFor (rawStream, sampleRate,
+                                       (unsigned int) src.getNumChannels(), 24, {}, 0));
+        if (! writer) return false;
+        writer->writeFromAudioSampleBuffer (src, 0, src.getNumSamples());
+        return true;
+    };
+
+    // ── MAIN path ────────────────────────────────────────────────────────────
+    auto file = folder.getChildFile (safeName + ".wav");
+    if (! writeBufferAsWav (file, currentIRBuffer, currentIRSampleRate))
         return {};
-    }
-    std::unique_ptr<juce::AudioFormatWriter> writer (
-        wavFormat.createWriterFor (rawStream, currentIRSampleRate,
-                                   (unsigned int) currentIRBuffer.getNumChannels(), 24, {}, 0));
-    if (! writer) return {};
-    writer->writeFromAudioSampleBuffer (currentIRBuffer, 0, currentIRBuffer.getNumSamples());
     writeIRSynthParamsSidecar (file, lastIRSynthParams);
+
+    // ── Auxiliary paths (DIRECT / OUTRIG / AMBIENT) ─────────────────────────
+    // Each is written as a suffixed sibling WAV next to the MAIN IR. The
+    // auxiliary paths don't go through the stretch/decay/reverse pipeline
+    // (DIRECT is short-circuited; OUTRIG/AMBIENT currently reuse the MAIN
+    // transform but the raw buffer is always bit-identical to the synth
+    // output, which is what we want to persist), so we save the raw buffers
+    // captured by loadIRFromBuffer. Skip any path whose raw buffer is empty.
+    if (rawSynthDirectBuffer.getNumSamples() > 0)
+        writeBufferAsWav (folder.getChildFile (safeName + "_direct.wav"),
+                          rawSynthDirectBuffer, rawSynthSampleRate);
+    if (rawSynthOutrigBuffer.getNumSamples() > 0)
+        writeBufferAsWav (folder.getChildFile (safeName + "_outrig.wav"),
+                          rawSynthOutrigBuffer, rawSynthSampleRate);
+    if (rawSynthAmbientBuffer.getNumSamples() > 0)
+        writeBufferAsWav (folder.getChildFile (safeName + "_ambient.wav"),
+                          rawSynthAmbientBuffer, rawSynthSampleRate);
+
     return file;
 }
 
@@ -2583,6 +2614,31 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("bakeERTail", p.bake_er_tail_balance);
     ir->setAttribute ("bakedERGain", p.baked_er_gain);
     ir->setAttribute ("bakedTailGain", p.baked_tail_gain);
+
+    // ── Multi-mic paths (feature/multi-mic-paths) ────────────────────────────
+    // New attributes — older sidecars that don't contain them fall back to
+    // the IRSynthParams struct defaults when read by irSynthParamsFromXml.
+    ir->setAttribute ("directOn",  p.direct_enabled);
+    ir->setAttribute ("outrigOn",  p.outrig_enabled);
+    ir->setAttribute ("ambientOn", p.ambient_enabled);
+
+    ir->setAttribute ("outrigLx",     p.outrig_lx);
+    ir->setAttribute ("outrigLy",     p.outrig_ly);
+    ir->setAttribute ("outrigRx",     p.outrig_rx);
+    ir->setAttribute ("outrigRy",     p.outrig_ry);
+    ir->setAttribute ("outrigLang",   p.outrig_langle);
+    ir->setAttribute ("outrigRang",   p.outrig_rangle);
+    ir->setAttribute ("outrigHeight", p.outrig_height);
+    ir->setAttribute ("outrigPat",    juce::String (p.outrig_pattern));
+
+    ir->setAttribute ("ambientLx",     p.ambient_lx);
+    ir->setAttribute ("ambientLy",     p.ambient_ly);
+    ir->setAttribute ("ambientRx",     p.ambient_rx);
+    ir->setAttribute ("ambientRy",     p.ambient_ry);
+    ir->setAttribute ("ambientLang",   p.ambient_langle);
+    ir->setAttribute ("ambientRang",   p.ambient_rangle);
+    ir->setAttribute ("ambientHeight", p.ambient_height);
+    ir->setAttribute ("ambientPat",    juce::String (p.ambient_pattern));
 }
 
 static void synthesizedIRToXml (const juce::AudioBuffer<float>& buf, double sampleRate, juce::XmlElement& elem)
@@ -2663,6 +2719,32 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.bake_er_tail_balance = ir->getBoolAttribute ("bakeERTail", false);
     p.baked_er_gain  = ir->getDoubleAttribute ("bakedERGain", 1.0);
     p.baked_tail_gain = ir->getDoubleAttribute ("bakedTailGain", 1.0);
+
+    // Multi-mic paths (attributes may be absent in older sidecars — fall back
+    // to IRSynthParams struct defaults).
+    IRSynthParams defaults;
+    p.direct_enabled  = ir->getBoolAttribute ("directOn",  defaults.direct_enabled);
+    p.outrig_enabled  = ir->getBoolAttribute ("outrigOn",  defaults.outrig_enabled);
+    p.ambient_enabled = ir->getBoolAttribute ("ambientOn", defaults.ambient_enabled);
+
+    p.outrig_lx      = ir->getDoubleAttribute ("outrigLx",     defaults.outrig_lx);
+    p.outrig_ly      = ir->getDoubleAttribute ("outrigLy",     defaults.outrig_ly);
+    p.outrig_rx      = ir->getDoubleAttribute ("outrigRx",     defaults.outrig_rx);
+    p.outrig_ry      = ir->getDoubleAttribute ("outrigRy",     defaults.outrig_ry);
+    p.outrig_langle  = ir->getDoubleAttribute ("outrigLang",   defaults.outrig_langle);
+    p.outrig_rangle  = ir->getDoubleAttribute ("outrigRang",   defaults.outrig_rangle);
+    p.outrig_height  = ir->getDoubleAttribute ("outrigHeight", defaults.outrig_height);
+    p.outrig_pattern = ir->getStringAttribute ("outrigPat",    juce::String (defaults.outrig_pattern)).toStdString();
+
+    p.ambient_lx     = ir->getDoubleAttribute ("ambientLx",     defaults.ambient_lx);
+    p.ambient_ly     = ir->getDoubleAttribute ("ambientLy",     defaults.ambient_ly);
+    p.ambient_rx     = ir->getDoubleAttribute ("ambientRx",     defaults.ambient_rx);
+    p.ambient_ry     = ir->getDoubleAttribute ("ambientRy",     defaults.ambient_ry);
+    p.ambient_langle = ir->getDoubleAttribute ("ambientLang",   defaults.ambient_langle);
+    p.ambient_rangle = ir->getDoubleAttribute ("ambientRang",   defaults.ambient_rangle);
+    p.ambient_height = ir->getDoubleAttribute ("ambientHeight", defaults.ambient_height);
+    p.ambient_pattern = ir->getStringAttribute ("ambientPat",   juce::String (defaults.ambient_pattern)).toStdString();
+
     return p;
 }
 

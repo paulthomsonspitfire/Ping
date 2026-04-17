@@ -203,6 +203,32 @@ PingEditor::PingEditor (PingProcessor& p)
         }
         pingProcessor.setLastIRSynthParams (irSynthComponent.getLastRenderParams());
         pingProcessor.loadIRFromBuffer (std::move (buf), (double) result.sampleRate, true);
+
+        // Multi-mic paths: if any auxiliary path was synthesised (direct, outrig,
+        // ambient), load its 4-channel IR into the matching convolvers. When the
+        // path was not synthesised (synthesised == false) we leave its raw buffer
+        // and convolvers untouched — the processBlock mixer gates on the
+        // *OnRaw APVTS flags, so unused convolvers are silent.
+        auto loadMicPath = [this, &result] (const MicIRChannels& mic, PingProcessor::MicPath path)
+        {
+            if (! mic.synthesised) return;
+            if (mic.LL.empty() || mic.RL.empty() || mic.LR.empty() || mic.RR.empty()) return;
+            const size_t M = mic.LL.size();
+            juce::AudioBuffer<float> b (4, (int) M);
+            for (size_t i = 0; i < M; ++i)
+            {
+                b.setSample (0, (int) i, (float) mic.LL[i]);
+                b.setSample (1, (int) i, (float) mic.RL[i]);
+                b.setSample (2, (int) i, (float) mic.LR[i]);
+                b.setSample (3, (int) i, (float) mic.RR[i]);
+            }
+            pingProcessor.loadIRFromBuffer (std::move (b), (double) result.sampleRate,
+                                            /*fromSynth=*/true, /*deferConvolverLoad=*/false, path);
+        };
+        loadMicPath (result.direct,  PingProcessor::MicPath::Direct);
+        loadMicPath (result.outrig,  PingProcessor::MicPath::Outrig);
+        loadMicPath (result.ambient, PingProcessor::MicPath::Ambient);
+
         irSynthComponent.setDirty (true);
         pingProcessor.setIRSynthDirty (true);
         updateWaveform();

@@ -178,6 +178,45 @@ IRSynthComponent::IRSynthComponent()
     micPatternLabel.setText ("Mic Pattern", juce::dontSendNotification);
     sampleRateLabel.setText ("Sample Rate", juce::dontSendNotification);
 
+    // ── Mic path toggles + OUTRIG / AMBIENT pattern + height controls ────────
+    // Defaults mirror IRSynthParams: all paths off until explicitly enabled;
+    // OUTRIG height 3 m (same as MAIN mics), pattern cardioid (LDC);
+    // AMBIENT height 6 m, pattern omni.
+    for (auto* b : { &directEnableButton, &outrigEnableButton, &ambientEnableButton })
+    {
+        b->setToggleState (false, juce::dontSendNotification);
+        b->setColour (juce::ToggleButton::textColourId, textDim);
+        b->setColour (juce::ToggleButton::tickColourId, accent);
+        b->setColour (juce::ToggleButton::tickDisabledColourId, juce::Colour (0xff404040));
+    }
+
+    addOptions (outrigPatternCombo,  micOptions, 5);
+    addOptions (ambientPatternCombo, micOptions, 5);
+    outrigPatternCombo.setSelectedId  (3, juce::dontSendNotification); // cardioid (LDC)
+    ambientPatternCombo.setSelectedId (1, juce::dontSendNotification); // omni
+
+    outrigHeightSlider.setRange  (0.5, 30.0, 0.1);
+    ambientHeightSlider.setRange (0.5, 30.0, 0.1);
+    outrigHeightSlider.setValue  (3.0, juce::dontSendNotification);
+    ambientHeightSlider.setValue (6.0, juce::dontSendNotification);
+
+    for (auto* s : { &outrigHeightSlider, &ambientHeightSlider })
+    {
+        s->setSliderStyle (juce::Slider::LinearHorizontal);
+        s->setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+        s->setColour (juce::Slider::thumbColourId, accent);
+        s->setColour (juce::Slider::trackColourId, panelBorder);
+    }
+
+    outrigPatternLabel.setText  ("Pattern",  juce::dontSendNotification);
+    ambientPatternLabel.setText ("Pattern",  juce::dontSendNotification);
+    outrigHeightLabel.setText   ("Height",   juce::dontSendNotification);
+    ambientHeightLabel.setText  ("Height",   juce::dontSendNotification);
+    outrigHeightReadout.setText  (juce::String (outrigHeightSlider.getValue(), 1) + " m",
+                                  juce::dontSendNotification);
+    ambientHeightReadout.setText (juce::String (ambientHeightSlider.getValue(), 1) + " m",
+                                  juce::dontSendNotification);
+
     // Add all controls directly (no tabs / viewports)
     addAndMakeVisible (floorPlanComponent);
     floorPlanComponent.setParamsGetter ([this] { return getParams(); });
@@ -185,12 +224,31 @@ IRSynthComponent::IRSynthComponent()
 
     auto notifyParamChanged = [this] { if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn(); };
     for (auto* s : { &widthSlider, &depthSlider, &heightSlider, &windowsSlider,
-                     &audienceSlider, &diffusionSlider, &organSlider, &balconiesSlider })
+                     &audienceSlider, &diffusionSlider, &organSlider, &balconiesSlider,
+                     &outrigHeightSlider, &ambientHeightSlider })
         s->onValueChange = notifyParamChanged;
     erOnlyButton.onClick = notifyParamChanged;
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
-                      &vaultCombo, &micPatternCombo, &sampleRateCombo })
+                      &vaultCombo, &micPatternCombo, &sampleRateCombo,
+                      &outrigPatternCombo, &ambientPatternCombo })
         cb->addListener (this);
+
+    // Mic-path toggles: flip FloorPlan visibility for OUTRIG/AMBIENT so the
+    // extra mic pairs only draw when enabled. Always notify the param-changed
+    // callback (suppression flag respected). DIRECT has no floor-plan pair.
+    outrigEnableButton.onClick = [this]
+    {
+        floorPlanComponent.outrigVisible = outrigEnableButton.getToggleState();
+        floorPlanComponent.repaint();
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    ambientEnableButton.onClick = [this]
+    {
+        floorPlanComponent.ambientVisible = ambientEnableButton.getToggleState();
+        floorPlanComponent.repaint();
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    directEnableButton.onClick = notifyParamChanged;
 
     addAndMakeVisible (shapeCombo);
     addAndMakeVisible (widthSlider);
@@ -233,6 +291,20 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (micPatternLabel);
     addAndMakeVisible (sampleRateLabel);
 
+    addAndMakeVisible (directEnableButton);
+    addAndMakeVisible (outrigEnableButton);
+    addAndMakeVisible (ambientEnableButton);
+    addAndMakeVisible (outrigPatternCombo);
+    addAndMakeVisible (ambientPatternCombo);
+    addAndMakeVisible (outrigPatternLabel);
+    addAndMakeVisible (ambientPatternLabel);
+    addAndMakeVisible (outrigHeightSlider);
+    addAndMakeVisible (ambientHeightSlider);
+    addAndMakeVisible (outrigHeightLabel);
+    addAndMakeVisible (ambientHeightLabel);
+    addAndMakeVisible (outrigHeightReadout);
+    addAndMakeVisible (ambientHeightReadout);
+
     // Bottom bar: RT60 | IR combo + Save | Preview | Progress | Done
     const char* const rt60Freqs[] = { "125", "250", "500", "1k", "2k", "4k" };
     addAndMakeVisible (rt60Label);
@@ -261,7 +333,8 @@ IRSynthComponent::IRSynthComponent()
     // Apply the same glassy transparent fill to all other combos on this page so they
     // visually match the main-page preset combo (0x30ffffff = 19 % opaque white).
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
-                      &vaultCombo, &micPatternCombo, &sampleRateCombo })
+                      &vaultCombo, &micPatternCombo, &sampleRateCombo,
+                      &outrigPatternCombo, &ambientPatternCombo })
     {
         cb->setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x1effffff));
         cb->setColour (juce::ComboBox::textColourId, textDim);
@@ -313,7 +386,10 @@ IRSynthComponent::IRSynthComponent()
     for (auto* l : { &widthLabel, &depthLabel, &heightLabel, &widthValueLabel, &depthValueLabel, &heightValueLabel,
                      &floorLabel, &ceilingLabel, &wallLabel, &windowsLabel,
                      &audienceLabel, &diffusionLabel, &vaultLabel, &organLabel, &balconiesLabel,
-                     &micPatternLabel, &sampleRateLabel })
+                     &micPatternLabel, &sampleRateLabel,
+                     &outrigPatternLabel, &ambientPatternLabel,
+                     &outrigHeightLabel,  &ambientHeightLabel,
+                     &outrigHeightReadout, &ambientHeightReadout })
         l->setColour (juce::Label::textColourId, textDim);
 
     startTimerHz (4);
@@ -367,6 +443,10 @@ void IRSynthComponent::paint (juce::Graphics& g)
     drawSectionHeader (interiorHeaderBounds, "Interior");
     drawSectionHeader (optionsHeaderBounds,  "Options");
     drawSectionHeader (roomHeaderBounds,     "Room Geometry");
+    drawSectionHeader (micPathsHeaderBounds, "Mic Paths");
+    drawSectionHeader (directHeaderBounds,   "Direct");
+    drawSectionHeader (outrigHeaderBounds,   "Outrigger");
+    drawSectionHeader (ambientHeaderBounds,  "Ambient");
 }
 
 void IRSynthComponent::resized()
@@ -529,6 +609,37 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
     dimRow (widthLabel,  widthValueLabel,  widthSlider);
     dimRow (depthLabel,  depthValueLabel,  depthSlider);
     dimRow (heightLabel, heightValueLabel, heightSlider);
+
+    y += secGap;
+
+    // ── MIC PATHS ────────────────────────────────────────────────────────────
+    // DIRECT / OUTRIGGER / AMBIENT — each a small sub-section with a header
+    // and a single power toggle. OUTRIGGER and AMBIENT also expose a pattern
+    // combo and a physical height slider; their L/R x/y positions are edited
+    // via the FloorPlanComponent.
+    micPathsHeaderBounds = { x0, y, ctrlW, headerH };
+    y += headerH + 4;
+
+    // DIRECT — inherits MAIN position / pattern / angles; no extra controls.
+    directHeaderBounds = { x0, y, ctrlW, headerH };
+    directEnableButton.setBounds (x0 + ctrlW - 140, y, 140, headerH);
+    y += headerH + 2;
+    // No further DIRECT rows.
+    y += secGap;
+
+    // OUTRIGGER — enable toggle in header row, then pattern + height rows.
+    outrigHeaderBounds = { x0, y, ctrlW, headerH };
+    outrigEnableButton.setBounds (x0 + ctrlW - 140, y, 140, headerH);
+    y += headerH + 2;
+    rowCombo  (y, outrigPatternLabel, outrigPatternCombo);               y += rowH;
+    rowSlider (y, outrigHeightLabel,  outrigHeightSlider, outrigHeightReadout); y += rowH + secGap;
+
+    // AMBIENT — enable toggle in header row, then pattern + height rows.
+    ambientHeaderBounds = { x0, y, ctrlW, headerH };
+    ambientEnableButton.setBounds (x0 + ctrlW - 140, y, 140, headerH);
+    y += headerH + 2;
+    rowCombo  (y, ambientPatternLabel, ambientPatternCombo);                     y += rowH;
+    rowSlider (y, ambientHeightLabel,  ambientHeightSlider, ambientHeightReadout); y += rowH;
 }
 
 IRSynthParams IRSynthComponent::getParams() const
@@ -555,6 +666,24 @@ IRSynthParams IRSynthComponent::getParams() const
     p.mic_pattern = comboSelection (micPatternCombo, micOptions, 5).toStdString();
     p.er_only = erOnlyButton.getToggleState();
     p.sample_rate = sampleRateCombo.getSelectedId() == 1 ? 44100 : 48000;
+
+    // Mic paths (DIRECT / OUTRIG / AMBIENT).
+    p.direct_enabled  = directEnableButton.getToggleState();
+    p.outrig_enabled  = outrigEnableButton.getToggleState();
+    p.ambient_enabled = ambientEnableButton.getToggleState();
+
+    p.outrig_lx      = t.cx[4];    p.outrig_ly      = t.cy[4];
+    p.outrig_rx      = t.cx[5];    p.outrig_ry      = t.cy[5];
+    p.outrig_langle  = t.angle[4]; p.outrig_rangle  = t.angle[5];
+    p.outrig_height  = outrigHeightSlider.getValue();
+    p.outrig_pattern = comboSelection (outrigPatternCombo, micOptions, 5).toStdString();
+
+    p.ambient_lx     = t.cx[6];    p.ambient_ly     = t.cy[6];
+    p.ambient_rx     = t.cx[7];    p.ambient_ry     = t.cy[7];
+    p.ambient_langle = t.angle[6]; p.ambient_rangle = t.angle[7];
+    p.ambient_height = ambientHeightSlider.getValue();
+    p.ambient_pattern = comboSelection (ambientPatternCombo, micOptions, 5).toStdString();
+
     return p;
 }
 
@@ -584,15 +713,34 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     t.cx[1] = p.source_rx;   t.cy[1] = p.source_ry;   t.angle[1] = p.spkr_angle;
     t.cx[2] = p.receiver_lx; t.cy[2] = p.receiver_ly; t.angle[2] = p.micl_angle;
     t.cx[3] = p.receiver_rx; t.cy[3] = p.receiver_ry; t.angle[3] = p.micr_angle;
+    t.cx[4] = p.outrig_lx;   t.cy[4] = p.outrig_ly;   t.angle[4] = p.outrig_langle;
+    t.cx[5] = p.outrig_rx;   t.cy[5] = p.outrig_ry;   t.angle[5] = p.outrig_rangle;
+    t.cx[6] = p.ambient_lx;  t.cy[6] = p.ambient_ly;  t.angle[6] = p.ambient_langle;
+    t.cx[7] = p.ambient_rx;  t.cy[7] = p.ambient_ry;  t.angle[7] = p.ambient_rangle;
     floorPlanComponent.setTransducerState (t);
+    floorPlanComponent.outrigVisible  = p.outrig_enabled;
+    floorPlanComponent.ambientVisible = p.ambient_enabled;
     floorPlanComponent.repaint();
     // Migrate legacy "cardioid" (written by older plugin versions) to the new "cardioid (LDC)" display key
-    juce::String micPat = juce::String (p.mic_pattern);
-    if (micPat.trim().equalsIgnoreCase ("cardioid"))
-        micPat = "cardioid (LDC)";
-    setComboTo (micPatternCombo, micPat, micOptions, 5);
+    auto migratePattern = [] (juce::String s)
+    {
+        if (s.trim().equalsIgnoreCase ("cardioid"))
+            return juce::String ("cardioid (LDC)");
+        return s;
+    };
+    setComboTo (micPatternCombo,     migratePattern (p.mic_pattern),     micOptions, 5);
+    setComboTo (outrigPatternCombo,  migratePattern (p.outrig_pattern),  micOptions, 5);
+    setComboTo (ambientPatternCombo, migratePattern (p.ambient_pattern), micOptions, 5);
     erOnlyButton.setToggleState (p.er_only, juce::dontSendNotification);
     sampleRateCombo.setSelectedId (p.sample_rate == 44100 ? 1 : 2, juce::dontSendNotification);
+
+    directEnableButton.setToggleState  (p.direct_enabled,  juce::dontSendNotification);
+    outrigEnableButton.setToggleState  (p.outrig_enabled,  juce::dontSendNotification);
+    ambientEnableButton.setToggleState (p.ambient_enabled, juce::dontSendNotification);
+    outrigHeightSlider.setValue  (p.outrig_height,  juce::dontSendNotification);
+    ambientHeightSlider.setValue (p.ambient_height, juce::dontSendNotification);
+    outrigHeightReadout.setText  (juce::String (p.outrig_height,  1) + " m", juce::dontSendNotification);
+    ambientHeightReadout.setText (juce::String (p.ambient_height, 1) + " m", juce::dontSendNotification);
 
     suppressingParamNotifications = false;
 }
@@ -611,6 +759,8 @@ void IRSynthComponent::timerCallback()
     diffusionReadout.setText (juce::String (diffusionSlider.getValue(), 2), juce::dontSendNotification);
     organReadout.setText (juce::String (organSlider.getValue(), 2), juce::dontSendNotification);
     balconiesReadout.setText (juce::String (balconiesSlider.getValue(), 2), juce::dontSendNotification);
+    outrigHeightReadout.setText  (juce::String (outrigHeightSlider.getValue(),  1) + " m", juce::dontSendNotification);
+    ambientHeightReadout.setText (juce::String (ambientHeightSlider.getValue(), 1) + " m", juce::dontSendNotification);
     updateRT60Display();
 
     if (! irCombo.isPopupActive())

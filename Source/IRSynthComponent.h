@@ -108,7 +108,11 @@ private:
     // Section header bounds – set in layoutControls(), read back in paint()
     juce::Rectangle<int> surfacesHeaderBounds, contentsHeaderBounds,
                          interiorHeaderBounds,  optionsHeaderBounds,
-                         roomHeaderBounds;
+                         roomHeaderBounds,
+                         micPathsHeaderBounds,
+                         directHeaderBounds,
+                         outrigHeaderBounds,
+                         ambientHeaderBounds;
 
     // Right-column floor-plan visualiser (always visible, not tab-gated)
     FloorPlanComponent floorPlanComponent;
@@ -141,6 +145,22 @@ private:
     juce::ToggleButton erOnlyButton { "Early reflections only" };
     juce::TextButton bakeBalanceButton { "Bake ER/Tail Balance" };
     juce::Label micPatternLabel, sampleRateLabel;
+
+    // Mic paths (DIRECT / OUTRIG / AMBIENT). MAIN is always on for synthesis
+    // (there is always a MAIN pair) — its mixer strip handles on/off.
+    //
+    // DIRECT has no position/pattern/height controls — it reuses the MAIN
+    // pair. OUTRIG and AMBIENT each expose a pattern combo and height
+    // slider; their L/R x/y positions come from the FloorPlanComponent.
+    juce::ToggleButton directEnableButton  { "Direct path" };
+    juce::ToggleButton outrigEnableButton  { "Outrigger mics" };
+    juce::ToggleButton ambientEnableButton { "Ambient mics" };
+
+    juce::ComboBox outrigPatternCombo, ambientPatternCombo;
+    juce::Label    outrigPatternLabel, ambientPatternLabel;
+    juce::Slider   outrigHeightSlider, ambientHeightSlider;
+    juce::Label    outrigHeightLabel, ambientHeightLabel;
+    juce::Label    outrigHeightReadout, ambientHeightReadout;
 
     // Bottom bar
     juce::Label rt60Label;
