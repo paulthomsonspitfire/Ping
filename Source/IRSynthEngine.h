@@ -68,16 +68,62 @@ struct IRSynthParams
     bool        bake_er_tail_balance = false;
     double      baked_er_gain = 1.0;
     double      baked_tail_gain = 1.0;
+
+    // ── Outrigger mics (independent mic pair, full ER + Tail) ────────────────
+    // outrig_height is the physical mic height in metres (unlike receiver_*
+    // which derives height from He * 0.9). Defaults match MAIN mic height (3 m).
+    bool        outrig_enabled  = false;
+    double      outrig_lx       = 0.15;
+    double      outrig_ly       = 0.80;
+    double      outrig_rx       = 0.85;
+    double      outrig_ry       = 0.80;
+    double      outrig_langle   = -2.35619449019;   // -3 pi/4 up-left (same default as MAIN)
+    double      outrig_rangle   = -0.785398163397;  // -pi/4 up-right
+    double      outrig_height   = 3.0;              // metres above floor
+    std::string outrig_pattern  = "cardioid (LDC)";
+
+    // ── Ambient mics (higher, further-back pair, full ER + Tail) ─────────────
+    bool        ambient_enabled = false;
+    double      ambient_lx      = 0.20;
+    double      ambient_ly      = 0.95;
+    double      ambient_rx      = 0.80;
+    double      ambient_ry      = 0.95;
+    double      ambient_langle  = -2.35619449019;
+    double      ambient_rangle  = -0.785398163397;
+    double      ambient_height  = 6.0;              // metres above floor
+    std::string ambient_pattern = "omni";
+
+    // ── Direct path (order-0 only, shares MAIN mic pattern + angles) ─────────
+    // No extra geometry fields: DIRECT uses receiver_lx/ly/rx/ry, micl_angle,
+    // micr_angle and mic_pattern from the MAIN pair (Decision D2 in
+    // Multi-Mic-Work-Plan.md).
+    bool        direct_enabled  = false;
+};
+
+/** Per-path 4-channel IR (LL/RL/LR/RR) used for DIRECT/OUTRIG/AMBIENT results. */
+struct MicIRChannels
+{
+    std::vector<double> LL, RL, LR, RR;
+    int  irLen       = 0;
+    bool synthesised = false;   // false = path was disabled, empty vectors
 };
 
 struct IRSynthResult
 {
-    std::vector<double> iLL, iRL, iLR, iRR;  // L→L, R→L, L→R, R→R
-    std::vector<double> rt60;   // 8 bands: 125 250 500 1k 2k 4k 8k 16k
-    int   irLen     = 0;
-    int   sampleRate= 0;
-    bool  success   = false;
+    // MAIN path — existing fields, unchanged layout.
+    std::vector<double> iLL, iRL, iLR, iRR;  // L->L, R->L, L->R, R->R
+    std::vector<double> rt60;                // 8 bands: 125 250 500 1k 2k 4k 8k 16k
+    int   irLen      = 0;
+    int   sampleRate = 0;
+    bool  success    = false;
     std::string errorMessage;
+
+    // Additional mic paths (feature/multi-mic-paths).
+    // synthesised == false for any path that was not requested in IRSynthParams;
+    // the vectors stay empty in that case.
+    MicIRChannels direct;
+    MicIRChannels outrig;
+    MicIRChannels ambient;
 };
 
 /**
