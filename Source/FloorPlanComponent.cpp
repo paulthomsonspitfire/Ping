@@ -3,14 +3,22 @@
 namespace
 {
     const double kPi = 3.14159265358979323846;
-    const juce::Colour colSpkL { 0xffd4714a };
-    const juce::Colour colSpkR { 0xffd4a040 };
-    const juce::Colour colMicL { 0xff4a9ed4 };
-    const juce::Colour colMicR { 0xff40c8d4 };
-    const juce::Colour colWall { 0xffc8a96e };
+    // Speakers (0/1) — warm orange/amber (unchanged from v2.5.0).
+    const juce::Colour colSpkL  { 0xffd4714a };
+    const juce::Colour colSpkR  { 0xffd4a040 };
+    // MAIN mics (2/3) — icy blue accent.
+    const juce::Colour colMicL  { 0xff4a9ed4 };
+    const juce::Colour colMicR  { 0xff40c8d4 };
+    // OUTRIG mics (4/5) — soft purple pair (L slightly cooler than R).
+    const juce::Colour colOutrigL { 0xffb09aff };
+    const juce::Colour colOutrigR { 0xffc8a6ff };
+    // AMBIENT mics (6/7) — amber pair (L slightly darker than R).
+    const juce::Colour colAmbientL { 0xffcfa95e };
+    const juce::Colour colAmbientR { 0xffe8c57a };
+    const juce::Colour colWall  { 0xffc8a96e };
     const juce::Colour colFill1 { 0xf214142a };
     const juce::Colour colFill2 { 0xf20c0c1e };
-    const juce::Colour colGrid { 0x0ac8a96e };
+    const juce::Colour colGrid  { 0x0ac8a96e };
     const float CORE_R = 10.0f;
     const float RING_R = 16.0f;
     const float RING_W = 6.0f;
@@ -35,10 +43,41 @@ namespace
     void drawTransducerIcon (juce::Graphics& g, const juce::Path& iconPath, float cx, float cy,
                             float angle, float scale, juce::Colour col)
     {
-        // Path is in -1..1, so: scale at origin, rotate at origin, translate to (cx,cy)
         auto tr = juce::AffineTransform::scale (scale).rotated (angle).translated (cx, cy);
         g.setColour (col);
         g.fillPath (iconPath, tr);
+    }
+
+    // Group classification for a transducer index.
+    enum class Group { Speaker, Main, Outrig, Ambient };
+    Group groupFor (int index)
+    {
+        if (index <= 1) return Group::Speaker;
+        if (index <= 3) return Group::Main;
+        if (index <= 5) return Group::Outrig;
+        return Group::Ambient;
+    }
+
+    juce::Colour colourFor (int index)
+    {
+        switch (index)
+        {
+            case 0: return colSpkL;   case 1: return colSpkR;
+            case 2: return colMicL;   case 3: return colMicR;
+            case 4: return colOutrigL;case 5: return colOutrigR;
+            case 6: return colAmbientL; default: return colAmbientR;
+        }
+    }
+
+    const char* labelForMic (int index)
+    {
+        switch (groupFor (index))
+        {
+            case Group::Main:    return "M";
+            case Group::Outrig:  return "O";
+            case Group::Ambient: return "A";
+            default:             return "";
+        }
     }
 }
 
@@ -82,9 +121,22 @@ std::vector<std::pair<double, double>> FloorPlanComponent::roomPoly (const std::
     return poly;
 }
 
+bool FloorPlanComponent::transducerVisible (int index) const
+{
+    if (index < 0 || index > 7) return false;
+    switch (groupFor (index))
+    {
+        case Group::Speaker: return true;
+        case Group::Main:    return true;
+        case Group::Outrig:  return outrigVisible;
+        case Group::Ambient: return ambientVisible;
+    }
+    return false;
+}
+
 juce::Point<float> FloorPlanComponent::transducerCanvasPos (int index) const
 {
-    if (! getParams || index < 0 || index > 3) return {};
+    if (! getParams || index < 0 || index > 7) return {};
     auto p = getParams();
     const int W = getWidth(), H = getHeight();
     if (W < 20 || H < 20) return {};
@@ -156,8 +208,9 @@ bool FloorPlanComponent::isInsideRoom (double nx, double ny) const
 
 FloorPlanComponent::HitResult FloorPlanComponent::transducerHitTest (float mx, float my)
 {
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 8; ++i)
     {
+        if (! transducerVisible (i)) continue;
         auto pt = transducerCanvasPos (i);
         float dist = std::hypot (mx - pt.x, my - pt.y);
         if (dist < CORE_R + 2)
@@ -206,8 +259,24 @@ void FloorPlanComponent::mouseDrag (const juce::MouseEvent& e)
 
 void FloorPlanComponent::mouseUp (const juce::MouseEvent&)
 {
-    if (dragIndex >= 0 && onPlacementChanged)
-        onPlacementChanged();
+    if (dragIndex >= 0)
+    {
+        // Fire per-group callback first, then the generic catch-all.
+        switch (groupFor (dragIndex))
+        {
+            case Group::Speaker:
+            case Group::Main:
+                if (onMainPlacementChanged) onMainPlacementChanged();
+                break;
+            case Group::Outrig:
+                if (onOutrigPlacementChanged) onOutrigPlacementChanged();
+                break;
+            case Group::Ambient:
+                if (onAmbientPlacementChanged) onAmbientPlacementChanged();
+                break;
+        }
+        if (onPlacementChanged) onPlacementChanged();
+    }
     dragIndex = -1;
 }
 
@@ -297,22 +366,41 @@ void FloorPlanComponent::paint (juce::Graphics& g)
                     juce::Justification::centred, false);
     }
 
-    const juce::Colour cols[] = { colSpkL, colSpkR, colMicL, colMicR };
     const float beamLen = RING_R * 3.2f;
-    const bool isSpeaker[] = { true, true, false, false };
 
-    for (int i = 0; i < 4; ++i)
+    auto isSpeakerIndex = [] (int i) { return i <= 1; };
+
+    // Pick the pattern used for mic beam arc. MAIN uses p.mic_pattern; OUTRIG/
+    // AMBIENT use their own pattern strings from IRSynthParams.
+    auto patternForMicIndex = [&p] (int i) -> std::string
     {
+        switch (groupFor (i))
+        {
+            case Group::Main:    return p.mic_pattern;
+            case Group::Outrig:  return p.outrig_pattern;
+            case Group::Ambient: return p.ambient_pattern;
+            default:             return {};
+        }
+    };
+
+    // Beam passes — iterate all 8 indices, skip hidden ones.
+    for (int i = 0; i < 8; ++i)
+    {
+        if (! transducerVisible (i)) continue;
+
         const float cx = toCanvas (transducers.cx[i], transducers.cy[i]).x;
         const float cy = toCanvas (transducers.cx[i], transducers.cy[i]).y;
         const float ang = (float) transducers.angle[i];
-        double arcHalf = isSpeaker[i] ? (0.6 * kPi) : (kPi * 0.65 * 0.5);
-        if (! isSpeaker[i])
+
+        double arcHalf = isSpeakerIndex (i) ? (0.6 * kPi) : (kPi * 0.65 * 0.5);
+        if (! isSpeakerIndex (i))
         {
-            if (p.mic_pattern == "omni") arcHalf = kPi * 0.5;
-            else if (p.mic_pattern == "subcardioid") arcHalf = kPi * 0.75 * 0.5;
-            else if (p.mic_pattern == "figure8") arcHalf = kPi * 0.25;
+            const auto pat = patternForMicIndex (i);
+            if      (pat == "omni")        arcHalf = kPi * 0.5;
+            else if (pat == "subcardioid") arcHalf = kPi * 0.75 * 0.5;
+            else if (pat == "figure8")     arcHalf = kPi * 0.25;
         }
+
         juce::Path beam;
         beam.startNewSubPath (cx, cy);
         const int nSeg = 16;
@@ -323,58 +411,83 @@ void FloorPlanComponent::paint (juce::Graphics& g)
             beam.lineTo (cx + beamLen * std::cos (theta), cy + beamLen * std::sin (theta));
         }
         beam.closeSubPath();
-        g.setColour (cols[i].withAlpha (isSpeaker[i] ? 0.18f : 0.16f));
+        g.setColour (colourFor (i).withAlpha (isSpeakerIndex (i) ? 0.18f : 0.16f));
         g.fillPath (beam);
     }
 
     juce::Path spkPath = makeSpeakerIconPath();
     juce::Path micPath = makeMicIconPath();
 
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < 8; ++i)
     {
+        if (! transducerVisible (i)) continue;
+
         auto pt = toCanvas (transducers.cx[i], transducers.cy[i]);
-        g.setColour (cols[i].withAlpha (0.22f));
+        auto col = colourFor (i);
+        g.setColour (col.withAlpha (0.22f));
         g.drawEllipse (pt.x - RING_R, pt.y - RING_R, RING_R * 2, RING_R * 2, RING_W);
 
         float tickX = pt.x + std::cos ((float) transducers.angle[i]) * RING_R;
         float tickY = pt.y + std::sin ((float) transducers.angle[i]) * RING_R;
-        g.setColour (cols[i]);
+        g.setColour (col);
         g.fillEllipse (tickX - 3.5f, tickY - 3.5f, 7, 7);
 
-        const juce::Path& iconPath = isSpeaker[i] ? spkPath : micPath;
-        drawTransducerIcon (g, iconPath, pt.x, pt.y, (float) transducers.angle[i], CORE_R, cols[i]);
+        const juce::Path& iconPath = isSpeakerIndex (i) ? spkPath : micPath;
+        drawTransducerIcon (g, iconPath, pt.x, pt.y, (float) transducers.angle[i], CORE_R, col);
+
+        // Small M/O/A label next to the ring for non-speaker mics. Placed
+        // to the upper-right of the ring so it does not overlap the beam.
+        const char* letter = labelForMic (i);
+        if (letter[0] != 0)
+        {
+            g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
+            g.setColour (col.withAlpha (0.95f));
+            g.drawText (letter,
+                        (int) (pt.x + RING_R * 0.8f),
+                        (int) (pt.y - RING_R * 1.1f),
+                        12, 12,
+                        juce::Justification::centredLeft, false);
+        }
     }
 
-    // Legend: colour guide for L/R speakers and mics (top-left so never scrolled out of view)
+    // Legend: colour guide. Base rows (Spk L/R, Mic L/R) are always shown.
+    // OUTRIG and AMBIENT rows are appended only when visible.
+    struct LegRow { const char* label; int index; };
+    std::vector<LegRow> rows = {
+        { "Spk L", 0 }, { "Spk R", 1 },
+        { "Mic L", 2 }, { "Mic R", 3 },
+    };
+    if (outrigVisible)  { rows.push_back ({ "Out L", 4 }); rows.push_back ({ "Out R", 5 }); }
+    if (ambientVisible) { rows.push_back ({ "Amb L", 6 }); rows.push_back ({ "Amb R", 7 }); }
+
     const float legX = 8.0f;
     const float legY = 8.0f;
     const float legIconSz = 10.0f;
     const float legRow = 14.0f;
     const juce::Colour legText { 0xc0ffffff };
     g.setFont (juce::FontOptions (9.0f));
-    const char* legLabels[] = { "Spk L", "Spk R", "Mic L", "Mic R" };
-    for (int i = 0; i < 4; ++i)
-    {
-        float iconCx = legX + legIconSz * 0.5f;
-        float yy = legY + (i + 0.5f) * legRow;  // center icon vertically in row
-        const juce::Path& legIcon = (i < 2) ? spkPath : micPath;
-        drawTransducerIcon (g, legIcon, iconCx, yy, 0.0f, legIconSz * 0.5f, cols[i]);
 
-        // Label
+    for (size_t r = 0; r < rows.size(); ++r)
+    {
+        const auto& row = rows[r];
+        const int i = row.index;
+        const float iconCx = legX + legIconSz * 0.5f;
+        const float yy = legY + ((float) r + 0.5f) * legRow;
+        const juce::Path& legIcon = isSpeakerIndex (i) ? spkPath : micPath;
+        drawTransducerIcon (g, legIcon, iconCx, yy, 0.0f, legIconSz * 0.5f, colourFor (i));
+
         g.setColour (legText);
-        g.drawText (legLabels[i], (int) (legX + legIconSz + 6), (int) (legY + i * legRow), 30, (int) legRow,
+        g.drawText (row.label, (int) (legX + legIconSz + 6), (int) (legY + (float) r * legRow), 30, (int) legRow,
                     juce::Justification::centredLeft, false);
 
         // Angle readout — 0° = north (up), +CW, −CCW, ±180° = south (audience).
-        // Internal storage uses atan2 screen convention (0 = east, +π/2 = south),
-        // so adding +π/2 rotates the reference to north.
         double displayDeg = (transducers.angle[i] + kPi / 2.0) * 180.0 / kPi;
         while (displayDeg >  180.0) displayDeg -= 360.0;
         while (displayDeg <= -180.0) displayDeg += 360.0;
         juce::String degStr = juce::String ((int) std::round (displayDeg))
                               + juce::String::fromUTF8 (u8"\u00b0");
-        g.setColour (cols[i].withAlpha (0.85f));
-        g.drawText (degStr, (int) (legX + legIconSz + 50), (int) (legY + i * legRow), 36, (int) legRow,
+        g.setColour (colourFor (i).withAlpha (0.85f));
+        g.drawText (degStr, (int) (legX + legIconSz + 50), (int) (legY + (float) r * legRow), 36, (int) legRow,
                     juce::Justification::centredLeft, false);
     }
 }
