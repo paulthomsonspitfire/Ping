@@ -1264,6 +1264,441 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     return res;
 }
 
+// ── synthExtraPath — OUTRIG / AMBIENT ─────────────────────────────────────
+// Near-verbatim duplicate of synthMainPath with the MAIN-specific identifiers
+// parameterised (receiver positions, receiver height, mic pattern, mic face
+// angles, seed base). Kept as an explicit duplicate so the MAIN body is frozen
+// for IR_14 bit-identity — do not factor out the shared body until a future
+// commit updates the golden digests.
+MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
+                                             double rlxNorm, double rlyNorm,
+                                             double rrxNorm, double rryNorm,
+                                             double rzMetres,
+                                             double langle, double rangle,
+                                             const std::string& pattern,
+                                             uint32_t seedBase,
+                                             IRSynthProgressFn cb)
+{
+    MicIRChannels out;
+    int sr = p.sample_rate;
+
+    auto report = [&](double frac, const std::string& msg) { if (cb) cb(frac, msg); };
+
+    auto& vp = getVP();
+    auto vpIt = vp.find(p.vault_type);
+    if (vpIt == vp.end()) vpIt = vp.find("None (flat)");
+    double hm = 1.0, vs = 0.0, vHfA = 0.0;
+    if (vpIt != vp.end()) { hm = vpIt->second[0]; vs = vpIt->second[1]; vHfA = vpIt->second[2]; }
+    double He = p.height * hm;
+
+    std::vector<double> rt = calcRT60(p);
+    double rm = rt[2];
+    double rmMax = *std::max_element(rt.begin(), rt.end());
+    bool eo = p.er_only;
+
+    int irLen = (int)std::floor(std::max(0.3, std::min(8.0 * rmMax, 30.0)) * sr);
+    int ec = (int)std::floor(0.085 * sr);
+
+    double den = shapeDen(p.shape);
+
+    const double minDim    = std::min({ p.width, p.depth, He });
+    const double maxRefDist = 1e9;
+    int mo = std::min(60, std::max(3, (int)std::floor(rm * SPEED / minDim / 2.0)));
+
+    double ts = std::min(0.95, vs + p.organ_case * 0.35 + p.balconies * 0.25 + p.diffusion * 0.3);
+    double oF = 1.0 - p.organ_case * 0.4;
+    double bakedErGain = p.bake_er_tail_balance ? p.baked_er_gain : 1.0;
+    double bakedTailGain = p.bake_er_tail_balance ? p.baked_tail_gain : 1.0;
+
+    auto& mats = getMats();
+    auto rc = [&](const std::string& m) -> std::array<double,8>
+    {
+        auto it = mats.find(m);
+        if (it == mats.end()) it = mats.find("Painted plaster");
+        std::array<double,8> r;
+        for (int i = 0; i < N_BANDS; ++i) r[i] = std::sqrt(1.0 - it->second[i]);
+        return r;
+    };
+    auto rF = rc(p.floor_material), rC = rc(p.ceiling_material), rW = rc(p.wall_material);
+    if (p.window_fraction > 1e-9)
+    {
+        auto mwIt = mats.find(p.wall_material);
+        auto mgIt = mats.find("Glass (large pane)");
+        const auto& aw = mwIt != mats.end() ? mwIt->second : mats.find("Painted plaster")->second;
+        const auto& ag = mgIt != mats.end() ? mgIt->second : aw;
+        double wf = std::max(0.0, std::min(1.0, p.window_fraction));
+        for (int i = 0; i < N_BANDS; ++i)
+        {
+            double a_blend = (1.0 - wf) * aw[i] + wf * ag[i];
+            rW[i] = std::sqrt(1.0 - a_blend);
+        }
+    }
+
+    report(0.05, "Computing image sources…");
+
+    // Speaker height same as MAIN (1 m); mic height from caller (OUTRIG: 3 m, AMBIENT: 6 m),
+    // clamped to 90 % of He so low-ceiling rooms don't place mics through the ceiling.
+    double sz = std::min(1.0, He * 0.9);
+    double rz = std::min(rzMetres, He * 0.9);
+    double slx = p.width * p.source_lx, sly = p.depth * p.source_ly;
+    double srx = p.width * p.source_rx, sry = p.depth * p.source_ry;
+    double rlx = p.width * rlxNorm, rly = p.depth * rlyNorm;
+    double rrx = p.width * rrxNorm, rry = p.depth * rryNorm;
+
+    const double srcDist = std::sqrt((slx - srx) * (slx - srx) + (sly - sry) * (sly - sry));
+    const double roomMin = std::min(p.width, p.depth);
+    const double closeThreshold = roomMin * 0.30;
+    const double coincidentThreshold = roomMin * 0.10;
+    const bool close = (srcDist < closeThreshold);
+    const bool coincident = (srcDist < coincidentThreshold);
+    const double jitterOrder01Ms = close ? 0.25 : 0.0;
+    const double jitterOrder2PlusMs = close ? 2.5 : 0.0;
+    const double reflectionSpreadMs = 0.0;
+
+    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 0, pattern, p.spkl_angle, langle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 1, pattern, p.spkr_angle, langle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 2, pattern, p.spkl_angle, rangle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 3, pattern, p.spkr_angle, rangle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+
+    report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size()) + " reflections…");
+
+    double diff = p.diffusion;
+    double earlyDiff = eo ? 0.0 : diff;
+    if (eo && close)
+        earlyDiff = 0.50;
+    const double freqScatterMs = ts * 0.5;
+    std::vector<double> eLL = renderCh(rLL, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
+    std::vector<double> eRL = renderCh(rRL, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
+    std::vector<double> eLR = renderCh(rLR, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
+    std::vector<double> eRR = renderCh(rRR, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
+
+    report(0.60, "Synthesising FDN reverb tail…");
+
+    std::vector<double> iLL, iRL, iLR, iRR;
+    if (!eo)
+    {
+        std::vector<double> eL(irLen), eR(irLen);
+        for (int i = 0; i < irLen; ++i)
+        {
+            eL[(size_t)i] = eLL[(size_t)i] + eRL[(size_t)i];
+            eR[(size_t)i] = eLR[(size_t)i] + eRR[(size_t)i];
+        }
+
+        if (coincident)
+        {
+            for (int i = 0; i < irLen; ++i)
+            {
+                eL[(size_t)i] *= 0.8;
+                eR[(size_t)i] *= 0.8;
+            }
+        }
+
+        {
+            AllpassDiffuser dL = makeAllpassDiffuser(sr, 0.80);
+            AllpassDiffuser dR = makeAllpassDiffuser(sr, 0.80);
+            for (int i = 0; i < irLen; ++i)
+            {
+                eL[(size_t)i] = dL.process(eL[(size_t)i]);
+                eR[(size_t)i] = dR.process(eR[(size_t)i]);
+            }
+            {
+                AllpassDiffuser longL, longR;
+                longL.g = longR.g = 0.62;
+                for (int i = 0; i < 4; ++i)
+                {
+                    int d = (int)std::round(sr * (i == 0 ? 0.0317 : i == 1 ? 0.0173 : i == 2 ? 0.0112 : 0.0057));
+                    longL.delays[i] = longR.delays[i] = d;
+                    longL.bufs[i].resize((size_t)d, 0.0);
+                    longR.bufs[i].resize((size_t)d, 0.0);
+                    longL.ptrs[i] = longR.ptrs[i] = 0;
+                }
+                for (int i = 0; i < irLen; ++i)
+                {
+                    eL[(size_t)i] = longL.process(eL[(size_t)i]);
+                    eR[(size_t)i] = longR.process(eR[(size_t)i]);
+                }
+            }
+            dL = makeAllpassDiffuser(sr, 0.80);
+            dR = makeAllpassDiffuser(sr, 0.80);
+            for (int i = 0; i < irLen; ++i)
+            {
+                eL[(size_t)i] = dL.process(eL[(size_t)i]);
+                eR[(size_t)i] = dR.process(eR[(size_t)i]);
+            }
+        }
+
+        const double fdnVol  = p.width * p.depth * He;
+        const double fdnSurf = 2.0 * (p.width * p.depth + p.depth * He + p.width * He);
+        const double fdnMfp  = 4.0 * fdnVol / fdnSurf;
+        const double fdnMaxMs = std::max(130.0, fdnMfp / SPEED * 1000.0 * 3.0);
+
+        auto dist3d = [](double ax, double ay, double az,
+                         double bx, double by, double bz) -> double {
+            double dx = ax-bx, dy = ay-by, dz = az-bz;
+            return std::sqrt(dx*dx + dy*dy + dz*dz);
+        };
+        const double minDirectDistM = std::min({
+            dist3d(rlx, rly, rz, slx, sly, sz),
+            dist3d(rlx, rly, rz, srx, sry, sz),
+            dist3d(rrx, rry, rz, slx, sly, sz),
+            dist3d(rrx, rry, rz, srx, sry, sz)
+        });
+        const int t_first      = std::max(0, (int)std::floor(minDirectDistM / SPEED * sr) - 1);
+        const int ecFdn        = std::min(irLen, t_first + ec);
+        const int fdnMaxRefCut = std::min(irLen,
+            (int)std::ceil((ecFdn + fdnMaxMs * sr / 1000.0) * 1.1));
+
+        // FDN seed derived from seedBase so OUTRIG (52 → 110/111) and AMBIENT (62 → 120/121)
+        // have distinct diffuse fields from MAIN (100/101) and from each other.
+        std::vector<double> tL = renderFDNTail(rt, irLen, ecFdn, eL, diff, sr, seedBase + 58, p.width, p.depth, He, fdnMaxRefCut);
+        std::vector<double> tR = renderFDNTail(rt, irLen, ecFdn, eR, diff, sr, seedBase + 59, p.width, p.depth, He, fdnMaxRefCut);
+
+        iLL.resize((size_t)irLen);
+        iRL.resize((size_t)irLen);
+        iLR.resize((size_t)irLen);
+        iRR.resize((size_t)irLen);
+        int xfade = (int)std::floor(0.020 * sr);
+
+        const double erFloor  = 0.05;
+        const double kMaxGain = 16.0;
+        const double kMinGain = 1.0 / kMaxGain;
+        const double kMinRms  = 1e-7;
+
+        auto wRMS = [&](const std::vector<double>& v, int a, int b) -> double {
+            a = std::max(a, 0); b = std::min(b, irLen);
+            if (b <= a) return 0.0;
+            double s = 0.0;
+            for (int i = a; i < b; ++i) s += v[(size_t)i] * v[(size_t)i];
+            return std::sqrt(s / (b - a));
+        };
+
+        double fdnGainL = 1.0, fdnGainR = 1.0;
+        {
+            const int rA = ecFdn - xfade, rB = ecFdn;
+            int a = std::max(rA, 0), b = std::min(rB, irLen);
+            double sL = 0.0, sR = 0.0;
+            int n = std::max(b - a, 1);
+            for (int i = a; i < b; ++i)
+            {
+                double l = eLL[(size_t)i] + eRL[(size_t)i];
+                double r = eLR[(size_t)i] + eRR[(size_t)i];
+                sL += l * l; sR += r * r;
+            }
+            double erRmsL = std::sqrt(sL / n) * bakedErGain;
+            double erRmsR = std::sqrt(sR / n) * bakedErGain;
+
+            const int fdnMaxSamp = (int)std::ceil(fdnMaxMs * sr / 1000.0);
+            double fdnRmsL = wRMS(tL, ecFdn + fdnMaxSamp, ecFdn + fdnMaxSamp + 2 * xfade) * 0.5 * bakedTailGain;
+            double fdnRmsR = wRMS(tR, ecFdn + fdnMaxSamp, ecFdn + fdnMaxSamp + 2 * xfade) * 0.5 * bakedTailGain;
+
+            fdnGainL = (fdnRmsL > kMinRms)
+                ? std::min(std::max(erRmsL * (1.0 - erFloor) / fdnRmsL, kMinGain), kMaxGain) : 1.0;
+            fdnGainR = (fdnRmsR > kMinRms)
+                ? std::min(std::max(erRmsR * (1.0 - erFloor) / fdnRmsR, kMinGain), kMaxGain) : 1.0;
+        }
+
+        for (int i = 0; i < irLen; ++i)
+        {
+            double tf = (i < ecFdn - xfade) ? 0.0
+                      : (i < ecFdn)         ? (double)(i - (ecFdn - xfade)) / xfade
+                      : 1.0;
+
+            double ef;
+            if      (i < ecFdn - xfade) ef = 1.0;
+            else if (i < ecFdn)         ef = erFloor + (1.0 - erFloor) * 0.5 * (1.0 + std::cos(M_PI * (double)(i - (ecFdn - xfade)) / xfade));
+            else                        ef = erFloor;
+
+            double tailL = tL[(size_t)i] * tf * 0.5 * bakedTailGain * fdnGainL;
+            double tailR = tR[(size_t)i] * tf * 0.5 * bakedTailGain * fdnGainR;
+            iLL[(size_t)i] = eLL[(size_t)i] * bakedErGain * ef + tailL;
+            iRL[(size_t)i] = eRL[(size_t)i] * bakedErGain * ef + tailL;
+            iLR[(size_t)i] = eLR[(size_t)i] * bakedErGain * ef + tailR;
+            iRR[(size_t)i] = eRR[(size_t)i] * bakedErGain * ef + tailR;
+        }
+    }
+    else
+    {
+        iLL.resize((size_t)irLen);
+        iRL.resize((size_t)irLen);
+        iLR.resize((size_t)irLen);
+        iRR.resize((size_t)irLen);
+        const int erTaperLen   = (int)std::round(0.010 * sr);
+        const int erTaperStart = ec - erTaperLen;
+        for (int i = 0; i < irLen; ++i)
+        {
+            double erFade;
+            if      (i >= ec)           erFade = 0.0;
+            else if (i >= erTaperStart) erFade = 0.5 * (1.0 + std::cos(M_PI * (double)(i - erTaperStart) / erTaperLen));
+            else                        erFade = 1.0;
+
+            iLL[(size_t)i] = eLL[(size_t)i] * bakedErGain * erFade;
+            iRL[(size_t)i] = eRL[(size_t)i] * bakedErGain * erFade;
+            iLR[(size_t)i] = eLR[(size_t)i] * bakedErGain * erFade;
+            iRR[(size_t)i] = eRR[(size_t)i] * bakedErGain * erFade;
+        }
+    }
+
+    {
+        const double modalGain = 0.18;
+        iLL = applyModalBank(iLL, p.width, p.depth, He, rt[0], modalGain, sr);
+        iRL = applyModalBank(iRL, p.width, p.depth, He, rt[0], modalGain, sr);
+        iLR = applyModalBank(iLR, p.width, p.depth, He, rt[0], modalGain, sr);
+        iRR = applyModalBank(iRR, p.width, p.depth, He, rt[0], modalGain, sr);
+    }
+
+    report(0.85, "Finishing…");
+
+    iLL = hpF(lpF(iLL, 18000.0, sr), 20.0, sr);
+    iRL = hpF(lpF(iRL, 18000.0, sr), 20.0, sr);
+    iLR = hpF(lpF(iLR, 18000.0, sr), 20.0, sr);
+    iRR = hpF(lpF(iRR, 18000.0, sr), 20.0, sr);
+
+    {
+        const int endFade = (int)std::round(0.500 * sr);
+        const int fadeStart = std::max(0, irLen - endFade);
+        for (auto* v : { &iLL, &iRL, &iLR, &iRR })
+            for (int i = fadeStart; i < irLen; ++i)
+            {
+                double t = (double)(i - fadeStart) / (double)endFade;
+                (*v)[(size_t)i] *= 0.5 * (1.0 + std::cos(M_PI * t));
+            }
+    }
+
+    {
+        const double gain15dB = std::pow(10.0, 15.0 / 20.0);
+        for (auto* v : { &iLL, &iRL, &iLR, &iRR })
+            for (double& s : *v)
+                s *= gain15dB;
+    }
+
+    out.LL = std::move(iLL);
+    out.RL = std::move(iRL);
+    out.LR = std::move(iLR);
+    out.RR = std::move(iRR);
+    out.irLen = irLen;
+    out.synthesised = true;
+    report(1.0, "Done.");
+    return out;
+}
+
+// ── synthDirectPath — order-0 only, shares MAIN mic pattern + angles ──────
+// Synthesises a very short IR containing only the direct arrivals (one ray
+// per speaker-mic pair). No reflections, no diffusion, no FDN tail, no modal
+// bank, no 500 ms end fade — just the 8-band bandpass-filter impulse-response
+// tail plus a +15 dB output trim to match MAIN's level convention.
+//
+// D2: uses p.mic_pattern and p.micl_angle / p.micr_angle (inherits from MAIN).
+// er_only is implicitly honoured — order-0 arrivals are always within ec.
+MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
+{
+    MicIRChannels out;
+    int sr = p.sample_rate;
+
+    auto& vp = getVP();
+    auto vpIt = vp.find(p.vault_type);
+    if (vpIt == vp.end()) vpIt = vp.find("None (flat)");
+    double hm = 1.0;
+    if (vpIt != vp.end()) hm = vpIt->second[0];
+    double He = p.height * hm;
+
+    // Speaker/mic heights identical to MAIN path for consistent direct-path timing.
+    double sz = std::min(1.0, He * 0.9);
+    double rz = std::min(3.0, He * 0.9);
+    double slx = p.width * p.source_lx, sly = p.depth * p.source_ly;
+    double srx = p.width * p.source_rx, sry = p.depth * p.source_ry;
+    double rlx = p.width * p.receiver_lx, rly = p.depth * p.receiver_ly;
+    double rrx = p.width * p.receiver_rx, rry = p.depth * p.receiver_ry;
+
+    auto dist3d = [](double ax, double ay, double az,
+                     double bx, double by, double bz) -> double {
+        double dx = ax-bx, dy = ay-by, dz = az-bz;
+        return std::sqrt(dx*dx + dy*dy + dz*dz);
+    };
+    const double maxDirectDistM = std::max({
+        dist3d(rlx, rly, rz, slx, sly, sz),
+        dist3d(rlx, rly, rz, srx, sry, sz),
+        dist3d(rrx, rry, rz, slx, sly, sz),
+        dist3d(rrx, rry, rz, srx, sry, sz)
+    });
+
+    // irLen = enough for the farthest direct arrival + bandpass-filter settling tail.
+    // 512 samples is ~10 ms at 48 kHz — safely past the 8-band bpF impulse response.
+    int irLen = (int)std::ceil(maxDirectDistM / SPEED * sr) + 512;
+    // Guarantee a minimum usable length even in tiny rooms so filter tails have room.
+    irLen = std::max(irLen, 1024);
+
+    int ec = (int)std::floor(0.085 * sr);
+    double den = shapeDen(p.shape);
+
+    // Material reflection coefficients are unused for order-0 (no bounces), but
+    // calcRefs signature requires them — compute cheaply.
+    auto& mats = getMats();
+    auto rc = [&](const std::string& m) -> std::array<double,8>
+    {
+        auto it = mats.find(m);
+        if (it == mats.end()) it = mats.find("Painted plaster");
+        std::array<double,8> r;
+        for (int i = 0; i < N_BANDS; ++i) r[i] = std::sqrt(1.0 - it->second[i]);
+        return r;
+    };
+    auto rF = rc(p.floor_material), rC = rc(p.ceiling_material), rW = rc(p.wall_material);
+
+    double bakedErGain = p.bake_er_tail_balance ? p.baked_er_gain : 1.0;
+
+    // mo = 0 → calcRefs' nested loops iterate only (0,0,0), giving a single
+    // direct arrival per speaker-mic pair (totalBounces = 0, no wall bounces).
+    // eo = true guarantees Lambert scatter offsets that could push past ec are skipped,
+    // though at order 0 scatter is not spawned (the #if 1 block requires totalBounces >= 1).
+    const int mo = 0;
+    const bool eo = true;
+    const double maxRefDist = 1e9;
+    const double ts = 0.0;  // no scatter / temporal jitter
+    const double oF = 1.0, vHfA = 0.0;
+    // No jitter at all for DIRECT: close-speaker jitter would misalign the direct pulse.
+    const double jitter01 = 0.0, jitter2 = 0.0;
+
+    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 72, p.mic_pattern, p.spkl_angle, p.micl_angle, maxRefDist, jitter01, jitter2);
+    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 73, p.mic_pattern, p.spkr_angle, p.micl_angle, maxRefDist, jitter01, jitter2);
+    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 74, p.mic_pattern, p.spkl_angle, p.micr_angle, maxRefDist, jitter01, jitter2);
+    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 75, p.mic_pattern, p.spkr_angle, p.micr_angle, maxRefDist, jitter01, jitter2);
+
+    // No diffusion, no frequency scatter, no reflection spread — just the bpF cascade.
+    const double diff = 0.0;
+    const double reflectionSpreadMs = 0.0;
+    const double freqScatterMs = 0.0;
+
+    std::vector<double> iLL = renderCh(rLL, irLen, den, sr, diff, reflectionSpreadMs, freqScatterMs);
+    std::vector<double> iRL = renderCh(rRL, irLen, den, sr, diff, reflectionSpreadMs, freqScatterMs);
+    std::vector<double> iLR = renderCh(rLR, irLen, den, sr, diff, reflectionSpreadMs, freqScatterMs);
+    std::vector<double> iRR = renderCh(rRR, irLen, den, sr, diff, reflectionSpreadMs, freqScatterMs);
+
+    // Match MAIN's bakedErGain convention (applied to the ER portion in MAIN).
+    for (auto* v : { &iLL, &iRL, &iLR, &iRR })
+        for (double& s : *v) s *= bakedErGain;
+
+    // Light band-limiting to match MAIN's post-processing profile.
+    iLL = hpF(lpF(iLL, 18000.0, sr), 20.0, sr);
+    iRL = hpF(lpF(iRL, 18000.0, sr), 20.0, sr);
+    iLR = hpF(lpF(iLR, 18000.0, sr), 20.0, sr);
+    iRR = hpF(lpF(iRR, 18000.0, sr), 20.0, sr);
+
+    // +15 dB output trim (same convention as MAIN).
+    {
+        const double gain15dB = std::pow(10.0, 15.0 / 20.0);
+        for (auto* v : { &iLL, &iRL, &iLR, &iRR })
+            for (double& s : *v)
+                s *= gain15dB;
+    }
+
+    out.LL = std::move(iLL);
+    out.RL = std::move(iRL);
+    out.LR = std::move(iLR);
+    out.RR = std::move(iRR);
+    out.irLen = irLen;
+    out.synthesised = true;
+    return out;
+}
+
 // ── makeWav — 24-bit quad (iLL,iRL,iLR,iRR), little-endian ────────────────
 // Writes WAVE_FORMAT_EXTENSIBLE (tag 0xFFFE) with a 40-byte fmt chunk.
 // Plain PCM (tag 0x0001) is rejected by JUCE's WavAudioFormat for 4-channel files.

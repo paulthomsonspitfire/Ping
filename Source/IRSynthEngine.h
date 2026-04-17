@@ -242,7 +242,35 @@ private:
 
     // ── Multi-mic path synthesis (feature/multi-mic-paths, Phase 1.3) ──────
     // synthMainPath is the historical body of synthIR, unchanged (bit-identity
-    // guarded by IR_14). synthExtraPath / synthDirectPath are added in later
-    // checkpoints (C4) and will reuse the same helper machinery above.
+    // guarded by IR_14). synthExtraPath / synthDirectPath are sibling helpers
+    // used for OUTRIG, AMBIENT and DIRECT mic pairs. The parallel dispatcher
+    // (C5) fans synthIR out across these helpers using std::async.
     static IRSynthResult synthMainPath (const IRSynthParams& p, IRSynthProgressFn cb);
+
+    // synthExtraPath — OUTRIG / AMBIENT. Identical engine to synthMainPath but
+    // reads an independent mic pair (normalised 0–1 receiver positions,
+    // absolute-metres height), independent mic pattern + angles, and an
+    // independent seed base so the diffuse field and FDN seed are distinct
+    // from MAIN. Speaker positions, room geometry, rt60, diffusion and all
+    // other acoustic parameters are unchanged (same room, different ears).
+    //   rlxNorm/rlyNorm/rrxNorm/rryNorm: normalised 0–1 mic positions (multiplied by width/depth internally).
+    //   rzMetres: mic height in metres (clamped to He * 0.9 as MAIN clamps to min(3.0, He*0.9)).
+    //   langle/rangle: mic face angles (same convention as p.micl_angle/p.micr_angle).
+    //   pattern: mic polar pattern string (same keys as p.mic_pattern).
+    //   seedBase: base seed for calcRefs (4 consecutive seeds consumed) and FDN (+58, +59).
+    static MicIRChannels synthExtraPath (const IRSynthParams& p,
+                                         double rlxNorm, double rlyNorm,
+                                         double rrxNorm, double rryNorm,
+                                         double rzMetres,
+                                         double langle, double rangle,
+                                         const std::string& pattern,
+                                         uint32_t seedBase,
+                                         IRSynthProgressFn cb);
+
+    // synthDirectPath — order-0-only IR (direct arrivals only, no reflections,
+    // no diffusion, no FDN tail, no modal bank, no end fade). Shares MAIN's
+    // mic pattern + angles + receiver positions (D2). Returns a very short IR
+    // (~2–60 ms depending on room size) sufficient for the direct ray plus
+    // the 8-band bandpass-filter impulse-response tail.
+    static MicIRChannels synthDirectPath (const IRSynthParams& p);
 };
