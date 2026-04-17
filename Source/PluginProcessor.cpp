@@ -470,6 +470,18 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     tsTailConvLL.reset(); tsTailConvRL.reset(); tsTailConvLR.reset(); tsTailConvRR.reset();
     tsErConvLL.prepare (spec); tsErConvRL.prepare (spec); tsErConvLR.prepare (spec); tsErConvRR.prepare (spec);
     tsTailConvLL.prepare (spec); tsTailConvRL.prepare (spec); tsTailConvLR.prepare (spec); tsTailConvRR.prepare (spec);
+
+    // Multi-mic path convolvers (feature/multi-mic-paths) — reset + prepare with the same spec.
+    tsDirectConvLL.reset();   tsDirectConvRL.reset();   tsDirectConvLR.reset();   tsDirectConvRR.reset();
+    tsDirectConvLL.prepare (spec); tsDirectConvRL.prepare (spec); tsDirectConvLR.prepare (spec); tsDirectConvRR.prepare (spec);
+    tsOutrigErConvLL.reset();   tsOutrigErConvRL.reset();   tsOutrigErConvLR.reset();   tsOutrigErConvRR.reset();
+    tsOutrigTailConvLL.reset(); tsOutrigTailConvRL.reset(); tsOutrigTailConvLR.reset(); tsOutrigTailConvRR.reset();
+    tsOutrigErConvLL.prepare (spec);   tsOutrigErConvRL.prepare (spec);   tsOutrigErConvLR.prepare (spec);   tsOutrigErConvRR.prepare (spec);
+    tsOutrigTailConvLL.prepare (spec); tsOutrigTailConvRL.prepare (spec); tsOutrigTailConvLR.prepare (spec); tsOutrigTailConvRR.prepare (spec);
+    tsAmbErConvLL.reset();   tsAmbErConvRL.reset();   tsAmbErConvLR.reset();   tsAmbErConvRR.reset();
+    tsAmbTailConvLL.reset(); tsAmbTailConvRL.reset(); tsAmbTailConvLR.reset(); tsAmbTailConvRR.reset();
+    tsAmbErConvLL.prepare (spec);   tsAmbErConvRL.prepare (spec);   tsAmbErConvLR.prepare (spec);   tsAmbErConvRR.prepare (spec);
+    tsAmbTailConvLL.prepare (spec); tsAmbTailConvRL.prepare (spec); tsAmbTailConvLR.prepare (spec); tsAmbTailConvRR.prepare (spec);
     spec.numChannels = 2;
     tailConvolver.reset();
     tailConvolver.prepare (spec);
@@ -1616,18 +1628,22 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 
     // IR load crossfade: fade wet bus from silence while convolvers swap to new IR.
-    // The 8 ts*Conv convolvers load asynchronously; each swaps independently during its
+    // The ts*Conv convolvers load asynchronously; each swaps independently during its
     // process() call. Between a preset switch and full swap-in, some may run old IR /
     // some new, producing wrong-level mixed output (distortion). Fading from silence
     // prevents this from being heard. Dry signal is unaffected — it plays through normally.
+    // Sample-based counter stays consistent across buffer sizes (a block-count fade would
+    // shrink from ~680 ms at 512-sample buffers to ~170 ms at 128-sample buffers).
     {
-        int remaining = irLoadFadeBlocksRemaining.load (std::memory_order_relaxed);
+        int remaining = irLoadFadeSamplesRemaining.load (std::memory_order_relaxed);
         if (remaining > 0)
         {
-            // Linear fade-in: 0 at block 0 (immediately after load), 1 at block kIRLoadFadeBlocks
-            float fadeIn = 1.0f - (float) remaining / (float) kIRLoadFadeBlocks;
+            // Linear per-block fade-in: 0 just after load → 1 at kIRLoadFadeSamples elapsed
+            float fadeIn = 1.0f - (float) remaining / (float) kIRLoadFadeSamples;
+            fadeIn = juce::jlimit (0.0f, 1.0f, fadeIn);
             buffer.applyGain (fadeIn);
-            irLoadFadeBlocksRemaining.store (remaining - 1, std::memory_order_relaxed);
+            int newRem = juce::jmax (0, remaining - numSamples);
+            irLoadFadeSamplesRemaining.store (newRem, std::memory_order_relaxed);
         }
     }
 
@@ -1811,13 +1827,57 @@ void PingProcessor::loadIRFromFile (const juce::File& file)
     juce::AudioBuffer<float> buf ((int) reader->numChannels, (int) reader->lengthInSamples);
     reader->read (&buf, 0, (int) reader->lengthInSamples, 0, true, true);
     currentIRSampleRate = reader->sampleRate;
-    loadIRFromBuffer (std::move (buf), currentIRSampleRate);
+    loadIRFromBuffer (std::move (buf), currentIRSampleRate, false, false, MicPath::Main);
+
+    // Load sibling multi-mic paths if they exist — old IRs without these files are skipped
+    // silently, so this is fully backward-compatible.
+    loadMicPathFromFile (file, MicPath::Direct);
+    loadMicPathFromFile (file, MicPath::Outrig);
+    loadMicPathFromFile (file, MicPath::Ambient);
 }
 
 void PingProcessor::reloadSynthIR()
 {
+    // Reload every raw synth buffer we have — each goes back through the full transform
+    // pipeline (reverse/stretch/decay/trim) so stretch/decay knobs re-apply. All four share
+    // rawSynthSampleRate.
     if (rawSynthBuffer.getNumSamples() > 0)
-        loadIRFromBuffer (rawSynthBuffer, rawSynthSampleRate, true);
+        loadIRFromBuffer (rawSynthBuffer, rawSynthSampleRate, true, false, MicPath::Main);
+    if (rawSynthDirectBuffer.getNumSamples() > 0)
+        loadIRFromBuffer (rawSynthDirectBuffer, rawSynthSampleRate, true, false, MicPath::Direct);
+    if (rawSynthOutrigBuffer.getNumSamples() > 0)
+        loadIRFromBuffer (rawSynthOutrigBuffer, rawSynthSampleRate, true, false, MicPath::Outrig);
+    if (rawSynthAmbientBuffer.getNumSamples() > 0)
+        loadIRFromBuffer (rawSynthAmbientBuffer, rawSynthSampleRate, true, false, MicPath::Ambient);
+}
+
+void PingProcessor::loadMicPathFromFile (const juce::File& baseIRFile, MicPath path)
+{
+    if (path == MicPath::Main)   // no-op — Main is loaded via loadIRFromFile
+        return;
+    if (baseIRFile == juce::File())
+        return;
+
+    // Derive the suffix-appended sibling filename (e.g. "Venue.wav" → "Venue_direct.wav").
+    const juce::String suffix = (path == MicPath::Direct)  ? "_direct"
+                              : (path == MicPath::Outrig)  ? "_outrig"
+                              :                              "_ambient";
+    const auto stem = baseIRFile.getFileNameWithoutExtension();
+    const auto ext  = baseIRFile.getFileExtension();           // includes leading dot
+    const auto dir  = baseIRFile.getParentDirectory();
+    const auto sibling = dir.getChildFile (stem + suffix + ext);
+    if (! sibling.existsAsFile())
+        return;   // extra path not available for this IR — silently skip
+
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+    std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (sibling));
+    if (! reader) return;
+
+    juce::AudioBuffer<float> buf ((int) reader->numChannels, (int) reader->lengthInSamples);
+    reader->read (&buf, 0, (int) reader->lengthInSamples, 0, true, true);
+    loadIRFromBuffer (std::move (buf), reader->sampleRate, /*fromSynth=*/false,
+                      /*deferConvolverLoad=*/false, path);
 }
 
 juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
@@ -1846,15 +1906,72 @@ juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
     return file;
 }
 
-void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth, bool deferConvolverLoad)
+void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth, bool deferConvolverLoad, MicPath path)
 {
     if (buffer.getNumSamples() == 0) return;
-    currentIRSampleRate = bufferSampleRate;
+
+    // ── DIRECT path short-circuit ────────────────────────────────────────────
+    // Direct IRs are order-0 only (direct arrival, no reflections). Too short to split
+    // into ER/Tail; no decay envelope or silence trim applies. Load raw into 4 mono
+    // convolvers and return without touching any MAIN state (currentIRBuffer, selectedIRFile,
+    // irFromSynth, etc.).
+    if (path == MicPath::Direct)
+    {
+        if (fromSynth)
+        {
+            rawSynthDirectBuffer = buffer;
+            rawSynthSampleRate   = bufferSampleRate;
+            if (deferConvolverLoad) return;
+        }
+
+        // Expand mono/stereo to 4-channel so we always have 4 mono IR vectors to load.
+        // (Synth DIRECT always comes in 4-channel; file DIRECT may be mono/stereo.)
+        int numCh  = buffer.getNumChannels();
+        int numSmp = buffer.getNumSamples();
+        if (numCh < 4)
+        {
+            juce::AudioBuffer<float> expanded (4, numSmp);
+            expanded.clear();
+            expanded.copyFrom (0, 0, buffer, 0, 0, numSmp);
+            expanded.applyGain (0, 0, numSmp, 0.5f);
+            const int srcRCh = (numCh >= 2) ? 1 : 0;
+            expanded.copyFrom (3, 0, buffer, srcRCh, 0, numSmp);
+            expanded.applyGain (3, 0, numSmp, 0.5f);
+            expanded.applyGain (juce::Decibels::decibelsToGain (-15.0f));
+            buffer = std::move (expanded);
+        }
+
+        // Arm wet fade before kicking off background loads (see MAIN path for rationale).
+        irLoadFadeSamplesRemaining.store (kIRLoadFadeSamples);
+
+        juce::dsp::Convolution* tsDirect[] = { &tsDirectConvLL, &tsDirectConvRL, &tsDirectConvLR, &tsDirectConvRR };
+        for (int c = 0; c < 4; ++c)
+        {
+            juce::AudioBuffer<float> mono (1, buffer.getNumSamples());
+            mono.copyFrom (0, 0, buffer, c, 0, buffer.getNumSamples());
+            tsDirect[c]->loadImpulseResponse (std::move (mono), bufferSampleRate,
+                juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no,
+                juce::dsp::Convolution::Normalise::no);
+        }
+        return;
+    }
+
+    // MAIN / OUTRIG / AMBIENT share the same pipeline from here on. Per-path branches
+    // below only affect (a) which state to mutate (Main owns currentIRBuffer etc.) and
+    // (b) which 8-convolver set receives the final IR.
+    const bool isMainPath = (path == MicPath::Main);
+
+    if (isMainPath)
+        currentIRSampleRate = bufferSampleRate;
+
     if (fromSynth)
     {
-        irFromSynth = true;
-        selectedIRFile = juce::File();   // clear any previous file selection
-        synthesizedIRSampleRate = bufferSampleRate;
+        if (isMainPath)
+        {
+            irFromSynth = true;
+            selectedIRFile = juce::File();   // clear any previous file selection
+            synthesizedIRSampleRate = bufferSampleRate;
+        }
 
         // Auto-trim trailing silence: scan for last sample above -80 dB, add 200 ms safety tail.
         // Must run BEFORE rawSynthBuffer is saved so the stored raw copy is already trimmed.
@@ -1900,18 +2017,21 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             }
         }
 
-        rawSynthBuffer = buffer;           // save raw copy before any transforms (silence already trimmed)
+        // save raw copy before any transforms (silence already trimmed) into the right slot
+        if      (path == MicPath::Main)    rawSynthBuffer         = buffer;
+        else if (path == MicPath::Outrig)  rawSynthOutrigBuffer   = buffer;
+        else if (path == MicPath::Ambient) rawSynthAmbientBuffer  = buffer;
         rawSynthSampleRate = bufferSampleRate;
 
         // During initial session load (audioEnginePrepared = false), setStateInformation calls
-        // us with deferConvolverLoad = true.  We've saved rawSynthBuffer; prepareToPlay will
+        // us with deferConvolverLoad = true.  We've saved the raw buffer; prepareToPlay will
         // later post a callAsync that calls reloadSynthIR(), which re-enters loadIRFromBuffer
         // without the defer flag and completes the full transform + loadImpulseResponse sequence.
         // This prevents the race between loadImpulseResponse background threads and reset().
         if (deferConvolverLoad)
             return;
     }
-    else
+    else if (isMainPath)
         irFromSynth = false;
 
     // Optional: apply reverse
@@ -2052,7 +2172,8 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         }
     }
 
-    currentIRBuffer = buffer;   // store original data for waveform display before any channel expansion
+    if (isMainPath)
+        currentIRBuffer = buffer;   // store original data for waveform display before any channel expansion
     int numCh = buffer.getNumChannels();
     int fullLen = buffer.getNumSamples();
 
@@ -2110,12 +2231,29 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             return m;
         };
         // Arm the wet-signal crossfade BEFORE kicking off any background IR loads.
-        // processBlock will fade the wet bus from silence for kIRLoadFadeBlocks blocks,
+        // processBlock will fade the wet bus from silence for kIRLoadFadeSamples samples,
         // covering the window during which different convolvers may be running different IRs.
-        irLoadFadeBlocksRemaining.store (kIRLoadFadeBlocks);
+        irLoadFadeSamplesRemaining.store (kIRLoadFadeSamples);
 
-        juce::dsp::Convolution* tsEr[]  = { &tsErConvLL, &tsErConvRL, &tsErConvLR, &tsErConvRR };
-        juce::dsp::Convolution* tsTail[] = { &tsTailConvLL, &tsTailConvRL, &tsTailConvLR, &tsTailConvRR };
+        // Select the destination 8-convolver set based on which mic path this load is for.
+        juce::dsp::Convolution* tsEr[4];
+        juce::dsp::Convolution* tsTail[4];
+        if (path == MicPath::Main)
+        {
+            tsEr[0]   = &tsErConvLL;   tsEr[1]   = &tsErConvRL;   tsEr[2]   = &tsErConvLR;   tsEr[3]   = &tsErConvRR;
+            tsTail[0] = &tsTailConvLL; tsTail[1] = &tsTailConvRL; tsTail[2] = &tsTailConvLR; tsTail[3] = &tsTailConvRR;
+        }
+        else if (path == MicPath::Outrig)
+        {
+            tsEr[0]   = &tsOutrigErConvLL;   tsEr[1]   = &tsOutrigErConvRL;   tsEr[2]   = &tsOutrigErConvLR;   tsEr[3]   = &tsOutrigErConvRR;
+            tsTail[0] = &tsOutrigTailConvLL; tsTail[1] = &tsOutrigTailConvRL; tsTail[2] = &tsOutrigTailConvLR; tsTail[3] = &tsOutrigTailConvRR;
+        }
+        else // Ambient
+        {
+            tsEr[0]   = &tsAmbErConvLL;   tsEr[1]   = &tsAmbErConvRL;   tsEr[2]   = &tsAmbErConvLR;   tsEr[3]   = &tsAmbErConvRR;
+            tsTail[0] = &tsAmbTailConvLL; tsTail[1] = &tsAmbTailConvRL; tsTail[2] = &tsAmbTailConvLR; tsTail[3] = &tsAmbTailConvRR;
+        }
+
         for (int c = 0; c < 4; ++c)
             tsEr[c]->loadImpulseResponse (makeMonoEr (c), bufferSampleRate,
                 juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no,
@@ -2125,8 +2263,10 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 juce::dsp::Convolution::Stereo::no, juce::dsp::Convolution::Trim::no,
                 juce::dsp::Convolution::Normalise::no);
 
-        // Build a stereo combined-tail IR for the regular tailConvolver.
-        // Keep Normalise::no so the ER/tail relationship from the source IR is preserved.
+        // Build a stereo combined-tail IR for the regular tailConvolver (main path only —
+        // this convolver drives the waveform thumbnail / secondary tail. Non-main mic paths
+        // don't contribute to that display).
+        if (isMainPath)
         {
             auto t0 = makeMonoTail (0);   // iLL tail
             auto t1 = makeMonoTail (1);   // iRL tail  (== t0)

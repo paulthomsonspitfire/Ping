@@ -47,13 +47,28 @@ public:
     /** Last loaded IR file (for reload when stretch/decay change). */
     const juce::File& getLastLoadedIRFile() const { return lastLoadedIRFile; }
 
+    /** Which microphone path a buffer is being loaded into.
+        Main: existing behaviour — drives currentIRBuffer, waveform, combined-tail IR.
+        Direct: short-circuit load — no transforms, no ER/Tail split. 4 mono convolvers.
+        Outrig / Ambient: full pipeline (reverse/stretch/decay/trim/ER-Tail split) but into
+        their own 8-convolver sets; do NOT touch main state (currentIRBuffer, selectedIRFile). */
+    enum class MicPath { Main, Direct, Outrig, Ambient };
+
     /** Load IR from buffer (e.g. reversed). Call from message thread.
         If fromSynth is true, marks current IR as synthesized and persists it with plugin state.
-        If deferConvolverLoad is true, saves rawSynthBuffer (fromSynth only) but does NOT call
+        If deferConvolverLoad is true, saves the raw buffer (fromSynth only) but does NOT call
         loadImpulseResponse. Use this in setStateInformation before prepareToPlay has run, to
-        avoid a data race between loadImpulseResponse background threads and reset(). */
+        avoid a data race between loadImpulseResponse background threads and reset().
+        The path argument selects which convolver set and raw buffer slot to target. */
     void loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate,
-                           bool fromSynth = false, bool deferConvolverLoad = false);
+                           bool fromSynth = false, bool deferConvolverLoad = false,
+                           MicPath path = MicPath::Main);
+
+    /** Load the suffix-derived sibling file for the given mic path (_direct / _outrig / _ambient).
+        Returns silently if the sibling file does not exist (old presets / factory IRs with
+        only the MAIN WAV, or paths the user has not synthesised). */
+    void loadMicPathFromFile (const juce::File& baseIRFile, MicPath path);
+
     void reloadSynthIR();
 
     /** True when current IR came from IR Synth (not from file list). */
@@ -136,6 +151,16 @@ private:
     juce::dsp::Convolution tailConvolver;   // combined-tail IR for waveform display; audio uses ts* convolvers
     juce::dsp::Convolution tsErConvLL, tsErConvRL, tsErConvLR, tsErConvRR;
     juce::dsp::Convolution tsTailConvLL, tsTailConvRL, tsTailConvLR, tsTailConvRR;
+
+    // ── Multi-mic path convolvers (feature/multi-mic-paths) ──────────────────
+    // DIRECT: 4 mono convolvers, no ER/Tail split (IR is too short to split).
+    juce::dsp::Convolution tsDirectConvLL, tsDirectConvRL, tsDirectConvLR, tsDirectConvRR;
+    // OUTRIG: 8 mono convolvers (ER + Tail × true stereo), full pipeline.
+    juce::dsp::Convolution tsOutrigErConvLL,   tsOutrigErConvRL,   tsOutrigErConvLR,   tsOutrigErConvRR;
+    juce::dsp::Convolution tsOutrigTailConvLL, tsOutrigTailConvRL, tsOutrigTailConvLR, tsOutrigTailConvRR;
+    // AMBIENT: 8 mono convolvers (ER + Tail × true stereo), full pipeline.
+    juce::dsp::Convolution tsAmbErConvLL,      tsAmbErConvRL,      tsAmbErConvLR,      tsAmbErConvRR;
+    juce::dsp::Convolution tsAmbTailConvLL,    tsAmbTailConvRL,    tsAmbTailConvLR,    tsAmbTailConvRR;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> predelayLine;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> chorusDelayLine;
     // Stereo decorrelation: 2-stage allpass on R only (7.13 ms, 14.27 ms), incommensurate with FDN
@@ -309,8 +334,11 @@ private:
     juce::SmoothedValue<float> tailLevelSmoothed;
 
     juce::AudioBuffer<float> currentIRBuffer;
-    juce::AudioBuffer<float> rawSynthBuffer;      // raw (pre-processing) copy of last synth IR
-    double rawSynthSampleRate = 48000.0;
+    juce::AudioBuffer<float> rawSynthBuffer;      // raw (pre-processing) copy of last synth IR (MAIN)
+    juce::AudioBuffer<float> rawSynthDirectBuffer;   // raw copy of last DIRECT synth IR
+    juce::AudioBuffer<float> rawSynthOutrigBuffer;   // raw copy of last OUTRIG synth IR
+    juce::AudioBuffer<float> rawSynthAmbientBuffer;  // raw copy of last AMBIENT synth IR
+    double rawSynthSampleRate = 48000.0;           // shared — all four paths share the same SR
     double currentSampleRate = 48000.0;
     juce::File selectedIRFile;   // empty = synth IR or nothing loaded
     bool irFromSynth = false;
@@ -329,9 +357,10 @@ private:
     // may run the new IR while others still run the old one, producing a wrong-level mixed output
     // that sounds like distortion. Arming this counter before loadImpulseResponse calls causes
     // processBlock to fade the wet bus from silence while the swap-in window passes.
-    std::atomic<int> irLoadFadeBlocksRemaining { 0 };
-    static constexpr int kIRLoadFadeBlocks = 64; // ~680 ms at 512 samples / 48 kHz — covers
-                                                  // worst-case background thread prep for long IRs
+    std::atomic<int> irLoadFadeSamplesRemaining { 0 };
+    static constexpr int kIRLoadFadeSamples = 48000; // 1 s at 48 kHz — sample-based fade is
+                                                      // consistent across buffer sizes (block-count
+                                                      // fades collapse to ~170 ms at 128-sample buffers)
 
     // Set to true at the start of setStateInformation, cleared asynchronously (via
     // MessageManager::callAsync) AFTER all queued parameterChanged notifications have fired.
