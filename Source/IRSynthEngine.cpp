@@ -2,6 +2,9 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <future>
+#include <atomic>
+#include <mutex>
 
 // ── constants ──────────────────────────────────────────────────────────────
 const double IRSynthEngine::SPEED   = 343.0;
@@ -830,13 +833,99 @@ static double shapeDen (const std::string& shape)
     return 1.0;
 }
 
-// ── synthIR — public entry point ───────────────────────────────────────────
-// C3: thin dispatcher that forwards to synthMainPath. Bit-identical to the
-// pre-refactor behaviour (guarded by IR_14). In C5 this will fan out to
-// synthExtraPath / synthDirectPath for OUTRIG / AMBIENT / DIRECT mic paths.
+// ── synthIR — public entry point, parallel mic-path dispatcher ─────────────
+// When no extras are enabled (outrig/ambient/direct all false — the default,
+// matching all existing presets and factory IRs) this is a direct forward to
+// synthMainPath with no threading at all, preserving bit-identity of the
+// MAIN output (guarded by IR_14).
+//
+// When one or more extras are enabled the dispatcher runs MAIN and each
+// enabled extra concurrently via std::async (launch::async policy).
+// Synchronisation notes:
+//   • IRSynthEngine's static material / vault / mic-pattern maps use lazy
+//     `if (empty()) fill(); ` initialisation which is NOT thread-safe. We
+//     warm them up on the calling thread here so all async threads only ever
+//     *read* from the populated maps (which is safe for std::map).
+//   • The progress callback is serialised behind cbMutex so hosts that assume
+//     single-threaded GUI callbacks (the common case) don't see a race.
+//   • Per-path progress is tracked in atomics; the reported progress is the
+//     MIN across active paths (i.e. "we're waiting for the slowest path").
+//   • MAIN is authoritative for res.rt60 / res.irLen / res.sampleRate /
+//     res.success. Extras only populate res.direct / res.outrig / res.ambient.
 IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn cb)
 {
-    return synthMainPath (p, cb);
+    const bool anyExtra = p.outrig_enabled || p.ambient_enabled || p.direct_enabled;
+
+    // Fast path: no extras → straight synchronous call. Guarantees bit-identity
+    // with the pre-C5 behaviour for every existing session, preset and test.
+    if (! anyExtra)
+        return synthMainPath (p, cb);
+
+    // Warm up static maps on this thread before fanning out — their lazy init
+    // is not thread-safe. After this call the maps are fully populated and
+    // concurrent reads from them are safe.
+    (void) getMats();
+    (void) getVP();
+    (void) getMIC();
+
+    std::atomic<double> mainProg { 0.0 }, outrigProg { 0.0 }, ambientProg { 0.0 };
+    std::mutex cbMutex;
+
+    auto reportAggregate = [&](const std::string& msg)
+    {
+        if (! cb) return;
+        double minP = mainProg.load();
+        if (p.outrig_enabled)  minP = std::min (minP, outrigProg.load());
+        if (p.ambient_enabled) minP = std::min (minP, ambientProg.load());
+        // DIRECT is fast enough that a dedicated progress channel is overkill.
+        std::lock_guard<std::mutex> lk (cbMutex);
+        cb (minP, msg);
+    };
+
+    auto mainCb = [&](double f, const std::string& m) { mainProg.store (f);    reportAggregate (m); };
+    auto outrigCb = [&](double f, const std::string& m) { outrigProg.store (f);  reportAggregate (m); };
+    auto ambientCb = [&](double f, const std::string& m) { ambientProg.store (f); reportAggregate (m); };
+
+    auto mainFut = std::async (std::launch::async,
+        [&]{ return synthMainPath (p, mainCb); });
+
+    std::future<MicIRChannels> outrigFut, ambientFut, directFut;
+
+    if (p.outrig_enabled)
+        outrigFut = std::async (std::launch::async,
+            [&]{ return synthExtraPath (p,
+                                        p.outrig_lx, p.outrig_ly,
+                                        p.outrig_rx, p.outrig_ry,
+                                        p.outrig_height,
+                                        p.outrig_langle, p.outrig_rangle,
+                                        p.outrig_pattern,
+                                        /*seedBase*/ 52,
+                                        outrigCb); });
+
+    if (p.ambient_enabled)
+        ambientFut = std::async (std::launch::async,
+            [&]{ return synthExtraPath (p,
+                                        p.ambient_lx, p.ambient_ly,
+                                        p.ambient_rx, p.ambient_ry,
+                                        p.ambient_height,
+                                        p.ambient_langle, p.ambient_rangle,
+                                        p.ambient_pattern,
+                                        /*seedBase*/ 62,
+                                        ambientCb); });
+
+    if (p.direct_enabled)
+        directFut = std::async (std::launch::async,
+            [&]{ return synthDirectPath (p); });
+
+    // Collect results — sequential to guarantee a deterministic assignment
+    // order for the returned IRSynthResult.
+    IRSynthResult res = mainFut.get();
+    if (outrigFut.valid())  res.outrig  = outrigFut.get();
+    if (ambientFut.valid()) res.ambient = ambientFut.get();
+    if (directFut.valid())  res.direct  = directFut.get();
+
+    if (cb) cb (1.0, "Done.");
+    return res;
 }
 
 // ── synthMainPath — verbatim from JS (MAIN mic pair) ──────────────────────
