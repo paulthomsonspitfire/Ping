@@ -2808,6 +2808,12 @@ void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
             xml->removeChildElement (old, true);
         while (auto* old = xml->getChildByName ("synthIR"))
             xml->removeChildElement (old, true);
+        while (auto* old = xml->getChildByName ("synthIRDirect"))
+            xml->removeChildElement (old, true);
+        while (auto* old = xml->getChildByName ("synthIROutrig"))
+            xml->removeChildElement (old, true);
+        while (auto* old = xml->getChildByName ("synthIRAmbient"))
+            xml->removeChildElement (old, true);
 
         xml->removeAttribute ("irFilePath");
         if (selectedIRFile != juce::File())
@@ -2820,6 +2826,21 @@ void PingProcessor::getStateInformation (juce::MemoryBlock& destData)
             auto* synth = xml->createNewChildElement ("synthIR");
             if (synth)
                 synthesizedIRToXml (rawSynthBuffer, rawSynthSampleRate, *synth);
+
+            // Multi-mic aux buffers (present only when the synth panel produced them).
+            // Each child uses the same wire format as <synthIR>. Older sessions that
+            // saved only <synthIR> will restore without these children; on load,
+            // setStateInformation simply skips the missing-child branch and the aux
+            // convolvers stay silent until a new synthesis runs.
+            if (rawSynthDirectBuffer.getNumSamples() > 0)
+                if (auto* e = xml->createNewChildElement ("synthIRDirect"))
+                    synthesizedIRToXml (rawSynthDirectBuffer, rawSynthSampleRate, *e);
+            if (rawSynthOutrigBuffer.getNumSamples() > 0)
+                if (auto* e = xml->createNewChildElement ("synthIROutrig"))
+                    synthesizedIRToXml (rawSynthOutrigBuffer, rawSynthSampleRate, *e);
+            if (rawSynthAmbientBuffer.getNumSamples() > 0)
+                if (auto* e = xml->createNewChildElement ("synthIRAmbient"))
+                    synthesizedIRToXml (rawSynthAmbientBuffer, rawSynthSampleRate, *e);
         }
         irSynthParamsToXml (lastIRSynthParams, *xml);
         if (currentLicence.valid)
@@ -2925,6 +2946,21 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
             }
         }
 
+        // Helper: decode an <synthIRDirect> / <synthIROutrig> / <synthIRAmbient> child
+        // into its MicPath-specific raw buffer.  defer = true writes rawSynth*Buffer
+        // only (no convolver touch); defer = false also loads the convolvers.
+        juce::XmlElement* xmlRaw = xml.get();
+        auto loadAuxSynthChild = [this, xmlRaw] (const char* childName, MicPath path, bool defer)
+        {
+            auto* aux = xmlRaw->getChildByName (childName);
+            if (aux == nullptr) return;
+            juce::AudioBuffer<float> buf;
+            double sr;
+            if (synthesizedIRFromXml (*aux, buf, sr))
+                loadIRFromBuffer (std::move (buf), sr, /*fromSynth=*/true,
+                                  /*deferConvolverLoad=*/defer, path);
+        };
+
         if (audioEnginePrepared.load())
         {
             // Live preset switch: audio engine is already running, load the IR immediately.
@@ -2934,7 +2970,15 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
                 juce::AudioBuffer<float> buf;
                 double sr;
                 if (synthesizedIRFromXml (*synth, buf, sr))
+                {
                     loadIRFromBuffer (std::move (buf), sr, true);
+                    // Aux paths (if saved) follow the main load directly.  Missing
+                    // children leave their convolvers empty, which is safe: the
+                    // mixer contribution flags gate them from the signal path.
+                    loadAuxSynthChild ("synthIRDirect",  MicPath::Direct,  false);
+                    loadAuxSynthChild ("synthIROutrig",  MicPath::Outrig,  false);
+                    loadAuxSynthChild ("synthIRAmbient", MicPath::Ambient, false);
+                }
                 else if (selectedIRFile.existsAsFile())
                     loadIRFromFile (selectedIRFile);
             }
@@ -2947,8 +2991,8 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
         {
             // Initial session load: prepareToPlay has not yet been called, so the JUCE
             // Convolution objects have not been prepared.  Calling loadImpulseResponse here
-            // would spawn 9 NUPC background threads; prepareToPlay then calls reset() on
-            // all 9 convolvers while those threads are still running — a data race that
+            // would spawn many NUPC background threads; prepareToPlay then calls reset()
+            // on every convolver while those threads are still running — a data race that
             // corrupts NUPC internal state and causes permanent distortion / escalating
             // crackling.  Instead, we save the necessary state and let prepareToPlay post
             // a callAsync that fires loadIRFromFile / reloadSynthIR after reset() completes.
@@ -2961,9 +3005,17 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
                     // Save rawSynthBuffer (+ silence trim) without calling loadImpulseResponse.
                     loadIRFromBuffer (std::move (buf), sr, /*fromSynth=*/true, /*deferConvolverLoad=*/true);
                 }
-                // (If XML decode fails, selectedIRFile fallback is handled by prepareToPlay's callAsync.)
+                // Aux paths (if saved) are also deferred — prepareToPlay's callAsync calls
+                // reloadSynthIR() which iterates all four raw*Buffers and loads the convolvers
+                // on the message thread AFTER prepareToPlay's reset() has completed.
+                loadAuxSynthChild ("synthIRDirect",  MicPath::Direct,  true);
+                loadAuxSynthChild ("synthIROutrig",  MicPath::Outrig,  true);
+                loadAuxSynthChild ("synthIRAmbient", MicPath::Ambient, true);
+                // (If MAIN XML decode fails, selectedIRFile fallback is handled by
+                //  prepareToPlay's callAsync.)
             }
-            // selectedIRFile is already set above — prepareToPlay's callAsync will pick it up.
+            // selectedIRFile is already set above — prepareToPlay's callAsync will pick it up
+            // (and loadIRFromFile internally loads any sibling multi-mic files).
         }
     }
 
