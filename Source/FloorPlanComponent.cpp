@@ -85,6 +85,61 @@ namespace
 FloorPlanComponent::FloorPlanComponent()
 {
     setOpaque (false);
+    mirrorCursor = makeMirrorCursor();
+}
+
+juce::MouseCursor FloorPlanComponent::makeMirrorCursor()
+{
+    // Procedurally build a 32×32 cursor glyph: a vertical axis line with
+    // two triangular arrows pointing outward (mirror-across-axis icon).
+    // Drawn at 2× resolution for Retina, then handed to MouseCursor with
+    // scaleFactor = 2.0 so macOS picks the right physical size.
+    const int sz = 32;
+    juce::Image img (juce::Image::ARGB, sz, sz, true);
+    juce::Graphics g (img);
+
+    const float cx = sz * 0.5f;
+    const float cy = sz * 0.5f;
+
+    // Soft dark outline, then bright fill on top — readable on any background.
+    auto drawWithOutline = [&] (const juce::Path& p)
+    {
+        g.setColour (juce::Colours::black.withAlpha (0.85f));
+        g.strokePath (p, juce::PathStrokeType (2.4f, juce::PathStrokeType::curved,
+                                               juce::PathStrokeType::rounded));
+        g.setColour (juce::Colour (0xff8cd6ef)); // accentIce
+        g.fillPath (p);
+    };
+
+    // Central vertical axis (the "mirror line").
+    juce::Path axis;
+    axis.startNewSubPath (cx, cy - 9.0f);
+    axis.lineTo          (cx, cy + 9.0f);
+    g.setColour (juce::Colours::black.withAlpha (0.85f));
+    g.strokePath (axis, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved,
+                                              juce::PathStrokeType::rounded));
+    g.setColour (juce::Colour (0xff8cd6ef));
+    g.strokePath (axis, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved,
+                                              juce::PathStrokeType::rounded));
+
+    // Left arrow: points left, tail toward axis.
+    juce::Path leftArrow;
+    leftArrow.startNewSubPath (cx - 3.5f,  cy);
+    leftArrow.lineTo          (cx - 10.5f, cy - 4.5f);
+    leftArrow.lineTo          (cx - 10.5f, cy + 4.5f);
+    leftArrow.closeSubPath();
+    drawWithOutline (leftArrow);
+
+    // Right arrow: mirror of the left.
+    juce::Path rightArrow;
+    rightArrow.startNewSubPath (cx + 3.5f,  cy);
+    rightArrow.lineTo          (cx + 10.5f, cy - 4.5f);
+    rightArrow.lineTo          (cx + 10.5f, cy + 4.5f);
+    rightArrow.closeSubPath();
+    drawWithOutline (rightArrow);
+
+    // Hotspot at the glyph centre (sits on top of the puck being dragged).
+    return juce::MouseCursor (img, sz / 2, sz / 2);
 }
 
 std::vector<std::pair<double, double>> FloorPlanComponent::roomPoly (const std::string& shape)
@@ -229,10 +284,20 @@ void FloorPlanComponent::mouseDown (const juce::MouseEvent& e)
     {
         dragIndex = hit.index;
         dragRotate = hit.rotate;
+        // Latch Option-mirror state for the whole drag. Only enable if the
+        // partner puck is currently visible (e.g. don't try to mirror an
+        // Outrig mic when the Outrig pair isn't enabled — shouldn't happen
+        // in practice since pairs share visibility, but cheap to guard).
+        mirrorDrag = e.mods.isAltDown() && transducerVisible (hit.index ^ 1);
         if (dragRotate)
         {
             auto pt = transducerCanvasPos (hit.index);
             dragStartAngle = std::atan2 (e.y - pt.y, e.x - pt.x) - transducers.angle[hit.index];
+        }
+        if (mirrorDrag)
+        {
+            setMouseCursor (mirrorCursor);
+            repaint(); // redraw to show the centre guide line
         }
     }
 }
@@ -240,10 +305,18 @@ void FloorPlanComponent::mouseDown (const juce::MouseEvent& e)
 void FloorPlanComponent::mouseDrag (const juce::MouseEvent& e)
 {
     if (dragIndex < 0) return;
+    const int partner = dragIndex ^ 1;
     if (dragRotate)
     {
         auto pt = transducerCanvasPos (dragIndex);
         transducers.angle[dragIndex] = std::atan2 (e.y - pt.y, e.x - pt.x) - dragStartAngle;
+        if (mirrorDrag)
+        {
+            // Horizontal mirror of an angle around the vertical axis: a' = π - a.
+            // Verified against the default pair (Mic L = -2.356, Mic R = -0.785):
+            //   π - (-2.356) = -0.785  ✓
+            transducers.angle[partner] = kPi - transducers.angle[dragIndex];
+        }
     }
     else
     {
@@ -253,6 +326,21 @@ void FloorPlanComponent::mouseDrag (const juce::MouseEvent& e)
         {
             transducers.cx[dragIndex] = juce::jlimit (0.0, 1.0, nx);
             transducers.cy[dragIndex] = juce::jlimit (0.0, 1.0, ny);
+
+            if (mirrorDrag)
+            {
+                // Mirror across the vertical centre line (x = 0.5), same y.
+                // Skip if the mirrored point is outside the room (relevant
+                // for L-shaped rooms) — dragged puck keeps moving, partner
+                // holds its last valid position until symmetry is restorable.
+                const double mx = 1.0 - transducers.cx[dragIndex];
+                const double my = transducers.cy[dragIndex];
+                if (isInsideRoom (mx, my))
+                {
+                    transducers.cx[partner] = juce::jlimit (0.0, 1.0, mx);
+                    transducers.cy[partner] = juce::jlimit (0.0, 1.0, my);
+                }
+            }
         }
     }
     repaint();
@@ -262,7 +350,9 @@ void FloorPlanComponent::mouseUp (const juce::MouseEvent&)
 {
     if (dragIndex >= 0)
     {
-        // Fire per-group callback first, then the generic catch-all.
+        // Fire per-group callback first, then the generic catch-all. The
+        // partner puck is in the same group as the dragged puck, so a single
+        // group callback covers both when mirroring.
         switch (groupFor (dragIndex))
         {
             case Group::Speaker:
@@ -279,6 +369,14 @@ void FloorPlanComponent::mouseUp (const juce::MouseEvent&)
         if (onPlacementChanged) onPlacementChanged();
     }
     dragIndex = -1;
+    if (mirrorDrag)
+    {
+        mirrorDrag = false;
+        // Restore the default hover cursor — next mouseMove will upgrade it
+        // to drag-hand or crosshair if the cursor is still over a puck.
+        setMouseCursor (juce::MouseCursor::NormalCursor);
+        repaint(); // clear the centre guide line
+    }
 }
 
 void FloorPlanComponent::mouseMove (const juce::MouseEvent& e)
@@ -352,6 +450,18 @@ void FloorPlanComponent::paint (juce::Graphics& g)
         g.drawLine (gx, 0, gx, (float) H, 0.5f);
     for (float gy = 0; gy < (float) H; gy += gridStep)
         g.drawLine (0, gy, (float) W, gy, 0.5f);
+
+    // Option-mirror: draw a faint dashed vertical guide at x = 0.5 while the
+    // user is Option-dragging a puck, visualising the horizontal mirror axis.
+    if (mirrorDrag)
+    {
+        auto guideTop    = toCanvas (0.5, 0.0);
+        auto guideBottom = toCanvas (0.5, 1.0);
+        g.setColour (juce::Colour (0xff8cd6ef).withAlpha (0.45f)); // accentIce, 45%
+        const float dashes[] = { 6.0f, 4.0f };
+        g.drawDashedLine (juce::Line<float> (guideTop.x, guideTop.y, guideBottom.x, guideBottom.y),
+                          dashes, 2, 1.0f);
+    }
     g.restoreState();
 
     if (p.shape == "Rectangular" || p.shape == "Fan / Shoebox" || p.shape == "L-shaped")

@@ -76,6 +76,14 @@ private:
     int dragIndex = -1;           // 0..7
     bool dragRotate = false;
     double dragStartAngle = 0;
+    // Option-mirror: when true for the current drag, the partner puck
+    // (index ^ 1) is snapped to the horizontal mirror position/angle.
+    // Latched at mouseDown from e.mods.isAltDown(), cleared on mouseUp.
+    bool mirrorDrag = false;
+    // Lazy-initialised custom cursor shown during an Option-mirror drag.
+    // Built once on first use in mouseDown; see makeMirrorCursor().
+    juce::MouseCursor mirrorCursor;
+    static juce::MouseCursor makeMirrorCursor();
 
     struct HitResult { int index; bool rotate; };
     HitResult transducerHitTest (float mx, float my);

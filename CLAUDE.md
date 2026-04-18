@@ -1236,6 +1236,51 @@ All these live in `Tests/PingMultiMicTests.cpp` (with DSP_16/17 on `HP2ndOrder.h
 
 ---
 
+## Floor plan — Option-mirror puck drag (v2.6.1)
+
+### What it does
+
+Holding **Option** (Alt) while dragging any puck on `FloorPlanComponent` snaps the paired puck to the horizontal mirror position around the room's vertical centre line (x = 0.5). Makes it trivial to place L/R mic pairs (and speaker pairs) symmetrically without nudging each one individually. Works for all four pairs — speakers (0/1), MAIN mics (2/3), OUTRIG mics (4/5), AMBIENT mics (6/7) — and applies to both position drags (puck body) and rotation drags (ring handle).
+
+### Behaviour
+
+- **Partner index is always `dragIndex ^ 1`** — XOR with 1 flips the LSB, mapping 0↔1, 2↔3, 4↔5, 6↔7. Cheap, no lookup table.
+- **Position mirror:** `partnerCx = 1.0 − draggedCx`, `partnerCy = draggedCy` (same y).
+- **Angle mirror:** `partnerAngle = π − draggedAngle`. Verified against the default Mic L/R pair: L = −2.356 rad (up-left), R = −0.785 rad (up-right); `π − (−2.356) = −0.785` ✓. Also verified for speakers at π/2 (down) → π − π/2 = π/2 (also down) ✓.
+- **Option is latched at `mouseDown`**, not re-evaluated on each drag tick. Releasing Option mid-drag leaves mirroring active for the rest of that drag; pressing Option mid-drag has no effect. Chosen for predictability — users don't accidentally break symmetry by glancing off the key.
+- **L-shaped room guard** — if the mirrored point fails `isInsideRoom (mx, my)`, the partner holds its last valid position while the dragged puck keeps moving freely. When the dragged puck returns to a symmetric spot the partner resumes updating. The dragged puck itself is still constrained to the room via the existing `isInsideRoom` check.
+- **Visibility guard** — mirroring only engages if the partner is currently visible (`transducerVisible (hit.index ^ 1)`). Belt-and-suspenders check; in practice OUTRIG/AMBIENT pairs share visibility so an L without an R (or vice versa) shouldn't be possible.
+
+### Callbacks and preset state
+
+On `mouseUp` the existing per-group callback fires once (`onMainPlacementChanged` / `onOutrigPlacementChanged` / `onAmbientPlacementChanged`) followed by `onPlacementChanged`. Because the partner is always in the same group as the dragged puck, a single callback correctly covers both pucks — no change to the callback plumbing was needed. The `irSynthDirty` flag flips once per drag via `onParamModifiedFn`, so an Option-mirror drag has the same preset-state cost as a regular drag.
+
+No IR recalculation fires during the drag (same as before) — users still need to click **Calculate IR** to bake the new placement into the convolver. This matches the existing "puck drag only marks `irSynthDirty`" behaviour (see "IR swap marks preset dirty at three call sites" for the rationale).
+
+### Visual feedback
+
+Two cues make the mirror mode unmistakable:
+
+1. **Dashed centre guide** — a 1 px dashed vertical line is drawn at x = 0.5 in the plugin's icy-blue accent (`0xff8cd6ef`, 45% alpha, dash pattern `{ 6, 4 }`). Drawn inside the grid's clip region so it sits inside the room walls, not outside. Only visible during the drag (`mirrorDrag == true`); cleared on `mouseUp`.
+2. **Custom cursor** — a 32×32 ARGB image built procedurally by `FloorPlanComponent::makeMirrorCursor()`: a vertical axis line with two triangular arrows pointing outward (`← | →`), filled in accent ice-blue with a soft black outline so it reads on any background. Hotspot at (16, 16) so the glyph sits over the puck being dragged. Built once in the constructor and cached as a `juce::MouseCursor mirrorCursor` member — not re-rasterised per drag.
+
+`mouseUp` explicitly calls `setMouseCursor (juce::MouseCursor::NormalCursor)` to restore the default; the next `mouseMove` tick then upgrades it to drag-hand or crosshair if the pointer is still over a puck. Without the explicit restore, JUCE does not automatically refire `mouseMove` on mouse-up so the custom cursor would stick until the user moved the mouse.
+
+### DSP/engine impact
+
+**None.** The mirror feature only writes to `transducers.cx[]`, `transducers.cy[]`, and `transducers.angle[]` — the same fields a normal drag writes. `IRSynthEngine` reads `IRSynthParams::source_* / receiver_* / micl_angle / micr_angle` which are sourced from `TransducerState` by `IRSynthComponent::buildParamsFromState()`, so the engine is completely unaware of how the values got there. No test impact (no IR_* or DSP_* golden values shift).
+
+### Key design decisions — floor plan mirror
+
+- **`dragIndex ^ 1` works because pairs are always adjacent even/odd** — the `TransducerState` layout (`0/1 = speakers, 2/3 = MAIN, 4/5 = OUTRIG, 6/7 = AMBIENT`) is fixed by convention. Do not reorder these indices or the XOR trick breaks and every mirror pairing would need an explicit lookup.
+- **Option latched at mousedown, not live** — evaluated once via `e.mods.isAltDown()` in `mouseDown` and stored in `bool mirrorDrag`. A live (per-tick) check was explicitly rejected: users would accidentally toggle symmetry by glancing off the Option key mid-drag, and the inverse behaviour (partner suddenly snapping to mirror halfway through a drag) is visually jarring. If a user wants to break symmetry they just release the mouse and drag without Option.
+- **L-shaped fallback = skip partner, not clamp both** — when the mirrored point is outside the room, the dragged puck keeps moving freely and the partner just holds its last valid position. Alternatives rejected: (a) constraining the dragged puck so the partner stays inside prevents the user from placing a mic anywhere in the L's asymmetric arm, breaking the whole point of mirroring; (b) letting the partner sit outside the room corrupts `IRSynthParams` and would be rejected by the engine's reflection geometry anyway.
+- **Mirror cursor is built once at construction** — `mirrorCursor = makeMirrorCursor()` runs in the `FloorPlanComponent` ctor. Earlier revisions tried lazy-init on first use (`if (! mirrorCursor.getHandle())`), but `juce::MouseCursor` has no stable public API for "is this an image cursor?" and rebuilding on every drag is wasteful. The 32×32 ARGB image is <5 KB — trivial to keep resident.
+- **Centre guide is clipped to the gridline region, not the full component** — the guide is drawn after the room fill and gridlines, inside the same `g.saveState(); g.reduceClipRegion (roomPath);` block. Rendering it outside the clip would let it extend past the wall stroke on asymmetric rooms (L-shaped, Cathedral), which reads as a glitch rather than a guide.
+- **`setMouseCursor (NormalCursor)` in mouseUp is mandatory** — JUCE does not automatically re-run `mouseMove` hover logic on mouse-up. Without the explicit reset, the mirror-glyph cursor would persist until the user physically moved the pointer, even if the drag ended with the mouse released. Do not remove this call.
+
+---
+
 ## Licence system
 
 - **Algorithm:** Ed25519 (libsodium). Public key embedded in `LicenceVerifier.h`.
