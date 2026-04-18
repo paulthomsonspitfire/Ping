@@ -356,11 +356,15 @@ void MicMixerComponent::paintMeters (juce::Graphics& g, const Strip& s)
     auto m = s.meterBounds.toFloat();
     if (m.getWidth() < 4.f || m.getHeight() < 4.f) return;
 
-    // Two thin vertical meters (L, R) filling m. Small internal gap between them.
-    const float gap = 2.f;
-    const float barW = juce::jmax (3.f, (m.getWidth() - gap) * 0.5f);
-    juce::Rectangle<float> bL (m.getX(),                    m.getY(), barW, m.getHeight());
-    juce::Rectangle<float> bR (m.getRight() - barW,         m.getY(), barW, m.getHeight());
+    // Two thin vertical meters (L, R), left-justified within m so a small gap
+    // also appears between the R meter and the strip's right edge — mirroring
+    // the L↔R gap so the pair reads as a matched pair of ticks, not a block.
+    // `shrinkPerBar` sheds pixels from the right side of each bar.
+    const float gap          = 3.f;
+    const float shrinkPerBar = 2.f;
+    const float barW = juce::jmax (2.f, (m.getWidth() - gap) * 0.5f - shrinkPerBar);
+    juce::Rectangle<float> bL (m.getX(),                  m.getY(), barW, m.getHeight());
+    juce::Rectangle<float> bR (m.getX() + barW + gap,     m.getY(), barW, m.getHeight());
 
     auto paintBar = [&] (juce::Rectangle<float> rail, float peakNorm)
     {
@@ -391,9 +395,9 @@ void MicMixerComponent::paintMeters (juce::Graphics& g, const Strip& s)
             g.fillRect (fill);
         }
 
-        // Hairline frame — half the alpha of the strip's frame so the meter
-        // surround reads as a faint outline rather than a visible box.
-        g.setColour (kFrameColour.withMultipliedAlpha (0.5f));
+        // Hairline frame — now ~¼ of the strip's frame alpha so the meter
+        // surround reads as a ghost outline rather than a visible box.
+        g.setColour (kFrameColour.withMultipliedAlpha (0.22f));
         g.drawRect (rail, 1.0f);
     };
 
