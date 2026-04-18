@@ -22,6 +22,15 @@ struct TransducerState
        -2.35619449019,  -0.785398163397,       // OUTRIG mics: same facing
        -2.35619449019,  -0.785398163397        // AMBIENT mics: same facing
     };
+
+    // Decca Tree capture mode (see Source/IRSynthEngine.h). These fields hold
+    // the tree-centre position and face angle used when FloorPlanComponent's
+    // deccaVisible flag is true. The L/C/R mic positions are derived from
+    // these by the engine using fixed classical spacing, so they are not
+    // stored separately.
+    double deccaCx    = 0.5;
+    double deccaCy    = 0.65;
+    double deccaAngle = -1.5707963267948966; // -π/2: forward = low-y (source stage)
 };
 
 /**
@@ -65,6 +74,12 @@ public:
     // user toggles outrig_enabled / ambient_enabled.
     bool outrigVisible  = false;
     bool ambientVisible = false;
+
+    // Decca Tree capture mode. When true, the two MAIN mic pucks (indices 2/3)
+    // are hidden and replaced by a single draggable + rotatable tree puck
+    // drawn at (deccaCx, deccaCy). IRSynthComponent flips this when the user
+    // toggles main_decca_enabled.
+    bool deccaVisible   = false;
 
 private:
     std::function<IRSynthParams()> getParams;

@@ -164,6 +164,12 @@ private:
     juce::ToggleButton outrigEnableButton  { "Enabled" };
     juce::ToggleButton ambientEnableButton { "Enabled" };
 
+    // Decca Tree capture mode (MAIN + DIRECT only). When enabled, the two
+    // MAIN mic pucks on the floor plan are hidden and replaced by a single
+    // draggable + rotatable Decca tree puck. See Source/IRSynthEngine.h and
+    // CLAUDE.md's "Decca Tree capture mode" section.
+    juce::ToggleButton deccaEnableButton { "Decca Tree" };
+
     juce::ComboBox outrigPatternCombo, ambientPatternCombo;
     juce::Label    outrigPatternLabel, ambientPatternLabel;
     juce::Slider   outrigHeightSlider, ambientHeightSlider;

@@ -2664,6 +2664,14 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("ambientRang",   p.ambient_rangle);
     ir->setAttribute ("ambientHeight", p.ambient_height);
     ir->setAttribute ("ambientPat",    juce::String (p.ambient_pattern));
+
+    // Decca Tree capture mode (see IRSynthEngine.h). Older sidecars that
+    // predate this feature fall back to the IRSynthParams struct defaults
+    // (disabled, centred at 0.5/0.65, angle = -π/2).
+    ir->setAttribute ("deccaOn",  p.main_decca_enabled);
+    ir->setAttribute ("deccaCx",  p.decca_cx);
+    ir->setAttribute ("deccaCy",  p.decca_cy);
+    ir->setAttribute ("deccaAng", p.decca_angle);
 }
 
 static void synthesizedIRToXml (const juce::AudioBuffer<float>& buf, double sampleRate, juce::XmlElement& elem)
@@ -2769,6 +2777,12 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.ambient_rangle = ir->getDoubleAttribute ("ambientRang",   defaults.ambient_rangle);
     p.ambient_height = ir->getDoubleAttribute ("ambientHeight", defaults.ambient_height);
     p.ambient_pattern = ir->getStringAttribute ("ambientPat",   juce::String (defaults.ambient_pattern)).toStdString();
+
+    // Decca Tree capture mode (attributes absent in pre-Decca sidecars).
+    p.main_decca_enabled = ir->getBoolAttribute   ("deccaOn",  defaults.main_decca_enabled);
+    p.decca_cx           = ir->getDoubleAttribute ("deccaCx",  defaults.decca_cx);
+    p.decca_cy           = ir->getDoubleAttribute ("deccaCy",  defaults.decca_cy);
+    p.decca_angle        = ir->getDoubleAttribute ("deccaAng", defaults.decca_angle);
 
     return p;
 }
