@@ -14,7 +14,7 @@ if(APPLE)
     endif()
 endif()
 
-project(Ping VERSION 2.6.1)
+project(Ping VERSION 2.7.1)
 
 # Minimum macOS 13.0 (Ventura) for plugin compatibility
 if(APPLE)
@@ -148,6 +148,7 @@ add_executable(PingTests
     Tests/PingEngineTests.cpp
     Tests/PingDSPTests.cpp
     Tests/PingMultiMicTests.cpp
+    Tests/PingDeccaTests.cpp
     Source/IRSynthEngine.cpp
 )
 

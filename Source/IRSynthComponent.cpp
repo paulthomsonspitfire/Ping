@@ -23,7 +23,7 @@ namespace
         "Groin / cross vault  (Lyndhurst Hall)", "Fan vault  (King's College)",
         "Coffered dome  (circular hall)"
     };
-    const char* const micOptions[] = { "omni", "subcardioid", "cardioid (LDC)", "cardioid (SDC)", "figure8" };
+    const char* const micOptions[] = { "omni", "omni (MK2H)", "subcardioid", "wide cardioid (MK21)", "cardioid (LDC)", "cardioid (SDC)", "figure8" };
 
     void addOptions (juce::ComboBox& combo, const char* const* opts, int n)
     {
@@ -166,8 +166,8 @@ IRSynthComponent::IRSynthComponent()
     balconiesLabel.setText ("Balconies", juce::dontSendNotification);
 
     // Options
-    addOptions (micPatternCombo, micOptions, 5);
-    micPatternCombo.setSelectedId (3, juce::dontSendNotification); // cardioid (LDC) — 3rd item in new array
+    addOptions (micPatternCombo, micOptions, 7);
+    micPatternCombo.setSelectedId (5, juce::dontSendNotification); // cardioid (LDC) — 5th item after adding omni (MK2H) + wide cardioid (MK21)
     sampleRateCombo.addItem ("44100", 1);
     sampleRateCombo.addItem ("48000", 2);
     sampleRateCombo.setSelectedId (2, juce::dontSendNotification);
@@ -182,7 +182,7 @@ IRSynthComponent::IRSynthComponent()
     // Defaults mirror IRSynthParams: all paths off until explicitly enabled;
     // OUTRIG height 3 m (same as MAIN mics), pattern cardioid (LDC);
     // AMBIENT height 6 m, pattern omni.
-    for (auto* b : { &directEnableButton, &outrigEnableButton, &ambientEnableButton })
+    for (auto* b : { &directEnableButton, &outrigEnableButton, &ambientEnableButton, &deccaEnableButton })
     {
         b->setToggleState (false, juce::dontSendNotification);
         b->setColour (juce::ToggleButton::textColourId, textDim);
@@ -190,9 +190,9 @@ IRSynthComponent::IRSynthComponent()
         b->setColour (juce::ToggleButton::tickDisabledColourId, juce::Colour (0xff404040));
     }
 
-    addOptions (outrigPatternCombo,  micOptions, 5);
-    addOptions (ambientPatternCombo, micOptions, 5);
-    outrigPatternCombo.setSelectedId  (3, juce::dontSendNotification); // cardioid (LDC)
+    addOptions (outrigPatternCombo,  micOptions, 7);
+    addOptions (ambientPatternCombo, micOptions, 7);
+    outrigPatternCombo.setSelectedId  (5, juce::dontSendNotification); // cardioid (LDC)
     ambientPatternCombo.setSelectedId (1, juce::dontSendNotification); // omni
 
     outrigHeightSlider.setRange  (0.5, 30.0, 0.1);
@@ -250,6 +250,17 @@ IRSynthComponent::IRSynthComponent()
     };
     directEnableButton.onClick = notifyParamChanged;
 
+    // Decca Tree mode: flip FloorPlanComponent.deccaVisible so the MAIN mic
+    // pucks are replaced by the single Decca tree puck. Always notifies the
+    // param-changed callback so the UI state goes dirty and a Calculate IR
+    // prompt is shown.
+    deccaEnableButton.onClick = [this]
+    {
+        floorPlanComponent.deccaVisible = deccaEnableButton.getToggleState();
+        floorPlanComponent.repaint();
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+
     addAndMakeVisible (shapeCombo);
     addAndMakeVisible (widthSlider);
     addAndMakeVisible (depthSlider);
@@ -294,6 +305,7 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (directEnableButton);
     addAndMakeVisible (outrigEnableButton);
     addAndMakeVisible (ambientEnableButton);
+    addAndMakeVisible (deccaEnableButton);
     addAndMakeVisible (outrigPatternCombo);
     addAndMakeVisible (ambientPatternCombo);
     addAndMakeVisible (outrigPatternLabel);
@@ -682,9 +694,11 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
         mainHeaderBounds = { x0, y, ctrlW, headerH };
         y += headerH + 4;
 
-        // MAIN always on — skip an enable toggle and place Pattern on the same
-        // row the Outrig/Ambient toggles occupy so the three Pattern combos
-        // line up horizontally across the strip.
+        // MAIN always on — the enable-toggle row the other columns use here
+        // is instead occupied by the Decca Tree mode switch (replaces the
+        // MAIN L/R mics with a single Decca tree puck). Keeps the Pattern
+        // combo row aligned horizontally with OUTRIG/AMBIENT.
+        deccaEnableButton.setBounds (x0, y, ctrlW, rowH);
         y += rowH + 2;
 
         micPatternLabel.setBounds (x0, y, labelW, rowH);
@@ -792,7 +806,15 @@ IRSynthParams IRSynthComponent::getParams() const
     p.source_rx = t.cx[1];   p.source_ry = t.cy[1];   p.spkr_angle = t.angle[1];
     p.receiver_lx = t.cx[2]; p.receiver_ly = t.cy[2]; p.micl_angle = t.angle[2];
     p.receiver_rx = t.cx[3]; p.receiver_ry = t.cy[3]; p.micr_angle = t.angle[3];
-    p.mic_pattern = comboSelection (micPatternCombo, micOptions, 5).toStdString();
+    p.mic_pattern = comboSelection (micPatternCombo, micOptions, 7).toStdString();
+
+    // Decca Tree capture mode (see IRSynthEngine.h). The toggle is a UI-level
+    // switch; the tree centre position and angle are stored on the floor
+    // plan's TransducerState so they travel with mic-layout preset data.
+    p.main_decca_enabled = deccaEnableButton.getToggleState();
+    p.decca_cx    = t.deccaCx;
+    p.decca_cy    = t.deccaCy;
+    p.decca_angle = t.deccaAngle;
     p.er_only = erOnlyButton.getToggleState();
     p.sample_rate = sampleRateCombo.getSelectedId() == 1 ? 44100 : 48000;
 
@@ -805,13 +827,13 @@ IRSynthParams IRSynthComponent::getParams() const
     p.outrig_rx      = t.cx[5];    p.outrig_ry      = t.cy[5];
     p.outrig_langle  = t.angle[4]; p.outrig_rangle  = t.angle[5];
     p.outrig_height  = outrigHeightSlider.getValue();
-    p.outrig_pattern = comboSelection (outrigPatternCombo, micOptions, 5).toStdString();
+    p.outrig_pattern = comboSelection (outrigPatternCombo, micOptions, 7).toStdString();
 
     p.ambient_lx     = t.cx[6];    p.ambient_ly     = t.cy[6];
     p.ambient_rx     = t.cx[7];    p.ambient_ry     = t.cy[7];
     p.ambient_langle = t.angle[6]; p.ambient_rangle = t.angle[7];
     p.ambient_height = ambientHeightSlider.getValue();
-    p.ambient_pattern = comboSelection (ambientPatternCombo, micOptions, 5).toStdString();
+    p.ambient_pattern = comboSelection (ambientPatternCombo, micOptions, 7).toStdString();
 
     return p;
 }
@@ -846,9 +868,13 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     t.cx[5] = p.outrig_rx;   t.cy[5] = p.outrig_ry;   t.angle[5] = p.outrig_rangle;
     t.cx[6] = p.ambient_lx;  t.cy[6] = p.ambient_ly;  t.angle[6] = p.ambient_langle;
     t.cx[7] = p.ambient_rx;  t.cy[7] = p.ambient_ry;  t.angle[7] = p.ambient_rangle;
+    t.deccaCx    = p.decca_cx;
+    t.deccaCy    = p.decca_cy;
+    t.deccaAngle = p.decca_angle;
     floorPlanComponent.setTransducerState (t);
     floorPlanComponent.outrigVisible  = p.outrig_enabled;
     floorPlanComponent.ambientVisible = p.ambient_enabled;
+    floorPlanComponent.deccaVisible   = p.main_decca_enabled;
     floorPlanComponent.repaint();
     // Migrate legacy "cardioid" (written by older plugin versions) to the new "cardioid (LDC)" display key
     auto migratePattern = [] (juce::String s)
@@ -857,15 +883,16 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
             return juce::String ("cardioid (LDC)");
         return s;
     };
-    setComboTo (micPatternCombo,     migratePattern (p.mic_pattern),     micOptions, 5);
-    setComboTo (outrigPatternCombo,  migratePattern (p.outrig_pattern),  micOptions, 5);
-    setComboTo (ambientPatternCombo, migratePattern (p.ambient_pattern), micOptions, 5);
+    setComboTo (micPatternCombo,     migratePattern (p.mic_pattern),     micOptions, 7);
+    setComboTo (outrigPatternCombo,  migratePattern (p.outrig_pattern),  micOptions, 7);
+    setComboTo (ambientPatternCombo, migratePattern (p.ambient_pattern), micOptions, 7);
     erOnlyButton.setToggleState (p.er_only, juce::dontSendNotification);
     sampleRateCombo.setSelectedId (p.sample_rate == 44100 ? 1 : 2, juce::dontSendNotification);
 
     directEnableButton.setToggleState  (p.direct_enabled,  juce::dontSendNotification);
     outrigEnableButton.setToggleState  (p.outrig_enabled,  juce::dontSendNotification);
     ambientEnableButton.setToggleState (p.ambient_enabled, juce::dontSendNotification);
+    deccaEnableButton.setToggleState   (p.main_decca_enabled, juce::dontSendNotification);
     outrigHeightSlider.setValue  (p.outrig_height,  juce::dontSendNotification);
     ambientHeightSlider.setValue (p.ambient_height, juce::dontSendNotification);
     outrigHeightReadout.setText  (juce::String (p.outrig_height,  1) + " m", juce::dontSendNotification);

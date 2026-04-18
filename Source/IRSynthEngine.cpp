@@ -71,8 +71,11 @@ const double IRSynthEngine::AIR[8] = { 0.0003, 0.001, 0.002, 0.005, 0.011, 0.026
 
 // Mic polar pattern — per-octave-band {o, d} pairs.
 // Bands: [125, 250, 500, 1k, 2k, 4k, 8k, 16k] Hz.
-// Constraint: o + d = 1.0 at every band — on-axis gain is frequency-flat;
-// only off-axis rejection varies with frequency.
+// Convention: for most patterns o + d = 1.0 at every band — on-axis gain is
+// frequency-flat and only off-axis rejection varies with frequency.
+// Exception: "omni (MK2H)" models the Schoeps MK 2H's narrow-inlet HF shelf
+// (gold-ring acoustic elevation above ~6 kHz) by letting o > 1 at HF; since
+// d = 0 this affects on-axis colour only, not polar pattern.
 static std::map<std::string, std::array<std::pair<double,double>, 8>> s_mic;
 static const std::map<std::string, std::array<std::pair<double,double>, 8>>& initMIC()
 {
@@ -86,10 +89,30 @@ static const std::map<std::string, std::array<std::pair<double,double>, 8>>& ini
             {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00}
         }};
 
+        // Schoeps MK 2H-style: omnidirectional with a mild on-axis HF elevation
+        // from its narrow sound inlet (gold-ring acoustic shelf above ~6 kHz).
+        // Published MK 2H free-field response: flat to ~4 kHz, gentle rise
+        // starting ~5 kHz, peaking ~+3 to +4 dB around 10–12 kHz. Since d = 0
+        // the mic is still omni at every band — only on-axis gain varies.
+        //   4 kHz: +0.4 dB    8 kHz: +2.6 dB    16 kHz: +3.8 dB
+        s_mic["omni (MK2H)"] = {{
+            {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00},
+            {1.00, 0.00}, {1.05, 0.00}, {1.35, 0.00}, {1.55, 0.00}
+        }};
+
         // Wide pickup, broadens further at low end
         s_mic["subcardioid"] = {{
             {0.85, 0.15}, {0.82, 0.18}, {0.78, 0.22}, {0.70, 0.30},
             {0.65, 0.35}, {0.60, 0.40}, {0.55, 0.45}, {0.50, 0.50}
+        }};
+
+        // Schoeps MK 21-style: frequency-independent wide cardioid (α ≈ 0.70 mid,
+        // slight broadening below 250 Hz, slight narrowing above 8 kHz).
+        // Rear rejection holds ~−8 to −12 dB across the full audio band — the MK 21's
+        // defining "extremely consistent polar response".
+        s_mic["wide cardioid (MK21)"] = {{
+            {0.77, 0.23}, {0.75, 0.25}, {0.73, 0.27}, {0.70, 0.30},
+            {0.70, 0.30}, {0.68, 0.32}, {0.65, 0.35}, {0.62, 0.38}
         }};
 
         // Large-diaphragm condenser (~1" capsule) — significant narrowing above 1 kHz.
@@ -112,6 +135,16 @@ static const std::map<std::string, std::array<std::pair<double,double>, 8>>& ini
         s_mic["figure8"] = {{
             {0.12, 0.88}, {0.06, 0.94}, {0.02, 0.98}, {0.00, 1.00},
             {0.00, 1.00}, {0.00, 1.00}, {0.00, 1.00}, {0.00, 1.00}
+        }};
+
+        // Neumann M50-like sphere-mounted pressure transducer. Behaves as a
+        // pure omni below ~1 kHz and progressively narrows above, approaching a
+        // wide-cardioid shape (α≈0.7) by 4 kHz and beyond. On-axis gain stays
+        // frequency-flat (o+d=1) so the existing micG formula is unchanged.
+        // Used by the Decca Tree capture mode (deep-research-report §"Canonical geometry").
+        s_mic["M50-like"] = {{
+            {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00},
+            {0.95, 0.05}, {0.85, 0.15}, {0.75, 0.25}, {0.70, 0.30}
         }};
     }
     return s_mic;
@@ -1010,6 +1043,65 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     double rlx = p.width * p.receiver_lx, rly = p.depth * p.receiver_ly;
     double rrx = p.width * p.receiver_rx, rry = p.depth * p.receiver_ry;
 
+    // ── Decca Tree capture mode (MAIN path) ──────────────────────────────────
+    // When p.main_decca_enabled is true, override the L/R mic positions and
+    // face angles with the tree-derived geometry and compute a third (centre)
+    // mic path later in this function, combining all three into the standard
+    // iLL/iRL/iLR/iRR 4-channel layout. Non-Decca mode leaves rlx..rry etc.
+    // unchanged so IR_11 and IR_14 bit-identity are preserved.
+    //
+    // Classical tree defaults per deep-research-report §"Canonical geometry":
+    //   a  = outer spacing  = 2.0 m
+    //   b  = centre advance = 1.2 m
+    //   h  = height         = 3.0 m  (matches rz above in typical rooms)
+    //   gC = centre gain    = 1/√2 (-3 dB, constant-power)
+    //   HP = centre HPF cut = 110 Hz (1-pole, avoids LF doubling)
+    //   mic pattern         = M50-like (spherical pressure, narrows above 1 kHz)
+    // These are kept file-static here so they are easy to re-tune engine-side
+    // but impossible to fat-finger from a preset/sidecar.
+    static constexpr double kDeccaOuterM   = 2.0;
+    static constexpr double kDeccaAdvanceM = 1.2;
+    static constexpr double kDeccaHeightM  = 3.0;
+    static constexpr double kDeccaGC       = 0.70710678118654752;
+    static constexpr double kDeccaHpHz     = 110.0;
+
+    // Centre-mic position (Decca only; left uninitialised in normal mode).
+    double rcx = 0.0, rcy = 0.0;
+    // Mic face angles — non-Decca uses the configured micl/micr angles; Decca
+    // mounts all three mics rigidly to the tree so they rotate together.
+    double faceL = p.micl_angle;
+    double faceR = p.micr_angle;
+    double faceC = p.micl_angle;   // unused in non-Decca mode
+    std::string mainMicPattern = p.mic_pattern;
+
+    if (p.main_decca_enabled)
+    {
+        const double cxC = p.width * p.decca_cx;
+        const double cyC = p.depth * p.decca_cy;
+        const double ux  = std::cos(p.decca_angle);
+        const double uy  = std::sin(p.decca_angle);
+        // Right-axis v is u rotated +90° CCW, so with the default
+        // decca_angle = -π/2 (forward = -y) v points to +x, placing L at
+        // lower-x and R at higher-x — matches the existing L/R convention
+        // (receiver_lx < receiver_rx).
+        const double vx = -uy;
+        const double vy =  ux;
+
+        rlx = cxC - (kDeccaOuterM * 0.5) * vx;
+        rly = cyC - (kDeccaOuterM * 0.5) * vy;
+        rrx = cxC + (kDeccaOuterM * 0.5) * vx;
+        rry = cyC + (kDeccaOuterM * 0.5) * vy;
+        rcx = cxC + kDeccaAdvanceM * ux;
+        rcy = cyC + kDeccaAdvanceM * uy;
+
+        faceL = faceR = faceC = p.decca_angle;
+        mainMicPattern = "M50-like";
+        // Override rz so the tree height matches the classical default even in
+        // rooms where the existing rz clamp would otherwise trim it below 3 m.
+        // In sufficiently tall rooms (He > 3.33 m) this is a no-op.
+        rz = std::min(kDeccaHeightM, He * 0.9);
+    }
+
     const double srcDist = std::sqrt((slx - srx) * (slx - srx) + (sly - sry) * (sly - sry));
     const double roomMin = std::min(p.width, p.depth);
     // Two tiers: "close" (break periodic delay with jitter only) vs "coincident" (soft FDN seed scale).
@@ -1024,12 +1116,22 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     const double jitterOrder2PlusMs = close ? 2.5 : 0.0;
     const double reflectionSpreadMs = 0.0;  // disabled — was causing collapse when close
 
-    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 42, p.mic_pattern, p.spkl_angle, p.micl_angle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
-    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 43, p.mic_pattern, p.spkr_angle, p.micl_angle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
-    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 44, p.mic_pattern, p.spkl_angle, p.micr_angle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
-    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 45, p.mic_pattern, p.spkr_angle, p.micr_angle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 42, mainMicPattern, p.spkl_angle, faceL, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 43, mainMicPattern, p.spkr_angle, faceL, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 44, mainMicPattern, p.spkl_angle, faceR, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 45, mainMicPattern, p.spkr_angle, faceR, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
 
-    report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size()) + " reflections…");
+    // Centre-mic rays (Decca only). Seed offsets 46/47 are unique across the
+    // dispatcher (MAIN=42+, OUTRIG=52+, AMBIENT=62+, DIRECT=72+), so parallel
+    // aux-path synthesis never collides with these.
+    std::vector<Ref> rLC, rRC;
+    if (p.main_decca_enabled)
+    {
+        rLC = calcRefs(rcx, rcy, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 46, mainMicPattern, p.spkl_angle, faceC, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+        rRC = calcRefs(rcx, rcy, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 47, mainMicPattern, p.spkr_angle, faceC, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    }
+
+    report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size() + rLC.size() + rRC.size()) + " reflections…");
 
     double diff = p.diffusion;
     // When "early reflections only" is on we normally use no diffusion (sharp ER).
@@ -1046,6 +1148,50 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     std::vector<double> eRL = renderCh(rRL, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
     std::vector<double> eLR = renderCh(rLR, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
     std::vector<double> eRR = renderCh(rRR, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
+
+    // ── Decca Tree combine (additive) ────────────────────────────────────────
+    // H_L_out = H_L_mic + gC·H_C_mic   (speaker L → centre mic contributes to L-out too)
+    // H_R_out = H_R_mic + gC·H_C_mic
+    //
+    // In 4-channel form this means the centre mic contribution is mixed into
+    // BOTH eLL/eLR (same speaker L path) and eRL/eRR (speaker R path). The
+    // centre contribution is high-pass-filtered at 110 Hz first to avoid LF
+    // doubling from the near-coincident LF omni response of the three mics
+    // (see deep-research-report §"Centre channel HPF").
+    if (p.main_decca_enabled)
+    {
+        std::vector<double> eLC = renderCh(rLC, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
+        std::vector<double> eRC = renderCh(rRC, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);
+
+        // 1-pole HPF on the centre-mic contributions only.
+        // y[n] = α·(y[n-1] + x[n] - x[n-1]),  α = exp(-2π·fc/sr).
+        auto hp1pole = [sr](std::vector<double>& v, double fcHz)
+        {
+            if (v.empty()) return;
+            const double a = std::exp(-2.0 * M_PI * fcHz / (double)sr);
+            double xPrev = 0.0, yPrev = 0.0;
+            for (double& s : v)
+            {
+                double x = s;
+                double y = a * (yPrev + x - xPrev);
+                s = y;
+                xPrev = x;
+                yPrev = y;
+            }
+        };
+        hp1pole(eLC, kDeccaHpHz);
+        hp1pole(eRC, kDeccaHpHz);
+
+        for (int i = 0; i < irLen; ++i)
+        {
+            const double lc = kDeccaGC * eLC[(size_t)i];
+            const double rc = kDeccaGC * eRC[(size_t)i];
+            eLL[(size_t)i] += lc;   // speaker L → output L: L-mic + gC·C-mic
+            eRL[(size_t)i] += rc;   // speaker R → output L: L-mic + gC·C-mic (speaker R path)
+            eLR[(size_t)i] += lc;   // speaker L → output R: R-mic + gC·C-mic
+            eRR[(size_t)i] += rc;   // speaker R → output R: R-mic + gC·C-mic
+        }
+    }
 
     report(0.60, "Synthesising FDN reverb tail…");
 
@@ -1143,12 +1289,20 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         };
         // t_first: first sample where eL/eR carry real signal (min direct-path).
         // Subtract one sample as a small safety margin against flooring errors.
-        const double minDirectDistM = std::min({
+        // In Decca mode the centre mic (1.2 m forward of L/R) typically has a
+        // shorter direct path than the outer mics, so include it in the min.
+        double minDirectDistM = std::min({
             dist3d(rlx, rly, rz, slx, sly, sz),
             dist3d(rlx, rly, rz, srx, sry, sz),
             dist3d(rrx, rry, rz, slx, sly, sz),
             dist3d(rrx, rry, rz, srx, sry, sz)
         });
+        if (p.main_decca_enabled)
+        {
+            minDirectDistM = std::min(minDirectDistM, std::min(
+                dist3d(rcx, rcy, rz, slx, sly, sz),
+                dist3d(rcx, rcy, rz, srx, sry, sz)));
+        }
         const int t_first      = std::max(0, (int)std::floor(minDirectDistM / SPEED * sr) - 1);
         const int ecFdn        = std::min(irLen, t_first + ec);
         const int fdnMaxRefCut = std::min(irLen,
@@ -1698,17 +1852,58 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
     double rlx = p.width * p.receiver_lx, rly = p.depth * p.receiver_ly;
     double rrx = p.width * p.receiver_rx, rry = p.depth * p.receiver_ry;
 
+    // Decca geometry (must match synthMainPath exactly so DIRECT stays
+    // acoustically aligned with MAIN).  Defaults kept file-static locally
+    // rather than shared with synthMainPath because PING_TESTING_BUILD
+    // produces two independent TUs.
+    static constexpr double kDeccaOuterM   = 2.0;
+    static constexpr double kDeccaAdvanceM = 1.2;
+    static constexpr double kDeccaHeightM  = 3.0;
+    static constexpr double kDeccaGC       = 0.70710678118654752;
+    static constexpr double kDeccaHpHz     = 110.0;
+
+    double rcx = 0.0, rcy = 0.0;
+    double faceL = p.micl_angle;
+    double faceR = p.micr_angle;
+    double faceC = p.micl_angle;
+    std::string mainMicPattern = p.mic_pattern;
+
+    if (p.main_decca_enabled)
+    {
+        const double cxC = p.width * p.decca_cx;
+        const double cyC = p.depth * p.decca_cy;
+        const double ux  = std::cos(p.decca_angle);
+        const double uy  = std::sin(p.decca_angle);
+        const double vx = -uy;
+        const double vy =  ux;
+        rlx = cxC - (kDeccaOuterM * 0.5) * vx;
+        rly = cyC - (kDeccaOuterM * 0.5) * vy;
+        rrx = cxC + (kDeccaOuterM * 0.5) * vx;
+        rry = cyC + (kDeccaOuterM * 0.5) * vy;
+        rcx = cxC + kDeccaAdvanceM * ux;
+        rcy = cyC + kDeccaAdvanceM * uy;
+        faceL = faceR = faceC = p.decca_angle;
+        mainMicPattern = "M50-like";
+        rz = std::min(kDeccaHeightM, He * 0.9);
+    }
+
     auto dist3d = [](double ax, double ay, double az,
                      double bx, double by, double bz) -> double {
         double dx = ax-bx, dy = ay-by, dz = az-bz;
         return std::sqrt(dx*dx + dy*dy + dz*dz);
     };
-    const double maxDirectDistM = std::max({
+    double maxDirectDistM = std::max({
         dist3d(rlx, rly, rz, slx, sly, sz),
         dist3d(rlx, rly, rz, srx, sry, sz),
         dist3d(rrx, rry, rz, slx, sly, sz),
         dist3d(rrx, rry, rz, srx, sry, sz)
     });
+    if (p.main_decca_enabled)
+    {
+        maxDirectDistM = std::max(maxDirectDistM, std::max(
+            dist3d(rcx, rcy, rz, slx, sly, sz),
+            dist3d(rcx, rcy, rz, srx, sry, sz)));
+    }
 
     // irLen = enough for the farthest direct arrival + bandpass-filter settling tail.
     // 512 samples is ~10 ms at 48 kHz — safely past the 8-band bpF impulse response.
@@ -1746,10 +1941,17 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
     // No jitter at all for DIRECT: close-speaker jitter would misalign the direct pulse.
     const double jitter01 = 0.0, jitter2 = 0.0;
 
-    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 72, p.mic_pattern, p.spkl_angle, p.micl_angle, maxRefDist, jitter01, jitter2);
-    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 73, p.mic_pattern, p.spkr_angle, p.micl_angle, maxRefDist, jitter01, jitter2);
-    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 74, p.mic_pattern, p.spkl_angle, p.micr_angle, maxRefDist, jitter01, jitter2);
-    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 75, p.mic_pattern, p.spkr_angle, p.micr_angle, maxRefDist, jitter01, jitter2);
+    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 72, mainMicPattern, p.spkl_angle, faceL, maxRefDist, jitter01, jitter2);
+    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 73, mainMicPattern, p.spkr_angle, faceL, maxRefDist, jitter01, jitter2);
+    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 74, mainMicPattern, p.spkl_angle, faceR, maxRefDist, jitter01, jitter2);
+    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 75, mainMicPattern, p.spkr_angle, faceR, maxRefDist, jitter01, jitter2);
+
+    std::vector<Ref> rLC, rRC;
+    if (p.main_decca_enabled)
+    {
+        rLC = calcRefs(rcx, rcy, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 76, mainMicPattern, p.spkl_angle, faceC, maxRefDist, jitter01, jitter2);
+        rRC = calcRefs(rcx, rcy, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 77, mainMicPattern, p.spkr_angle, faceC, maxRefDist, jitter01, jitter2);
+    }
 
     // No diffusion, no frequency scatter, no reflection spread — just the bpF cascade.
     const double diff = 0.0;
@@ -1760,6 +1962,41 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
     std::vector<double> iRL = renderCh(rRL, irLen, den, sr, diff, reflectionSpreadMs, freqScatterMs);
     std::vector<double> iLR = renderCh(rLR, irLen, den, sr, diff, reflectionSpreadMs, freqScatterMs);
     std::vector<double> iRR = renderCh(rRR, irLen, den, sr, diff, reflectionSpreadMs, freqScatterMs);
+
+    // Decca combine (same formula as synthMainPath — see that function for the
+    // derivation). The DIRECT path is order-0 only, so the combine applies to
+    // the short direct-arrival impulse responses before they are band-limited.
+    if (p.main_decca_enabled)
+    {
+        std::vector<double> eLC = renderCh(rLC, irLen, den, sr, diff, reflectionSpreadMs, freqScatterMs);
+        std::vector<double> eRC = renderCh(rRC, irLen, den, sr, diff, reflectionSpreadMs, freqScatterMs);
+        auto hp1pole = [sr](std::vector<double>& v, double fcHz)
+        {
+            if (v.empty()) return;
+            const double a = std::exp(-2.0 * M_PI * fcHz / (double)sr);
+            double xPrev = 0.0, yPrev = 0.0;
+            for (double& s : v)
+            {
+                double x = s;
+                double y = a * (yPrev + x - xPrev);
+                s = y;
+                xPrev = x;
+                yPrev = y;
+            }
+        };
+        hp1pole(eLC, kDeccaHpHz);
+        hp1pole(eRC, kDeccaHpHz);
+
+        for (int i = 0; i < irLen; ++i)
+        {
+            const double lc = kDeccaGC * eLC[(size_t)i];
+            const double rc = kDeccaGC * eRC[(size_t)i];
+            iLL[(size_t)i] += lc;
+            iRL[(size_t)i] += rc;
+            iLR[(size_t)i] += lc;
+            iRR[(size_t)i] += rc;
+        }
+    }
 
     // Match MAIN's bakedErGain convention (applied to the ER portion in MAIN).
     for (auto* v : { &iLL, &iRL, &iLR, &iRR })

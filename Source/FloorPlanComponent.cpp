@@ -16,6 +16,16 @@ namespace
     // Mixer strip uses the same green accent so key ↔ puck ↔ mixer all match.
     const juce::Colour colAmbientL { 0xff6fc26f };
     const juce::Colour colAmbientR { 0xff9ee89e };
+    // Decca Tree (index 8, only when deccaVisible). Reuses the MAIN mic icy
+    // blue so Decca reads as a "super-MAIN" in the same visual family.
+    const juce::Colour colDecca { 0xff4a9ed4 };
+    // Classical Decca geometry (must match the file-static constants in
+    // IRSynthEngine::synthMainPath — see CLAUDE.md Decca section).
+    const double kDeccaOuterM   = 2.0;
+    const double kDeccaAdvanceM = 1.2;
+    // Sentinel index for the Decca tree puck in hit-testing / drag state.
+    // Outside the 0..7 range used by TransducerState's cx[]/cy[]/angle[].
+    const int kDeccaIdx = 8;
     const juce::Colour colWall  { 0xffc8a96e };
     const juce::Colour colFill1 { 0xf214142a };
     const juce::Colour colFill2 { 0xf20c0c1e };
@@ -183,7 +193,8 @@ bool FloorPlanComponent::transducerVisible (int index) const
     switch (groupFor (index))
     {
         case Group::Speaker: return true;
-        case Group::Main:    return true;
+        // MAIN pucks are hidden when the Decca Tree puck replaces them.
+        case Group::Main:    return ! deccaVisible;
         case Group::Outrig:  return outrigVisible;
         case Group::Ambient: return ambientVisible;
     }
@@ -264,6 +275,38 @@ bool FloorPlanComponent::isInsideRoom (double nx, double ny) const
 
 FloorPlanComponent::HitResult FloorPlanComponent::transducerHitTest (float mx, float my)
 {
+    // Decca Tree puck takes priority when visible — sits where the MAIN mics
+    // normally live and uses the same ring/core hit targets.
+    if (deccaVisible && getParams)
+    {
+        auto p = getParams();
+        const int W = getWidth(), H = getHeight();
+        if (W >= 20 && H >= 20)
+        {
+            const double rw = std::max (0.5, p.width), rd = std::max (0.5, p.depth);
+            auto poly = roomPoly (p.shape);
+            double minX = 1, maxX = 0, minY = 1, maxY = 0;
+            for (const auto& pt : poly)
+            { minX = std::min (minX, pt.first); maxX = std::max (maxX, pt.first);
+              minY = std::min (minY, pt.second); maxY = std::max (maxY, pt.second); }
+            const double pw = maxX - minX, ph = maxY - minY;
+            const int margin = 18;
+            const double pxPerMx = (W - margin * 2) / (rw * std::max (0.01, pw));
+            const double pxPerMy = (H - margin * 2) / (rd * std::max (0.01, ph));
+            const double ppm = std::min (pxPerMx, pxPerMy);
+            const double scaleX = rw * ppm, scaleY = rd * ppm;
+            const double ox = (W - pw * scaleX) / 2 - minX * scaleX;
+            const double oy = (H - ph * scaleY) / 2 - minY * scaleY;
+            const float cx = (float) (transducers.deccaCx * scaleX + ox);
+            const float cy = (float) (transducers.deccaCy * scaleY + oy);
+            const float dist = std::hypot (mx - cx, my - cy);
+            if (dist < CORE_R + 2)
+                return { kDeccaIdx, false };
+            if (dist >= RING_R - RING_W / 2 - 2 && dist <= RING_R + RING_W / 2 + 2)
+                return { kDeccaIdx, true };
+        }
+    }
+
     for (int i = 0; i < 8; ++i)
     {
         if (! transducerVisible (i)) continue;
@@ -284,15 +327,51 @@ void FloorPlanComponent::mouseDown (const juce::MouseEvent& e)
     {
         dragIndex = hit.index;
         dragRotate = hit.rotate;
-        // Latch Option-mirror state for the whole drag. Only enable if the
-        // partner puck is currently visible (e.g. don't try to mirror an
-        // Outrig mic when the Outrig pair isn't enabled — shouldn't happen
-        // in practice since pairs share visibility, but cheap to guard).
-        mirrorDrag = e.mods.isAltDown() && transducerVisible (hit.index ^ 1);
+        // Option-mirror does not apply to the Decca Tree puck (it is a single
+        // rigid super-puck — there is no partner to mirror it against).
+        // Only enable if the partner puck is currently visible.
+        mirrorDrag = hit.index != kDeccaIdx
+                      && e.mods.isAltDown()
+                      && transducerVisible (hit.index ^ 1);
         if (dragRotate)
         {
-            auto pt = transducerCanvasPos (hit.index);
-            dragStartAngle = std::atan2 (e.y - pt.y, e.x - pt.x) - transducers.angle[hit.index];
+            if (hit.index == kDeccaIdx)
+            {
+                // Ring drag rotates the whole tree; anchor on deccaCx/Cy.
+                auto pos = transducerCanvasPos (0); // placeholder for scale
+                // Compute Decca puck canvas position via transducerCanvasPos-like math.
+                // Simpler: reuse hit-test scaling by calling paint-side helpers.
+                // Instead, compute atan2 between cursor and the Decca puck centre
+                // using the same transform used in the hit test.
+                if (getParams)
+                {
+                    auto p = getParams();
+                    const int W = getWidth(), H = getHeight();
+                    const double rw = std::max (0.5, p.width), rd = std::max (0.5, p.depth);
+                    auto poly = roomPoly (p.shape);
+                    double minX = 1, maxX = 0, minY = 1, maxY = 0;
+                    for (const auto& pt : poly)
+                    { minX = std::min (minX, pt.first); maxX = std::max (maxX, pt.first);
+                      minY = std::min (minY, pt.second); maxY = std::max (maxY, pt.second); }
+                    const double pw = maxX - minX, ph = maxY - minY;
+                    const int margin = 18;
+                    const double pxPerMx = (W - margin * 2) / (rw * std::max (0.01, pw));
+                    const double pxPerMy = (H - margin * 2) / (rd * std::max (0.01, ph));
+                    const double ppm = std::min (pxPerMx, pxPerMy);
+                    const double scaleX = rw * ppm, scaleY = rd * ppm;
+                    const double ox = (W - pw * scaleX) / 2 - minX * scaleX;
+                    const double oy = (H - ph * scaleY) / 2 - minY * scaleY;
+                    const float cx = (float) (transducers.deccaCx * scaleX + ox);
+                    const float cy = (float) (transducers.deccaCy * scaleY + oy);
+                    dragStartAngle = std::atan2 (e.y - cy, e.x - cx) - transducers.deccaAngle;
+                    juce::ignoreUnused (pos);
+                }
+            }
+            else
+            {
+                auto pt = transducerCanvasPos (hit.index);
+                dragStartAngle = std::atan2 (e.y - pt.y, e.x - pt.x) - transducers.angle[hit.index];
+            }
         }
         if (mirrorDrag)
         {
@@ -305,6 +384,48 @@ void FloorPlanComponent::mouseDown (const juce::MouseEvent& e)
 void FloorPlanComponent::mouseDrag (const juce::MouseEvent& e)
 {
     if (dragIndex < 0) return;
+
+    // Decca Tree rigid drag: position/angle live on TransducerState.deccaCx/Cy/Angle.
+    if (dragIndex == kDeccaIdx)
+    {
+        if (dragRotate)
+        {
+            // Rotate the whole array around the tree centre.
+            if (! getParams) { repaint(); return; }
+            auto p = getParams();
+            const int W = getWidth(), H = getHeight();
+            const double rw = std::max (0.5, p.width), rd = std::max (0.5, p.depth);
+            auto poly = roomPoly (p.shape);
+            double minX = 1, maxX = 0, minY = 1, maxY = 0;
+            for (const auto& pt : poly)
+            { minX = std::min (minX, pt.first); maxX = std::max (maxX, pt.first);
+              minY = std::min (minY, pt.second); maxY = std::max (maxY, pt.second); }
+            const double pw = maxX - minX, ph = maxY - minY;
+            const int margin = 18;
+            const double pxPerMx = (W - margin * 2) / (rw * std::max (0.01, pw));
+            const double pxPerMy = (H - margin * 2) / (rd * std::max (0.01, ph));
+            const double ppm = std::min (pxPerMx, pxPerMy);
+            const double scaleX = rw * ppm, scaleY = rd * ppm;
+            const double ox = (W - pw * scaleX) / 2 - minX * scaleX;
+            const double oy = (H - ph * scaleY) / 2 - minY * scaleY;
+            const float cx = (float) (transducers.deccaCx * scaleX + ox);
+            const float cy = (float) (transducers.deccaCy * scaleY + oy);
+            transducers.deccaAngle = std::atan2 (e.y - cy, e.x - cx) - dragStartAngle;
+        }
+        else
+        {
+            double nx, ny;
+            canvasToNorm ((float) e.x, (float) e.y, nx, ny);
+            if (isInsideRoom (nx, ny))
+            {
+                transducers.deccaCx = juce::jlimit (0.0, 1.0, nx);
+                transducers.deccaCy = juce::jlimit (0.0, 1.0, ny);
+            }
+        }
+        repaint();
+        return;
+    }
+
     const int partner = dragIndex ^ 1;
     if (dragRotate)
     {
@@ -350,21 +471,30 @@ void FloorPlanComponent::mouseUp (const juce::MouseEvent&)
 {
     if (dragIndex >= 0)
     {
-        // Fire per-group callback first, then the generic catch-all. The
-        // partner puck is in the same group as the dragged puck, so a single
-        // group callback covers both when mirroring.
-        switch (groupFor (dragIndex))
+        // Decca tree drag maps to the MAIN placement group (it replaces the
+        // MAIN L/R pair on the floor plan when deccaVisible is true).
+        if (dragIndex == kDeccaIdx)
         {
-            case Group::Speaker:
-            case Group::Main:
-                if (onMainPlacementChanged) onMainPlacementChanged();
-                break;
-            case Group::Outrig:
-                if (onOutrigPlacementChanged) onOutrigPlacementChanged();
-                break;
-            case Group::Ambient:
-                if (onAmbientPlacementChanged) onAmbientPlacementChanged();
-                break;
+            if (onMainPlacementChanged) onMainPlacementChanged();
+        }
+        else
+        {
+            // Fire per-group callback first, then the generic catch-all. The
+            // partner puck is in the same group as the dragged puck, so a single
+            // group callback covers both when mirroring.
+            switch (groupFor (dragIndex))
+            {
+                case Group::Speaker:
+                case Group::Main:
+                    if (onMainPlacementChanged) onMainPlacementChanged();
+                    break;
+                case Group::Outrig:
+                    if (onOutrigPlacementChanged) onOutrigPlacementChanged();
+                    break;
+                case Group::Ambient:
+                    if (onAmbientPlacementChanged) onAmbientPlacementChanged();
+                    break;
+            }
         }
         if (onPlacementChanged) onPlacementChanged();
     }
@@ -507,9 +637,11 @@ void FloorPlanComponent::paint (juce::Graphics& g)
         if (! isSpeakerIndex (i))
         {
             const auto pat = patternForMicIndex (i);
-            if      (pat == "omni")        arcHalf = kPi * 0.5;
-            else if (pat == "subcardioid") arcHalf = kPi * 0.75 * 0.5;
-            else if (pat == "figure8")     arcHalf = kPi * 0.25;
+            if      (pat == "omni")                   arcHalf = kPi * 0.5;
+            else if (pat == "omni (MK2H)")            arcHalf = kPi * 0.5;
+            else if (pat == "subcardioid")            arcHalf = kPi * 0.75 * 0.5;
+            else if (pat == "wide cardioid (MK21)")   arcHalf = kPi * 0.70 * 0.5;
+            else if (pat == "figure8")                arcHalf = kPi * 0.25;
         }
 
         juce::Path beam;
@@ -561,13 +693,106 @@ void FloorPlanComponent::paint (juce::Graphics& g)
         }
     }
 
+    // Decca Tree puck (when visible). The tree is a rigid array of 3 mics
+    // (L, C, R) rotated by transducers.deccaAngle around the tree centre at
+    // (deccaCx, deccaCy). Classical geometry — see kDeccaOuterM / kDeccaAdvanceM.
+    if (deccaVisible)
+    {
+        const double ang = transducers.deccaAngle;
+        const double fx = std::cos (ang), fy = std::sin (ang);     // forward unit vector
+        const double rx = -std::sin (ang), ry = std::cos (ang);    // right unit vector
+        // Metre offsets → normalised (divide by room extents).
+        const double halfA_nx = (rx * (kDeccaOuterM * 0.5)) / rw;
+        const double halfA_ny = (ry * (kDeccaOuterM * 0.5)) / rd;
+        const double adv_nx   = (fx * kDeccaAdvanceM) / rw;
+        const double adv_ny   = (fy * kDeccaAdvanceM) / rd;
+
+        const double Lnx = transducers.deccaCx - halfA_nx;
+        const double Lny = transducers.deccaCy - halfA_ny;
+        const double Rnx = transducers.deccaCx + halfA_nx;
+        const double Rny = transducers.deccaCy + halfA_ny;
+        const double Cnx = transducers.deccaCx + adv_nx;
+        const double Cny = transducers.deccaCy + adv_ny;
+
+        auto centrePt = toCanvas (transducers.deccaCx, transducers.deccaCy);
+        auto Lpt      = toCanvas (Lnx, Lny);
+        auto Rpt      = toCanvas (Rnx, Rny);
+        auto Cpt      = toCanvas (Cnx, Cny);
+
+        // Forward-facing beam on the whole tree (wide, omni-ish) so users see
+        // where the array is pointing. Same arc shape as a MAIN omni mic.
+        {
+            const float beamLenD = RING_R * 3.2f;
+            const double arcHalf = kPi * 0.5;
+            juce::Path beam;
+            beam.startNewSubPath (centrePt.x, centrePt.y);
+            const int nSeg = 16;
+            for (int s = 0; s <= nSeg; ++s)
+            {
+                const float t = (float) s / (float) nSeg;
+                const float theta = (float) (ang - arcHalf + t * 2 * arcHalf);
+                beam.lineTo (centrePt.x + beamLenD * std::cos (theta),
+                             centrePt.y + beamLenD * std::sin (theta));
+            }
+            beam.closeSubPath();
+            g.setColour (colDecca.withAlpha (0.14f));
+            g.fillPath (beam);
+        }
+
+        // Light connecting line to show it's a rigid array (L—C—R).
+        g.setColour (colDecca.withAlpha (0.35f));
+        g.drawLine (Lpt.x, Lpt.y, Cpt.x, Cpt.y, 1.2f);
+        g.drawLine (Cpt.x, Cpt.y, Rpt.x, Rpt.y, 1.2f);
+
+        // L/C/R dots (small, unobtrusive).
+        auto drawDot = [&] (juce::Point<float> pt, const char* lbl)
+        {
+            g.setColour (colDecca);
+            g.fillEllipse (pt.x - 3.5f, pt.y - 3.5f, 7.0f, 7.0f);
+            g.setColour (colDecca.withAlpha (0.95f));
+            g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
+            g.drawText (lbl, (int) (pt.x - 10), (int) (pt.y + 4), 20, 10,
+                        juce::Justification::centred, false);
+        };
+        drawDot (Lpt, "L");
+        drawDot (Cpt, "C");
+        drawDot (Rpt, "R");
+
+        // Ring + rotation tick + mic icon at the tree centre.
+        g.setColour (colDecca.withAlpha (0.22f));
+        g.drawEllipse (centrePt.x - RING_R, centrePt.y - RING_R,
+                       RING_R * 2, RING_R * 2, RING_W);
+        const float tickX = centrePt.x + std::cos ((float) ang) * RING_R;
+        const float tickY = centrePt.y + std::sin ((float) ang) * RING_R;
+        g.setColour (colDecca);
+        g.fillEllipse (tickX - 3.5f, tickY - 3.5f, 7, 7);
+        drawTransducerIcon (g, micPath, centrePt.x, centrePt.y, (float) ang, CORE_R, colDecca);
+
+        // "D" label at upper-right of the ring.
+        g.setFont (juce::FontOptions (9.0f, juce::Font::bold));
+        g.setColour (colDecca.withAlpha (0.95f));
+        g.drawText ("D",
+                    (int) (centrePt.x + RING_R * 0.8f),
+                    (int) (centrePt.y - RING_R * 1.1f),
+                    12, 12,
+                    juce::Justification::centredLeft, false);
+    }
+
     // Legend: colour guide. Base rows (Spk L/R, Mic L/R) are always shown.
     // OUTRIG and AMBIENT rows are appended only when visible.
     struct LegRow { const char* label; int index; };
     std::vector<LegRow> rows = {
         { "Spk L", 0 }, { "Spk R", 1 },
-        { "Mic L", 2 }, { "Mic R", 3 },
     };
+    // When Decca is visible, show a single "Decca" legend row in place of the
+    // Mic L/R rows (MAIN mic pucks are hidden).
+    if (deccaVisible)
+        rows.push_back ({ "Decca", 2 }); // index 2 used only for icon positioning
+    else
+    {
+        rows.push_back ({ "Mic L", 2 });
+        rows.push_back ({ "Mic R", 3 });
+    }
     if (outrigVisible)  { rows.push_back ({ "Out L", 4 }); rows.push_back ({ "Out R", 5 }); }
     if (ambientVisible) { rows.push_back ({ "Amb L", 6 }); rows.push_back ({ "Amb R", 7 }); }
 
@@ -592,13 +817,19 @@ void FloorPlanComponent::paint (juce::Graphics& g)
                     juce::Justification::centredLeft, false);
 
         // Angle readout — 0° = north (up), +CW, −CCW, ±180° = south (audience).
-        double displayDeg = (transducers.angle[i] + kPi / 2.0) * 180.0 / kPi;
+        // When Decca is visible, the row labelled "Decca" (index 2) uses the
+        // tree angle rather than the (hidden) MAIN L mic angle.
+        const bool isDeccaRow = deccaVisible && juce::String (row.label) == "Decca";
+        const double angSource = isDeccaRow ? transducers.deccaAngle : transducers.angle[i];
+        double displayDeg = (angSource + kPi / 2.0) * 180.0 / kPi;
         while (displayDeg >  180.0) displayDeg -= 360.0;
         while (displayDeg <= -180.0) displayDeg += 360.0;
         juce::String degStr = juce::String ((int) std::round (displayDeg))
                               + juce::String::fromUTF8 (u8"\u00b0");
         g.setColour (colourFor (i).withAlpha (0.85f));
-        g.drawText (degStr, (int) (legX + legIconSz + 50), (int) (legY + (float) r * legRow), 36, (int) legRow,
+        // "Decca" label is wider than "Mic L" etc., so shift the angle readout.
+        const int angOffset = isDeccaRow ? 58 : 50;
+        g.drawText (degStr, (int) (legX + legIconSz + angOffset), (int) (legY + (float) r * legRow), 36, (int) legRow,
                     juce::Justification::centredLeft, false);
     }
 }

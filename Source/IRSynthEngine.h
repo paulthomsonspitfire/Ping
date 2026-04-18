@@ -61,7 +61,7 @@ struct IRSynthParams
 
     // Options
     std::string mic_pattern = "cardioid (LDC)";
-    // "omni"|"subcardioid"|"cardioid (LDC)"|"cardioid (SDC)"|"figure8"
+    // "omni"|"omni (MK2H)"|"subcardioid"|"wide cardioid (MK21)"|"cardioid (LDC)"|"cardioid (SDC)"|"figure8"
     // "cardioid" is a legacy alias for "cardioid (LDC)"
     bool        er_only     = false;
     int         sample_rate = 48000;      // 44100 | 48000
@@ -98,6 +98,19 @@ struct IRSynthParams
     // micr_angle and mic_pattern from the MAIN pair (Decision D2 in
     // Multi-Mic-Work-Plan.md).
     bool        direct_enabled  = false;
+
+    // ── Decca Tree capture mode (MAIN + DIRECT paths only) ───────────────────
+    // When enabled, MAIN and DIRECT synthesis use a 3-mic L/C/R array rigidly
+    // mounted at (decca_cx, decca_cy, h) and rotated by decca_angle. Outer
+    // spacing a, centre advance b, height h, centre gain gC and centre HPF
+    // cutoff are fixed classical defaults in the engine (file-static constants).
+    // The 3-mic L/C/R render is combined into the same iLL/iRL/iLR/iRR
+    // 4-channel layout used by the non-Decca path, so the convolver and mixer
+    // downstream are unchanged. OUTRIG/AMBIENT are unaffected.
+    bool        main_decca_enabled = false;
+    double      decca_cx    = 0.5;
+    double      decca_cy    = 0.65;
+    double      decca_angle = -1.5707963267948966;  // -π/2 pointing towards low-y (source stage)
 };
 
 /** Per-path 4-channel IR (LL/RL/LR/RR) used for DIRECT/OUTRIG/AMBIENT results. */
@@ -168,7 +181,7 @@ private:
     static const double OA[8], BA[8], BSA[8], AIR[8];
 
     // Mic polar pattern — per-band {o, d} pairs for 8 octave bands [125..16k Hz].
-    // Patterns: {omni, subcardioid, cardioid (LDC), cardioid (SDC), figure8};
+    // Patterns: {omni, omni (MK2H), subcardioid, wide cardioid (MK21), cardioid (LDC), cardioid (SDC), figure8};
     // "cardioid" kept as a backward-compat alias for "cardioid (LDC)".
     // Constraint: o + d = 1.0 at every band (on-axis gain is frequency-flat).
     static const std::map<std::string, std::array<std::pair<double,double>, 8>>& getMIC();
