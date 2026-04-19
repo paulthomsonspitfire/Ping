@@ -744,19 +744,57 @@ void FloorPlanComponent::paint (juce::Graphics& g)
         g.drawLine (Lpt.x, Lpt.y, Cpt.x, Cpt.y, 1.2f);
         g.drawLine (Cpt.x, Cpt.y, Rpt.x, Rpt.y, 1.2f);
 
-        // L/C/R dots (small, unobtrusive).
-        auto drawDot = [&] (juce::Point<float> pt, const char* lbl)
+        // Per-mic face ticks (toe-out) — L/R mics rotate ±toe from the tree's
+        // forward axis; C always looks straight forward. Mirrors the engine
+        // logic in synthMainPath / synthDirectPath so the display matches what
+        // the convolution is actually doing. Pulled from IRSynthParams so the
+        // tick live-updates when the user drags the Toe-out slider.
+        double toe = kPi * 0.5;   // fallback default (±90°) when getParams is not wired
+        if (getParams)
+        {
+            const auto p = getParams();
+            toe = juce::jlimit (0.0, kPi * 0.5, p.decca_toe_out);
+        }
+        const double faceLAng = ang - toe;
+        const double faceRAng = ang + toe;
+        const double faceCAng = ang;
+
+        // L/C/R dots with an outward-pointing face tick (2–3 px tick from the
+        // dot edge) to make the individual mic orientations unmistakable.
+        auto drawDotWithFace = [&] (juce::Point<float> pt, const char* lbl, double faceAng)
         {
             g.setColour (colDecca);
             g.fillEllipse (pt.x - 3.5f, pt.y - 3.5f, 7.0f, 7.0f);
+
+            // Face tick — short line from dot edge outwards along faceAng.
+            const float tickStart = 3.5f;
+            const float tickLen   = 10.0f;
+            const float fx2 = (float) std::cos (faceAng);
+            const float fy2 = (float) std::sin (faceAng);
+            g.setColour (colDecca.withAlpha (0.85f));
+            g.drawLine (pt.x + fx2 * tickStart, pt.y + fy2 * tickStart,
+                        pt.x + fx2 * (tickStart + tickLen), pt.y + fy2 * (tickStart + tickLen),
+                        1.4f);
+            // Small arrow-head cap at the end of the tick.
+            const float headAng = 0.45f;   // radians half-spread
+            const float headLen = 3.2f;
+            const float hx = pt.x + fx2 * (tickStart + tickLen);
+            const float hy = pt.y + fy2 * (tickStart + tickLen);
+            const float h1x = hx - headLen * (float) std::cos (faceAng - headAng);
+            const float h1y = hy - headLen * (float) std::sin (faceAng - headAng);
+            const float h2x = hx - headLen * (float) std::cos (faceAng + headAng);
+            const float h2y = hy - headLen * (float) std::sin (faceAng + headAng);
+            g.drawLine (hx, hy, h1x, h1y, 1.2f);
+            g.drawLine (hx, hy, h2x, h2y, 1.2f);
+
             g.setColour (colDecca.withAlpha (0.95f));
             g.setFont (juce::FontOptions (8.5f, juce::Font::bold));
             g.drawText (lbl, (int) (pt.x - 10), (int) (pt.y + 4), 20, 10,
                         juce::Justification::centred, false);
         };
-        drawDot (Lpt, "L");
-        drawDot (Cpt, "C");
-        drawDot (Rpt, "R");
+        drawDotWithFace (Lpt, "L", faceLAng);
+        drawDotWithFace (Cpt, "C", faceCAng);
+        drawDotWithFace (Rpt, "R", faceRAng);
 
         // Ring + rotation tick + mic icon at the tree centre.
         g.setColour (colDecca.withAlpha (0.22f));

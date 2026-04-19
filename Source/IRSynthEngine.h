@@ -93,11 +93,37 @@ struct IRSynthParams
     double      ambient_height  = 6.0;              // metres above floor
     std::string ambient_pattern = "omni";
 
-    // ── Direct path (order-0 only, shares MAIN mic pattern + angles) ─────────
+    // ── Direct path (shares MAIN mic pattern + angles) ───────────────────────
     // No extra geometry fields: DIRECT uses receiver_lx/ly/rx/ry, micl_angle,
     // micr_angle and mic_pattern from the MAIN pair (Decision D2 in
     // Docs/Multi-Mic-Work-Plan.md).
-    bool        direct_enabled  = false;
+    //
+    // direct_max_order: reflection order limit for the DIRECT path. 0 = pure
+    // line-of-sight (the historical behaviour); 1 = direct + first-order wall
+    // bounces (floor / ceiling / near walls — strengthens localisation via the
+    // precedence-effect fusion window); 2 = + second-order. ER crossover gate
+    // (eo=true, ec=85 ms) still applies, so raising this cannot leak content
+    // into the tail region.
+    bool        direct_enabled   = false;
+    int         direct_max_order = 1;
+
+    // ── Experimental toggles (A/B knobs for the early-reflection experiment)
+    // Both default to the historical behaviour so MAIN/OUTRIG/AMBIENT output
+    // is bit-identical to pre-experiment builds when left at defaults.
+    //
+    // lambert_scatter_enabled: Feature A in calcRefs. When true (default), each
+    // specular reflection of order 1–3 spawns N_SCATTER=2 secondary rays with
+    // 0–4 ms random delay at ~3% amplitude. Softens the ER comb and fills the
+    // gaps between specular spikes. Can be turned off to test whether it is
+    // contributing to perceived image softness in the first 30 ms.
+    //
+    // spk_directivity_full: speaker directivity fade-to-omni override. When
+    // false (default), order 0–1 use full cardioid, order 2 is a 50/50 blend
+    // with omni, order 3+ is fully omni. When true, the fade is disabled and
+    // all reflection orders use the full cardioid speaker pattern — tests
+    // whether early-reflection directional cues are being lost to the fade.
+    bool        lambert_scatter_enabled = true;
+    bool        spk_directivity_full    = false;
 
     // ── Decca Tree capture mode (MAIN + DIRECT paths only) ───────────────────
     // When enabled, MAIN and DIRECT synthesis use a 3-mic L/C/R array rigidly
@@ -111,6 +137,29 @@ struct IRSynthParams
     double      decca_cx    = 0.5;
     double      decca_cy    = 0.65;
     double      decca_angle = -1.5707963267948966;  // -π/2 pointing towards low-y (source stage)
+
+    // Centre-mic gain in the Decca combine, i.e. the scalar applied to the
+    // centre-mic's captured signal before it is summed identically into both
+    // the L and R output channels: L_out = L_raw + g·HPF(C);
+    // R_out = R_raw + g·HPF(C). Acts as a "centre fill" control.
+    //
+    // Default 0.5 (−6 dB) approximates typical real-world Decca mixing practice
+    // (centre 6 dB below outers). Setting 0.0 disables the centre-fill entirely
+    // and leaves the tree as a bare L/R spaced pair at the outer positions.
+    // Higher values reinforce the phantom centre at the cost of stereo width
+    // and reflection definition (the centre-mic's reflections arrive at
+    // different times than L/R and smear the early field when summed strongly).
+    // 0.707 was the previous fixed value and remains the upper bound.
+    double      decca_centre_gain = 0.5;
+
+    // Toe-out angle (radians) applied to the L and R outer mic face directions
+    // relative to the Decca tree's forward axis. L face = decca_angle − toe_out,
+    // R face = decca_angle + toe_out. The centre mic always looks straight
+    // forward (decca_angle). Default π/2 (±90°) places the outer mics fully
+    // side-firing for maximum stereo separation; π/4 (±45°) matches the
+    // classic main pair default; 0 collapses the tree back to three forward-
+    // facing mics (the pre-experiment behaviour).
+    double      decca_toe_out     = 1.5707963267948966;  // π/2 (90°)
 };
 
 /** Per-path 4-channel IR (LL/RL/LR/RR) used for DIRECT/OUTRIG/AMBIENT results. */

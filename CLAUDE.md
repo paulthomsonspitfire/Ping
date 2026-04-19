@@ -1124,7 +1124,7 @@ This section documents the concrete shape of that work — the deeper architectu
 
 - `synthMainPath (const IRSynthParams&, IRSynthProgressFn cb)` → `IRSynthResult` (the historical body of `synthIR`, unchanged, guarded by IR_14 for bit-identity).
 - `synthExtraPath (const IRSynthParams&, sx1, sy1, sx2, sy2, rx1, ry1, rx2, ry2, rheight, sheight, pattern, angL, angR, seedBase, onProgress)` → `MicIRChannels` (OUTRIG and AMBIENT; same engine as MAIN, different placement).
-- `synthDirectPath (const IRSynthParams&)` → `MicIRChannels` (order-0 only — direct arrivals, no reflections, no FDN, shares MAIN placement and mic pattern).
+- `synthDirectPath (const IRSynthParams&)` → `MicIRChannels` (direct arrival + optional low-order ERs, no FDN, shares MAIN placement and mic pattern; the reflection-order ceiling is set by `p.direct_max_order`, default 1 — see "Direct-path early reflections" below).
 
 `synthIR` uses `std::async` for parallel dispatch. Determinism is preserved (tested by IR_16) because each path uses a distinct seed base: MAIN is 42, OUTRIG is 52, AMBIENT is 62, DIRECT is 72 — even with identical placement, the per-band RNG seeds differ so parallel ordering has no effect on the output.
 
@@ -1134,7 +1134,7 @@ This section documents the concrete shape of that work — the deeper architectu
 
 ### Convolvers
 
-Each path owns a full 4-convolver quad (LL/RL/LR/RR for ER, same for Tail). For DIRECT the Tail convolvers are unused (engine produces order-0 only, so the ER split captures the entire direct-path content and the Tail buffer is silent). The processor therefore declares **16 ER convolvers + 16 Tail convolvers = 32 `juce::dsp::Convolution` objects** (plus the existing stereo fallback pair for 2-channel WAVs, making 34 total).
+Each path owns a full 4-convolver quad (LL/RL/LR/RR for ER, same for Tail). For DIRECT the Tail convolvers are still declared but are effectively unused: the global 85 ms ER/Tail split (`ec = 0.085 × sr`) is applied to DIRECT too, and DIRECT has no FDN, so any reflection content above the split is at most a few low-order bounces that arrived past 85 ms (rare — the order-1 ceiling at default keeps virtually all content inside the ER window). The processor therefore declares **16 ER convolvers + 16 Tail convolvers = 32 `juce::dsp::Convolution` objects** (plus the existing stereo fallback pair for 2-channel WAVs, making 34 total).
 
 `loadMicPathFromFile` and the `loadIRFromBuffer` extension accept a `MicPath` enum (`Main | Direct | Outrig | Ambient`) and route the ER/Tail split into the appropriate convolver group.
 
@@ -1204,7 +1204,8 @@ All new `*On`, `*Gain`, `*Pan`, `*Mute`, `*Solo`, `*HPOn` APVTS parameters seria
 ### Tests
 
 - **IR_14** — MAIN path full-IR bit-identity regression lock, captured pre-refactor. Guards against any accidental engine change touching the MAIN path.
-- **IR_15 … IR_21** — aux-path engine tests (path structure, determinism under parallel dispatch, DIRECT order-0 only, DIRECT arrival timing, DIRECT polar colouration, OUTRIG/AMBIENT independence from MAIN, global `er_only`).
+- **IR_15 … IR_21** — aux-path engine tests (path structure, determinism under parallel dispatch, DIRECT arrival timing and polar colouration, OUTRIG/AMBIENT independence from MAIN, global `er_only`). IR_17, IR_18 and IR_19 explicitly set `direct_max_order = 0` so they continue to isolate order-0 behaviour regardless of the new default.
+- **IR_25** — DIRECT with `direct_max_order = 1` adds energy after the first-order arrival window that `direct_max_order = 0` does not contain (paired guard against IR_17).
 - **DSP_15** — constant-power pan law.
 - **DSP_16 / DSP_17** — `HP2ndOrder` correctness + click-free toggle.
 - **DSP_18** — mute / solo gate logic.
@@ -1215,7 +1216,7 @@ All these live in `Tests/PingMultiMicTests.cpp` (with DSP_16/17 on `HP2ndOrder.h
 ### Key design decisions — multi-mic
 
 - **Parallel synthesis uses `std::async`** — the dispatcher launches up to 3 aux futures plus MAIN, then `.get()` each. Progress callbacks from parallel helpers are thread-safe (static mutex). Determinism is preserved (IR_16) because each helper uses a distinct seed base (42/52/62/72); RNG is local per call, not shared, so dispatch order cannot affect output.
-- **DIRECT = order-0 only, not a separate engine** — `synthDirectPath` wraps the same `calcRefs` used by MAIN with `maxOrder = 0` and skips FDN entirely. This guarantees DIRECT inherits MAIN's mic polar behaviour (tested by IR_19) and bandpass colouration, so enabling DIRECT always produces a plausible near-field tap of the same room.
+- **DIRECT = low-order ER only, not a separate engine** — `synthDirectPath` wraps the same `calcRefs` used by MAIN with `maxOrder = p.direct_max_order` (default **1**, range 0–3) and skips the FDN entirely. This guarantees DIRECT inherits MAIN's mic polar behaviour (tested by IR_19) and bandpass colouration, so enabling DIRECT always produces a plausible near-field tap of the same room. The historical behaviour (pure line-of-sight) is `direct_max_order = 0`; the default was raised to 1 in v2.7.5 to strengthen localisation via the precedence-effect fusion window (floor/ceiling/near-wall first bounces). The global 85 ms ER gate is still applied, so raising this cannot leak content into the tail region.
 - **DIRECT shares MAIN's mic pattern and angles** — there is no `direct_pattern` parameter. This was the "share_main" option in the design Q&A and keeps the mixer conceptually as "four views of the same room", not "four separate mic setups".
 - **`er_only` is global** — it gates late-energy contributions on all four paths simultaneously (IR_21). A per-path version was considered and rejected as confusing.
 - **HP is a strip feature, not a path feature** — `HP2ndOrder` lives in the processor's mixer, not in the engine. Switching HP on/off re-enables the biquad in place; state continues to update while disabled, so re-enable is click-free (DSP_17).
@@ -1296,11 +1297,14 @@ Defined in both `synthMainPath` and `synthDirectPath` (`Source/IRSynthEngine.cpp
 | `kDeccaOuterM` | 2.0 m | L↔R outer spacing (each outer mic is 1.0 m off centre) |
 | `kDeccaAdvanceM` | 1.2 m | Centre mic offset forward of the L/R axis |
 | `kDeccaHeightM` | 3.0 m | Tree height; overrides `rz` up to `He × 0.9` |
-| `kDeccaGC` | 0.707 (1/√2) | Constant-power centre-mic gain (−3 dB) |
 | `kDeccaHpHz` | 110 Hz | 1-pole HPF cutoff applied to centre-mic contributions |
-| `mic_pattern` | `"M50-like"` | Forced pattern (spherical pressure, narrows above 1 kHz) |
 
-These values must stay identical in the two synth helpers so DIRECT stays acoustically aligned with MAIN. When the user rotates the tree via the floor-plan puck, L/R/C are moved as a rigid body around `(decca_cx, decca_cy)` by `decca_angle`; the three face angles are all set to `decca_angle` so the array rotates as a unit. `rz` is overridden to `min(3.0, He × 0.9)` — in tall rooms (He > 3.33 m) this is a no-op; in low-ceiling rooms the clamp prevents invalid geometry.
+Centre-mic gain, outer-mic toe-out, and mic pattern are now **user-adjustable parameters** (see Parameters section below) rather than file-static constants. Previously:
+- The centre gain was fixed at `kDeccaGC = 0.707` (1/√2, −3 dB).
+- The three mics all faced `decca_angle` (forward-parallel), with no splay.
+- The mic pattern was forced to `"M50-like"` regardless of the user's `mic_pattern` selection.
+
+These values must stay identical in the two synth helpers so DIRECT stays acoustically aligned with MAIN. When the user rotates the tree via the floor-plan puck, L/R/C are moved as a rigid body around `(decca_cx, decca_cy)` by `decca_angle`; the centre mic face angle is `decca_angle`, the outer mic face angles are `decca_angle ∓ decca_toe_out` (L/R respectively). `rz` is overridden to `min(3.0, He × 0.9)` — in tall rooms (He > 3.33 m) this is a no-op; in low-ceiling rooms the clamp prevents invalid geometry.
 
 ### Signal combine (additive, per speaker path)
 
@@ -1311,11 +1315,13 @@ H_L_out = H_L_mic + gC · HPF(H_C_mic)
 H_R_out = H_R_mic + gC · HPF(H_C_mic)
 ```
 
+where `gC = p.decca_centre_gain` (user-adjustable, default 0.5, range 0.0–0.707).
+
 In the 4-channel `iLL/iRL/iLR/iRR` layout this means `lc = gC · HPF(eLC)` is added to both `eLL` (speaker L → output L) and `eLR` (speaker L → output R), with the matching `rc` added to `eRL` / `eRR` for the speaker-R path. The HPF is a 1-pole `α = exp(−2π · fc / sr)` filter applied only to the centre-mic stream — it removes the LF doubling that otherwise occurs because the three mics' direct-path omni responses are nearly coincident below ~200 Hz. The combine runs additively before the FDN tail, so the FDN is seeded by the already-combined ER and no separate centre-path tail is needed.
 
 ### DIRECT path symmetry
 
-`synthDirectPath` performs the exact same geometry override and centre-mic combine, gated on `p.main_decca_enabled`. Because DIRECT is order-0 only (no reflections, no FDN), the combine is applied to the short direct-arrival IRs before the light LP/HP band-limiting and the +15 dB output trim. This keeps the 4-strip mixer's DIRECT strip acoustically congruent with MAIN when Decca is on.
+`synthDirectPath` performs the exact same geometry override and centre-mic combine, gated on `p.main_decca_enabled`. Because DIRECT has no FDN and only a low reflection-order ceiling (`direct_max_order`, default 1), the combine is applied to the short direct-arrival IRs before the light LP/HP band-limiting and the +15 dB output trim. This keeps the 4-strip mixer's DIRECT strip acoustically congruent with MAIN when Decca is on.
 
 ### Parameters (`IRSynthParams`)
 
@@ -1325,6 +1331,9 @@ In the 4-channel `iLL/iRL/iLR/iRR` layout this means `lc = gC · HPF(eLC)` is ad
 | `decca_cx` | 0–1 | 0.5 | Tree centre X (normalised room width) |
 | `decca_cy` | 0–1 | 0.65 | Tree centre Y (normalised room depth) |
 | `decca_angle` | radians | −π/2 | Forward direction; default faces low-y (source stage) |
+| `decca_centre_gain` | 0–0.707 | **0.5** | Scalar applied to the centre-mic stream before it is summed into both L and R outputs. Was fixed at `kDeccaGC = 1/√2`; now user-adjustable. 0 disables the centre fill entirely (tree = bare spaced pair). |
+| `decca_toe_out` | 0–π/2 rad | **π/2** (±90°) | Angular splay of the outer mics relative to the tree's forward axis. L face = `decca_angle − toe_out`, R face = `decca_angle + toe_out`. 0 collapses all three mics to forward-parallel (the pre-v2.7.5 behaviour); π/4 matches the classic main-pair default; π/2 is fully side-firing for maximum separation. |
+| `mic_pattern` | enum | `"cardioid (LDC)"` (MAIN default) | Decca now uses the MAIN-path `mic_pattern` as selected by the user (was hardcoded to `"M50-like"` prior to v2.7.5). Any of the seven patterns works; directional patterns engage `decca_toe_out` meaningfully, omni patterns fall back to near-pure spaced-omni behaviour. |
 
 When `main_decca_enabled = false` the MAIN path uses the configured `receiver_lx/ly`, `receiver_rx/ry`, `micl_angle`, `micr_angle`, and `mic_pattern` exactly as before — IR_11 and IR_14 bit-identity are preserved (IR_22 guards this).
 
@@ -1336,13 +1345,14 @@ When `main_decca_enabled = false` the MAIN path uses the configured `receiver_lx
 
 ### Sidecar persistence
 
-`PluginProcessor` writes four extra attributes to every `.ping` sidecar:
+`PluginProcessor` writes six attributes to every `.ping` sidecar for Decca state:
 
 ```xml
-<synthParams ... deccaOn="1" deccaCx="0.5" deccaCy="0.65" deccaAng="-1.5708"/>
+<synthParams ... deccaOn="1" deccaCx="0.5" deccaCy="0.65" deccaAng="-1.5708"
+                 deccaCtrGain="0.5" deccaToeOut="1.5708" .../>
 ```
 
-Loading uses `defaults.*` as the fallback for each attribute, so pre-Decca sidecars load cleanly with `main_decca_enabled = false`. There is no migration code — backward compatibility comes from the `getBoolAttribute`/`getDoubleAttribute` defaulting.
+Loading uses `defaults.*` as the fallback for each attribute, so pre-Decca sidecars load cleanly with `main_decca_enabled = false`. There is no migration code — backward compatibility comes from the `getBoolAttribute`/`getDoubleAttribute` defaulting. **Presets saved before v2.7.5 will reload with the new defaults for `decca_centre_gain` (0.5, was baked 0.707) and `decca_toe_out` (π/2, was baked 0 = three parallel forward mics).** They will therefore sound different on reload — this is the intended v2.7.5 fix and should be called out in release notes.
 
 ### Tests (`Tests/PingDeccaTests.cpp`)
 
@@ -1351,17 +1361,53 @@ Loading uses `defaults.*` as the fallback for each attribute, so pre-Decca sidec
 | IR_22 | Decca OFF: explicit `main_decca_enabled = false` is bit-identical to the struct default — regression guard on the off branch (protects IR_11 / IR_14) |
 | IR_23 | Decca ON vs OFF: enabling the flag must change MAIN output — proves the flag is wired end-to-end |
 | IR_24 | Moving `decca_cx` shifts the L/C/R arrival pattern and therefore the early-reflection envelope |
+| IR_26 | `decca_toe_out` is wired: changing it between 0 and π/2 with a directional mic pattern (cardioid) produces an asymmetric L/R energy shift for an off-axis source. Guards against a regression where toe-out was computed but not applied to `calcRefs`. |
 | DSP_20 | Re-implementation of the engine's 1-pole 110 Hz HPF — DC rejection, HF pass-through |
 
 ### Key design decisions — Decca Tree
 
-- **`kDecca*` constants are file-static in both `synthMainPath` and `synthDirectPath`** — duplicated rather than shared because `PING_TESTING_BUILD` produces two independent translation units, and a shared header would complicate the JUCE-free test build. The two copies must stay exactly in sync — if you change any constant, update both places and re-run the full test suite (IR_22–24 and the MAIN-path regression locks will catch drift).
-- **`mic_pattern = "M50-like"` is forced when Decca is enabled** — overrides the user's `mic_pattern` setting on the MAIN and DIRECT paths. The classical Decca tree is built around the Neumann M 50's spherical-pressure response (omni at LF, narrowing above 1 kHz) and the acoustic balance of the combine relies on this response. Users can still change `mic_pattern` for OUTRIG/AMBIENT independently.
+- **`kDecca*` constants are file-static in both `synthMainPath` and `synthDirectPath`** — duplicated rather than shared because `PING_TESTING_BUILD` produces two independent translation units, and a shared header would complicate the JUCE-free test build. The two copies must stay exactly in sync — if you change any constant, update both places and re-run the full test suite (IR_22–24, IR_26 and the MAIN-path regression locks will catch drift).
+- **Decca uses the user-selected MAIN `mic_pattern` (since v2.7.5)** — the previous hardcoded `"M50-like"` override was a historical choice aimed at the classical Neumann M 50 spaced-omni Decca sound, but `"M50-like"` is effectively omnidirectional below 2 kHz. That collapsed `decca_toe_out` to a no-op for most musical content, producing a near-centred image regardless of splay angle. The user is now free to pick any of the seven `micOptions`: `omni` / `omni (MK2H)` for the classical spaced-omni feel, `cardioid (LDC)` / `wide cardioid (MK21)` / `figure-8` for tight imaging with meaningful toe-out rejection. The MAIN struct default is `"cardioid (LDC)"` so a fresh Decca tree has audible directional behaviour out of the box. Do not re-introduce the M50-like override; if a user wants that sound, they can select it explicitly.
+- **Decca centre gain and toe-out are user knobs (since v2.7.5)** — previously the centre gain was fixed at `kDeccaGC = 1/√2` (constant-power −3 dB) and the outer mics were forced parallel to the centre (no splay). Both are now `IRSynthParams` fields (`decca_centre_gain`, `decca_toe_out`) with defaults 0.5 and π/2 respectively. The new defaults were chosen to match typical real-world Decca mixing practice (centre −6 dB below outers, outer mics fully side-firing) and are the reason a right-placed source now produces a right-leaning image when using directional patterns — this was the v2.7.5 regression fix. IR_26 guards the toe-out wiring.
 - **Centre-mic HPF at 110 Hz is applied only to the centre contribution, not the outer mics** — the HPF removes LF doubling that the near-coincident direct-path omni responses would otherwise produce when the three signals are summed. Applying it to L/R as well would thin the overall response; applying it only to C gives a full-range L/R with a cleanly rolled-off centre fill.
 - **Seed offsets 46/47 for the centre-mic `calcRefs` calls are unique across the dispatcher** — MAIN uses 42–45, MAIN-C uses 46/47, OUTRIG uses 52+, AMBIENT uses 62+, DIRECT uses 72+, DIRECT-C uses 76/77. No pair of seeds is ever shared, so parallel aux-path synthesis (via `std::async`) never produces identical RNG sequences. Do not reuse any of these offsets.
 - **`t_first` includes the centre mic in the min over direct-path distances** — because the centre mic is advanced 1.2 m toward the source, it typically has the shortest direct path of the three. Excluding it would cause the FDN warmup window to start too late, wasting useful seed energy.
 - **Option-mirror drag is disabled on the Decca puck** — `mirrorDrag = hit.index != kDeccaIdx && ...`. The tree is already a symmetric rigid array; mirroring a single puck about x=0.5 would either do nothing visually or break the rigid-body assumption. Do not re-enable mirroring for `kDeccaIdx`.
 - **Decca is MAIN + DIRECT only** — OUTRIG and AMBIENT never see `main_decca_enabled`. This is intentional: the tree is a primary pickup; OUTRIG/AMBIENT are supplementary pairs that mix on top of it. A "Decca everywhere" mode was considered and rejected as conceptually incoherent (you can't have two trees pointing at the same stage).
+
+---
+
+## Direct-path early reflections & ER toggles (v2.7.5)
+
+### What they do
+
+Three user-visible toggles in the IR Synth Options panel control how early reflections are rendered. They were added to investigate a subjective "the source feels slightly out of focus" complaint in 100%-wet setups, where the only spatial cue came from late reverberant content. By strengthening the first few reflections (precedence-effect fusion window) the direct image becomes more localised.
+
+| Parameter | Range | Default | Effect |
+|---|---|---|---|
+| `direct_max_order` | 0–3 (int) | **1** | Reflection-order ceiling for the DIRECT path. 0 = pure line-of-sight (pre-v2.7.5 behaviour); 1 = direct + first-order bounces (floor/ceiling/near walls); 2–3 = add further orders. The global 85 ms ER gate (`eo=true`, `ec`) still applies, so raising this cannot leak content into the tail. Shares MAIN's mic pattern + angles (including Decca override if active). |
+| `lambert_scatter_enabled` | bool | **true** | Feature A in `calcRefs`. Each specular reflection of order 1–3 spawns `N_SCATTER = 2` secondary rays at ±0–4 ms random delay, ~3% amplitude. Softens the early-reflection comb and fills gaps between specular spikes. Toggling off reveals what the raw specular-only ER field sounds like. |
+| `spk_directivity_full` | bool | **false** | Speaker directivity fade-to-omni override. When `false` (default), order 0–1 use full cardioid, order 2 is a 50/50 blend with omni, order 3+ is fully omni (physically-motivated: by order 3 energy has scattered from multiple surfaces and arrives from all directions). When `true`, the fade is disabled and all orders use the full cardioid pattern — tests whether early-reflection directional cues are being lost to the fade. |
+
+### Defaults match historical behaviour except `direct_max_order`
+
+`lambert_scatter_enabled = true` matches the pre-v2.7.5 compile-time `#if 1` in `calcRefs` (already the default behaviour). `spk_directivity_full = false` matches the pre-v2.7.5 fade-to-omni behaviour. Only `direct_max_order` default is a genuine change — it was implicitly 0 before and is now 1. Because DIRECT is opt-in (`directEnableButton` defaults to `false`), the majority of users will see no behaviour change; only users who have DIRECT enabled on saved presets will hear additional first-order content on reload.
+
+### Sidecar persistence
+
+`PluginProcessor` writes three extra attributes to every `.ping` sidecar:
+
+```xml
+<synthParams ... directMaxOrder="1" lambertScatter="1" spkDirFull="0" .../>
+```
+
+Loading uses `defaults.*` fallbacks, so older sidecars load cleanly. IR_11, IR_14, IR_17, IR_18, IR_19 and IR_22 all explicitly pin `direct_max_order = 0` and set `lambert_scatter_enabled`/`spk_directivity_full` to their documented historical values to preserve their golden-value guarantees.
+
+### Key design decisions — direct-path ERs
+
+- **`direct_max_order = 1` is the new default, not 0** — this is the only behaviour-changing default in v2.7.5. The historical order-0 behaviour can still be selected from the UI, and all regression tests (IR_11 / IR_14 / IR_17 / IR_19) have been updated to pin `direct_max_order = 0` where needed. If you raise this default further (e.g. to 2), expect audible change on every DIRECT-enabled preset and plan for explicit test updates.
+- **`irLen` in `synthDirectPath` is sized for the ER window, not just sample 0** — when `direct_max_order > 0` there can be reflection content out to 85 ms. `irLen` must be at least `ec = 0.085 × sr` samples, and the ER-gate (`eo=true` + `t >= ec` skip in `calcRefs`) guarantees nothing leaks past that boundary regardless of order. A previous version silently truncated the buffer to only the order-0 arrival length, silencing everything `direct_max_order` added — if you see DIRECT apparently ignoring `direct_max_order`, check `irLen` sizing first.
+- **Lambert and full-directivity toggles deliberately ship with their historical defaults** — they exist as A/B knobs for future tuning, not as behaviour changes. Do not bake either toggle into the engine with a new default without a round of factory-IR regeneration and a note here.
 
 ---
 

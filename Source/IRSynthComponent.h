@@ -150,9 +150,20 @@ private:
 
     // Options
     juce::ComboBox micPatternCombo, sampleRateCombo;
-    juce::ToggleButton erOnlyButton { "Early reflections only" };
-    juce::TextButton bakeBalanceButton { "Bake ER/Tail Balance" };
+    juce::ToggleButton erOnlyButton { "ER only" };
+    juce::TextButton bakeBalanceButton { "Bake ER/Tail Bal" };
     juce::Label micPatternLabel, sampleRateLabel;
+
+    // ── Experimental early-reflection A/B toggles ────────────────────────────
+    // directMaxOrderCombo drives IRSynthParams::direct_max_order (0 / 1 / 2).
+    // lambertScatterButton drives IRSynthParams::lambert_scatter_enabled.
+    // spkDirFullButton     drives IRSynthParams::spk_directivity_full.
+    // All three only affect newly calculated IRs (like every other Options
+    // control).
+    juce::ComboBox     directMaxOrderCombo;
+    juce::Label        directMaxOrderLabel;
+    juce::ToggleButton lambertScatterButton { "Lambert Scatter" };
+    juce::ToggleButton spkDirFullButton     { "Full Spkr Dir" };
 
     // Mic paths (DIRECT / OUTRIG / AMBIENT). MAIN is always on for synthesis
     // (there is always a MAIN pair) — its mixer strip handles on/off.
@@ -169,6 +180,22 @@ private:
     // draggable + rotatable Decca tree puck. See Source/IRSynthEngine.h and
     // CLAUDE.md's "Decca Tree capture mode" section.
     juce::ToggleButton deccaEnableButton { "Decca Tree" };
+
+    // Decca centre-mic fill level (p.decca_centre_gain). Controls how much of
+    // the centre mic is summed into L/R outputs. 0 = off (tree behaves as a
+    // bare outer pair); 0.5 (default, −6 dB) = classical tracking balance;
+    // 0.707 (−3 dB) = max, previous fixed value.
+    juce::Slider deccaCentreGainSlider;
+    juce::Label  deccaCentreGainLabel;
+    juce::Label  deccaCentreGainReadout;
+
+    // Decca outer-mic toe-out (±0..90° each side from the forward axis). 0 =
+    // all three mics point forward (collapses the tree); ±45° = matches the
+    // classic main pair; ±90° (default) = outer mics fully side-firing for
+    // maximum stereo separation. See IRSynthParams::decca_toe_out.
+    juce::Slider deccaToeOutSlider;
+    juce::Label  deccaToeOutLabel;
+    juce::Label  deccaToeOutReadout;
 
     juce::ComboBox outrigPatternCombo, ambientPatternCombo;
     juce::Label    outrigPatternLabel, ambientPatternLabel;

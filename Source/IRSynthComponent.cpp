@@ -178,6 +178,22 @@ IRSynthComponent::IRSynthComponent()
     micPatternLabel.setText ("Pattern", juce::dontSendNotification);
     sampleRateLabel.setText ("Sample Rate", juce::dontSendNotification);
 
+    // Experimental early-reflection A/B toggles.
+    directMaxOrderCombo.addItem ("0 (direct only)",     1);
+    directMaxOrderCombo.addItem ("1 (+ first-order)",   2);
+    directMaxOrderCombo.addItem ("2 (+ second-order)",  3);
+    directMaxOrderCombo.setSelectedId (2, juce::dontSendNotification); // default 1
+    directMaxOrderLabel.setText ("DIRECT reach", juce::dontSendNotification);
+    directMaxOrderLabel.setColour (juce::Label::textColourId, textDim);
+    for (auto* b : { &lambertScatterButton, &spkDirFullButton })
+    {
+        b->setColour (juce::ToggleButton::textColourId,         textDim);
+        b->setColour (juce::ToggleButton::tickColourId,         accent);
+        b->setColour (juce::ToggleButton::tickDisabledColourId, juce::Colour (0xff404040));
+    }
+    lambertScatterButton.setToggleState (true,  juce::dontSendNotification);  // current default
+    spkDirFullButton    .setToggleState (false, juce::dontSendNotification);  // current default
+
     // ── Mic path toggles + OUTRIG / AMBIENT pattern + height controls ────────
     // Defaults mirror IRSynthParams: all paths off until explicitly enabled;
     // OUTRIG height 3 m (same as MAIN mics), pattern cardioid (LDC);
@@ -200,7 +216,18 @@ IRSynthComponent::IRSynthComponent()
     outrigHeightSlider.setValue  (3.0, juce::dontSendNotification);
     ambientHeightSlider.setValue (6.0, juce::dontSendNotification);
 
-    for (auto* s : { &outrigHeightSlider, &ambientHeightSlider })
+    // Centre fill: clamp range to engine's documented upper bound (0.707, the
+    // previous fixed value). Default 0.5 (−6 dB) — see IRSynthParams.
+    deccaCentreGainSlider.setRange (0.0, 0.707, 0.001);
+    deccaCentreGainSlider.setValue (0.5, juce::dontSendNotification);
+
+    // Decca toe-out: expose as degrees on the slider (0..90°). Stored internally
+    // in radians in IRSynthParams::decca_toe_out. Default 90° (fully side-firing).
+    deccaToeOutSlider.setRange (0.0, 90.0, 1.0);
+    deccaToeOutSlider.setValue (90.0, juce::dontSendNotification);
+
+    for (auto* s : { &outrigHeightSlider, &ambientHeightSlider, &deccaCentreGainSlider,
+                     &deccaToeOutSlider })
     {
         s->setSliderStyle (juce::Slider::LinearHorizontal);
         s->setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
@@ -217,6 +244,23 @@ IRSynthComponent::IRSynthComponent()
     ambientHeightReadout.setText (juce::String (ambientHeightSlider.getValue(), 1) + " m",
                                   juce::dontSendNotification);
 
+    deccaCentreGainLabel.setText  ("Centre fill", juce::dontSendNotification);
+    // Readout in dB to match mixing intuition (0.5 → −6 dB, 0.707 → −3 dB).
+    {
+        const double v = deccaCentreGainSlider.getValue();
+        const auto txt = (v <= 1e-6) ? juce::String ("off")
+                                     : juce::String (20.0 * std::log10 (v), 1) + " dB";
+        deccaCentreGainReadout.setText (txt, juce::dontSendNotification);
+    }
+
+    deccaToeOutLabel.setText ("Toe-out", juce::dontSendNotification);
+    {
+        const int deg = (int) std::round (deccaToeOutSlider.getValue());
+        const auto txt = (deg == 0) ? juce::String ("off")
+                                    : juce::String ("\xc2\xb1") + juce::String (deg) + juce::String::fromUTF8 ("\xc2\xb0");
+        deccaToeOutReadout.setText (txt, juce::dontSendNotification);
+    }
+
     // Add all controls directly (no tabs / viewports)
     addAndMakeVisible (floorPlanComponent);
     floorPlanComponent.setParamsGetter ([this] { return getParams(); });
@@ -225,12 +269,36 @@ IRSynthComponent::IRSynthComponent()
     auto notifyParamChanged = [this] { if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn(); };
     for (auto* s : { &widthSlider, &depthSlider, &heightSlider, &windowsSlider,
                      &audienceSlider, &diffusionSlider, &organSlider, &balconiesSlider,
-                     &outrigHeightSlider, &ambientHeightSlider })
+                     &outrigHeightSlider, &ambientHeightSlider, &deccaCentreGainSlider,
+                     &deccaToeOutSlider })
         s->onValueChange = notifyParamChanged;
-    erOnlyButton.onClick = notifyParamChanged;
+
+    // Update the dB readout live while the centre-fill slider is dragged.
+    deccaCentreGainSlider.onValueChange = [this]
+    {
+        const double v = deccaCentreGainSlider.getValue();
+        const auto txt = (v <= 1e-6) ? juce::String ("off")
+                                     : juce::String (20.0 * std::log10 (v), 1) + " dB";
+        deccaCentreGainReadout.setText (txt, juce::dontSendNotification);
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+
+    // Update the degrees readout live while the toe-out slider is dragged.
+    deccaToeOutSlider.onValueChange = [this]
+    {
+        const int deg = (int) std::round (deccaToeOutSlider.getValue());
+        const auto txt = (deg == 0) ? juce::String ("off")
+                                    : juce::String ("\xc2\xb1") + juce::String (deg) + juce::String::fromUTF8 ("\xc2\xb0");
+        deccaToeOutReadout.setText (txt, juce::dontSendNotification);
+        floorPlanComponent.repaint();   // visual toe-out ticks update live
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    erOnlyButton.onClick         = notifyParamChanged;
+    lambertScatterButton.onClick = notifyParamChanged;
+    spkDirFullButton.onClick     = notifyParamChanged;
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
                       &vaultCombo, &micPatternCombo, &sampleRateCombo,
-                      &outrigPatternCombo, &ambientPatternCombo })
+                      &outrigPatternCombo, &ambientPatternCombo, &directMaxOrderCombo })
         cb->addListener (this);
 
     // Mic-path toggles: flip FloorPlan visibility for OUTRIG/AMBIENT so the
@@ -301,11 +369,21 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (bakeBalanceButton);
     addAndMakeVisible (micPatternLabel);
     addAndMakeVisible (sampleRateLabel);
+    addAndMakeVisible (directMaxOrderCombo);
+    addAndMakeVisible (directMaxOrderLabel);
+    addAndMakeVisible (lambertScatterButton);
+    addAndMakeVisible (spkDirFullButton);
 
     addAndMakeVisible (directEnableButton);
     addAndMakeVisible (outrigEnableButton);
     addAndMakeVisible (ambientEnableButton);
     addAndMakeVisible (deccaEnableButton);
+    addAndMakeVisible (deccaCentreGainSlider);
+    addAndMakeVisible (deccaCentreGainLabel);
+    addAndMakeVisible (deccaCentreGainReadout);
+    addAndMakeVisible (deccaToeOutSlider);
+    addAndMakeVisible (deccaToeOutLabel);
+    addAndMakeVisible (deccaToeOutReadout);
     addAndMakeVisible (outrigPatternCombo);
     addAndMakeVisible (ambientPatternCombo);
     addAndMakeVisible (outrigPatternLabel);
@@ -326,7 +404,7 @@ IRSynthComponent::IRSynthComponent()
     mainPathInfoLabel.setFont (juce::FontOptions (10.0f));
 
     addAndMakeVisible (directPathInfoLabel);
-    directPathInfoLabel.setText ("Order-0 only (direct arrival)\nShares MAIN pair position",
+    directPathInfoLabel.setText ("Reach set in Options\nShares MAIN pair position",
                                  juce::dontSendNotification);
     directPathInfoLabel.setJustificationType (juce::Justification::topLeft);
     directPathInfoLabel.setColour (juce::Label::textColourId, textDim);
@@ -416,7 +494,9 @@ IRSynthComponent::IRSynthComponent()
                      &micPatternLabel, &sampleRateLabel,
                      &outrigPatternLabel, &ambientPatternLabel,
                      &outrigHeightLabel,  &ambientHeightLabel,
-                     &outrigHeightReadout, &ambientHeightReadout })
+                     &outrigHeightReadout, &ambientHeightReadout,
+                     &deccaCentreGainLabel, &deccaCentreGainReadout,
+                     &deccaToeOutLabel, &deccaToeOutReadout })
         l->setColour (juce::Label::textColourId, textDim);
 
     startTimerHz (4);
@@ -500,8 +580,13 @@ void IRSynthComponent::resized()
     // and pair naturally with the MicMixerComponent column order on the
     // main page. A thin gap separates it from the FloorPlan / left column
     // above, and the bottom bar below.
-    const int stripH   = 112;   // header + toggle + 2 control rows + padding
-    const int stripGap = 8;
+    //
+    // stripH sized to the tallest column (MAIN = header + Decca toggle +
+    // Pattern + Centre fill + Toe-out rows) with a small margin so the
+    // bottom-most Toe-out control sits just above the RT60 display in the
+    // bar below (user request, v2.7.5).
+    const int stripH   = 130;
+    const int stripGap = 6;
     auto micStripArea = contentArea.removeFromBottom (stripH);
     contentArea.removeFromBottom (stripGap);  // visual separation
 
@@ -626,16 +711,54 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
     // MAIN mic pattern has moved into the MAIN column of the Mic Paths strip
     // (alongside Outrig/Ambient patterns), so Options here only holds Sample
     // Rate, ER-only toggle, and the bake-balance action.
+    //
+    // Layout (compacted in v2.7.5 to free vertical space for Room Geometry
+    // and the wider MAIN column in the Mic Paths strip):
+    //   Row 1: "Sample Rate" label across the row
+    //   Row 2: [SR combo]  [ER only]  [Bake ER/Tail Bal]          (one row)
+    //   Row 3: DIRECT reach label + half-width combo
+    //   Row 4: [Lambert Scatter]      [Full Spkr Dir]             (one row)
     optionsHeaderBounds = { x0, y, ctrlW, headerH };
     y += headerH + 2;
 
-    const int optComboW = juce::jmin (140, comboW);
+    // Sample Rate label sits above the combo row, same style as before.
+    sampleRateLabel.setBounds (x0, y, ctrlW, rowH - 4);
+    y += rowH - 2;
 
-    sampleRateLabel.setBounds (x0, y, ctrlW, rowH - 4);              y += rowH - 2;
-    sampleRateCombo.setBounds (x0, y, juce::jmin (100, optComboW), rowH); y += rowH + secGap / 2;
+    // Row 2: SR combo + ER only + Bake button, all side-by-side. The combo
+    // gets a fixed 72 px (wide enough for "48000"), then gap, then an equal
+    // split of the remaining width between the ER-only toggle and the Bake
+    // button, minus small inter-item gaps.
+    {
+        const int srW      = 72;
+        const int rowGap   = 6;
+        const int remaining = ctrlW - srW - rowGap - rowGap;
+        const int erW      = juce::jmax (60,  remaining / 2);
+        const int bakeW    = juce::jmax (110, remaining - erW);
+        sampleRateCombo.setBounds  (x0,                            y, srW,   rowH);
+        erOnlyButton.setBounds     (x0 + srW + rowGap,             y, erW,   rowH);
+        bakeBalanceButton.setBounds(x0 + srW + rowGap + erW + rowGap,
+                                    y, bakeW, rowH + 2);
+        y += rowH + secGap;
+    }
 
-    erOnlyButton.setBounds     (x0, y, ctrlW, rowH);                  y += rowH + 4;
-    bakeBalanceButton.setBounds(x0, y, juce::jmax (160, ctrlW - 20), rowH + 2); y += rowH + secGap;
+    // Row 3: DIRECT reach label + half-width combo.
+    {
+        const int lblW    = 88;
+        const int comboHalfW = juce::jmax (100, (ctrlW - lblW - gap) / 2);
+        directMaxOrderLabel.setBounds (x0,                y, lblW, rowH);
+        directMaxOrderCombo.setBounds (x0 + lblW + gap,   y, comboHalfW, rowH);
+        y += rowH + 2;
+    }
+
+    // Row 4: Lambert Scatter + Full Spkr Dir side-by-side, each half the
+    // control width minus a small gap.
+    {
+        const int halfW = (ctrlW - gap) / 2;
+        lambertScatterButton.setBounds (x0,                  y, halfW, rowH);
+        spkDirFullButton    .setBounds (x0 + halfW + gap,    y, halfW, rowH);
+        y += rowH + secGap;
+    }
 
     // ── ROOM GEOMETRY ────────────────────────────────────────────────────────
     roomHeaderBounds = { x0, y, ctrlW, headerH };
@@ -706,9 +829,32 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
                                    ctrlW - labelW - gap, rowH);
         y += rowH + 2;
 
-        // Info note explaining the two MAIN mics (L/R) are placed on the
-        // floor plan to the right.
-        mainPathInfoLabel.setBounds (x0, y, ctrlW, rowH);
+        // Decca Centre-fill row — label + slider + dB readout.
+        {
+            const int slW = ctrlW - labelW - gap - readoutW - gap;
+            deccaCentreGainLabel.setBounds   (x0, y, labelW, rowH);
+            deccaCentreGainSlider.setBounds  (x0 + labelW + gap, y, slW, rowH);
+            deccaCentreGainReadout.setBounds (x0 + labelW + gap + slW + gap, y, readoutW, rowH);
+            y += rowH + 2;
+        }
+
+        // Decca Toe-out row — label + slider + degrees readout. This is the
+        // last row in the MAIN column; the old mainPathInfoLabel row below
+        // was removed in v2.7.5 (text was always empty) so Toe-out now sits
+        // directly above the bottom bar with only a small margin, per user
+        // request to bring Toe-out close to the RT60 readout.
+        {
+            const int slW = ctrlW - labelW - gap - readoutW - gap;
+            deccaToeOutLabel.setBounds   (x0, y, labelW, rowH);
+            deccaToeOutSlider.setBounds  (x0 + labelW + gap, y, slW, rowH);
+            deccaToeOutReadout.setBounds (x0 + labelW + gap + slW + gap, y, readoutW, rowH);
+            y += rowH + 2;
+        }
+
+        // mainPathInfoLabel kept visible but zero-sized — the empty string
+        // didn't render anything anyway, and removing the row lets Toe-out
+        // sit directly above the RT60 bar.
+        mainPathInfoLabel.setBounds (x0, y, 0, 0);
     };
 
     auto layoutDirectCol = [&] (int colX)
@@ -815,6 +961,8 @@ IRSynthParams IRSynthComponent::getParams() const
     p.decca_cx    = t.deccaCx;
     p.decca_cy    = t.deccaCy;
     p.decca_angle = t.deccaAngle;
+    p.decca_centre_gain = deccaCentreGainSlider.getValue();
+    p.decca_toe_out     = deccaToeOutSlider.getValue() * M_PI / 180.0;
     p.er_only = erOnlyButton.getToggleState();
     p.sample_rate = sampleRateCombo.getSelectedId() == 1 ? 44100 : 48000;
 
@@ -834,6 +982,11 @@ IRSynthParams IRSynthComponent::getParams() const
     p.ambient_langle = t.angle[6]; p.ambient_rangle = t.angle[7];
     p.ambient_height = ambientHeightSlider.getValue();
     p.ambient_pattern = comboSelection (ambientPatternCombo, micOptions, 7).toStdString();
+
+    // Experimental early-reflection A/B toggles (see IRSynthEngine.h).
+    p.direct_max_order         = juce::jlimit (0, 2, directMaxOrderCombo.getSelectedId() - 1);
+    p.lambert_scatter_enabled  = lambertScatterButton.getToggleState();
+    p.spk_directivity_full     = spkDirFullButton    .getToggleState();
 
     return p;
 }
@@ -893,8 +1046,31 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     outrigEnableButton.setToggleState  (p.outrig_enabled,  juce::dontSendNotification);
     ambientEnableButton.setToggleState (p.ambient_enabled, juce::dontSendNotification);
     deccaEnableButton.setToggleState   (p.main_decca_enabled, juce::dontSendNotification);
+    deccaCentreGainSlider.setValue     (p.decca_centre_gain, juce::dontSendNotification);
+    {
+        const double v = p.decca_centre_gain;
+        const auto txt = (v <= 1e-6) ? juce::String ("off")
+                                     : juce::String (20.0 * std::log10 (v), 1) + " dB";
+        deccaCentreGainReadout.setText (txt, juce::dontSendNotification);
+    }
+    {
+        const double deg = juce::jlimit (0.0, 90.0, p.decca_toe_out * 180.0 / M_PI);
+        deccaToeOutSlider.setValue (deg, juce::dontSendNotification);
+        const int degI = (int) std::round (deg);
+        const auto txt = (degI == 0) ? juce::String ("off")
+                                     : juce::String ("\xc2\xb1") + juce::String (degI) + juce::String::fromUTF8 ("\xc2\xb0");
+        deccaToeOutReadout.setText (txt, juce::dontSendNotification);
+    }
     outrigHeightSlider.setValue  (p.outrig_height,  juce::dontSendNotification);
     ambientHeightSlider.setValue (p.ambient_height, juce::dontSendNotification);
+
+    // Experimental early-reflection A/B toggles.
+    directMaxOrderCombo.setSelectedId (juce::jlimit (0, 2, p.direct_max_order) + 1,
+                                       juce::dontSendNotification);
+    lambertScatterButton.setToggleState (p.lambert_scatter_enabled,
+                                         juce::dontSendNotification);
+    spkDirFullButton    .setToggleState (p.spk_directivity_full,
+                                         juce::dontSendNotification);
     outrigHeightReadout.setText  (juce::String (p.outrig_height,  1) + " m", juce::dontSendNotification);
     ambientHeightReadout.setText (juce::String (p.ambient_height, 1) + " m", juce::dontSendNotification);
 

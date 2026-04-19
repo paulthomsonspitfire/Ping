@@ -287,18 +287,27 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                 double az = std::atan2(iy - ry, ix - rx);
                 // micG is now called per-band inside the loop below so each octave
                 // band sees its own off-axis rejection (frequency-dependent polar pattern).
-                // Source directivity: direct (0) and first-order (1) use speaker pattern;
-                // from order 2 onwards, blend to omnidirectional so late reflections
-                // are not over-attenuated by the cardioid.
+                // Source directivity: by default, direct (0) and first-order (1)
+                // use the full speaker pattern; order 2 is a 50/50 blend with
+                // omni; order 3+ is fully omnidirectional. This fade avoids
+                // over-attenuating late reflections that in reality arrive from
+                // all directions.
+                //
+                // When IRSynthParams::spk_directivity_full is true, the fade is
+                // disabled and every reflection order keeps the full cardioid —
+                // an A/B knob for testing whether early-reflection directional
+                // cues are being lost to the fade.
                 double spkAz = std::atan2(ry - sy, rx - sx);
                 double sgDir = spkG(spkFaceAngle, spkAz);
                 double sg;
-                if (totalBounces <= 1)
+                if (p.spk_directivity_full)
+                    sg = sgDir;
+                else if (totalBounces <= 1)
                     sg = sgDir;
                 else if (totalBounces == 2)
-                    sg = 0.5 * sgDir + 0.5;   // blend directional -> omni
+                    sg = 0.5 * sgDir + 0.5;
                 else
-                    sg = 1.0;                 // order 3+ fully omnidirectional
+                    sg = 1.0;
                 double polarity = (totalBounces % 2 == 0) ? 1.0 : -1.0;
 
                 std::array<double,8> amps;
@@ -316,9 +325,10 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
 
                 // Feature A — Lambert diffuse scattering: add N_SCATTER secondary refs per
                 // bounce at orders 1–3 so the space between specular spikes is filled.
-#if 1  // Feature A — Lambert diffuse scattering (set to 0 to disable)
+                // Runtime-toggleable via IRSynthParams::lambert_scatter_enabled (default true
+                // preserves bit-identity with pre-experiment builds).
                 const int N_SCATTER = 2;
-                if (ts > 0.05 && totalBounces >= 1 && totalBounces <= 3)
+                if (p.lambert_scatter_enabled && ts > 0.05 && totalBounces >= 1 && totalBounces <= 3)
                 {
                     double scatterWeight = (ts * 0.08) / (double)N_SCATTER * std::pow(0.6, totalBounces - 1);
                     for (int s = 0; s < N_SCATTER; ++s)
@@ -335,7 +345,6 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                         refs.push_back({ scatterT, scatterAmps, scatterAz });
                     }
                 }
-#endif
             }
     return refs;
 }
@@ -1094,8 +1103,24 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         rcx = cxC + kDeccaAdvanceM * ux;
         rcy = cyC + kDeccaAdvanceM * uy;
 
-        faceL = faceR = faceC = p.decca_angle;
-        mainMicPattern = "M50-like";
+        // Toe-out: L and R outer mics rotate ±toe from the forward axis;
+        // centre mic always looks straight forward. Default π/2 (±90°) is fully
+        // side-firing; π/4 (±45°) matches the classic main pair; 0 collapses
+        // the tree back to three coincident forward-facing mics. Clamped to
+        // [0, π/2] so the outer mics never face more than 90° off-forward.
+        const double toe = std::max(0.0, std::min((double) M_PI_2, p.decca_toe_out));
+        faceL = p.decca_angle - toe;
+        faceR = p.decca_angle + toe;
+        faceC = p.decca_angle;
+        // Decca uses the user-selected MAIN mic pattern (p.mic_pattern already
+        // assigned into mainMicPattern above). The previous hardcoded override
+        // to "cardioid (LDC)" was a diagnostic: M50-like is effectively omni
+        // below 2 kHz, which collapses toe-out to no-op for most musical
+        // content. With the pattern now user-selectable, the user can pick
+        // cardioid (LDC) / wide cardioid (MK21) / figure-8 etc. for tight
+        // imaging, or omni / omni (MK2H) for the classical spaced-omni Decca
+        // feel.
+        //
         // Override rz so the tree height matches the classical default even in
         // rooms where the existing rz clamp would otherwise trim it below 3 m.
         // In sufficiently tall rooms (He > 3.33 m) this is a no-op.
@@ -1182,10 +1207,14 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         hp1pole(eLC, kDeccaHpHz);
         hp1pole(eRC, kDeccaHpHz);
 
+        // Centre-fill gain: user-controllable via p.decca_centre_gain. Legacy
+        // kDeccaGC (0.707) is the documented upper bound and is retained as
+        // the constexpr for reference; 0.5 is the new default (see IRSynthParams).
+        const double gC = std::max(0.0, std::min((double) kDeccaGC, p.decca_centre_gain));
         for (int i = 0; i < irLen; ++i)
         {
-            const double lc = kDeccaGC * eLC[(size_t)i];
-            const double rc = kDeccaGC * eRC[(size_t)i];
+            const double lc = gC * eLC[(size_t)i];
+            const double rc = gC * eRC[(size_t)i];
             eLL[(size_t)i] += lc;   // speaker L → output L: L-mic + gC·C-mic
             eRL[(size_t)i] += rc;   // speaker R → output L: L-mic + gC·C-mic (speaker R path)
             eLR[(size_t)i] += lc;   // speaker L → output R: R-mic + gC·C-mic
@@ -1882,8 +1911,19 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
         rry = cyC + (kDeccaOuterM * 0.5) * vy;
         rcx = cxC + kDeccaAdvanceM * ux;
         rcy = cyC + kDeccaAdvanceM * uy;
-        faceL = faceR = faceC = p.decca_angle;
-        mainMicPattern = "M50-like";
+        // Toe-out: L and R outer mics rotate ±toe from the forward axis;
+        // centre mic always looks straight forward. Default π/2 (±90°) is fully
+        // side-firing; π/4 (±45°) matches the classic main pair; 0 collapses
+        // the tree back to three coincident forward-facing mics. Clamped to
+        // [0, π/2] so the outer mics never face more than 90° off-forward.
+        const double toe = std::max(0.0, std::min((double) M_PI_2, p.decca_toe_out));
+        faceL = p.decca_angle - toe;
+        faceR = p.decca_angle + toe;
+        faceC = p.decca_angle;
+        // DIRECT uses the same user-selected MAIN mic pattern as the main
+        // path — mainMicPattern = p.mic_pattern above is already correct.
+        // Keep the rz override in sync with synthMainPath so the tree height
+        // matches the classical 3 m default in sufficiently tall rooms.
         rz = std::min(kDeccaHeightM, He * 0.9);
     }
 
@@ -1905,13 +1945,30 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
             dist3d(rcx, rcy, rz, srx, sry, sz)));
     }
 
-    // irLen = enough for the farthest direct arrival + bandpass-filter settling tail.
-    // 512 samples is ~10 ms at 48 kHz — safely past the 8-band bpF impulse response.
+    int ec = (int)std::floor(0.085 * sr);
+
+    // mo = p.direct_max_order (clamped 0..2). Needed here so irLen can size the
+    // buffer to cover early reflections when the user has opted into them.
+    const int mo = std::max(0, std::min(2, p.direct_max_order));
+
+    // irLen needs to cover the farthest arrival we'll actually render plus the
+    // bandpass-filter settling tail (512 samples ≈ 10 ms at 48 kHz).
+    //
+    // direct_max_order = 0: only the direct arrival per pair, so sizing to the
+    //   longest direct path is sufficient. Keeps order-0 IRs tight (~40 ms) —
+    //   preserves IR_17's regression lock.
+    //
+    // direct_max_order > 0: calcRefs emits first- and higher-order reflections
+    //   up to the ec (85 ms) gate that `eo = true` enforces, so the buffer has
+    //   to be long enough for renderCh to lay them down. Without this extension
+    //   any reflection arriving past the short direct-window irLen is silently
+    //   truncated inside renderCh — the user hears almost no room spatialisation
+    //   at order 1/2 even though calcRefs actually generated the reflections.
     int irLen = (int)std::ceil(maxDirectDistM / SPEED * sr) + 512;
+    if (mo > 0)
+        irLen = std::max(irLen, ec + 512);
     // Guarantee a minimum usable length even in tiny rooms so filter tails have room.
     irLen = std::max(irLen, 1024);
-
-    int ec = (int)std::floor(0.085 * sr);
     double den = shapeDen(p.shape);
 
     // Material reflection coefficients are unused for order-0 (no bounces), but
@@ -1929,11 +1986,15 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
 
     double bakedErGain = p.bake_er_tail_balance ? p.baked_er_gain : 1.0;
 
-    // mo = 0 → calcRefs' nested loops iterate only (0,0,0), giving a single
-    // direct arrival per speaker-mic pair (totalBounces = 0, no wall bounces).
-    // eo = true guarantees Lambert scatter offsets that could push past ec are skipped,
-    // though at order 0 scatter is not spawned (the #if 1 block requires totalBounces >= 1).
-    const int mo = 0;
+    // `mo` was declared above with irLen sizing. Recap on its meaning:
+    //   0 → calcRefs iterates only (0,0,0): a single direct arrival per pair
+    //       (totalBounces = 0, no wall bounces) — the historical behaviour.
+    //   1 → + first-order bounces (floor, ceiling, each of 4 walls singly).
+    //   2 → + second-order bounces.
+    // eo = true gates any reflection whose arrival is ≥ ec (85 ms), so DIRECT
+    // can never leak content into what should be tail territory regardless of
+    // the order limit or room size. Lambert scatter offsets that push past ec
+    // are also skipped by the same gate.
     const bool eo = true;
     const double maxRefDist = 1e9;
     const double ts = 0.0;  // no scatter / temporal jitter
@@ -1987,10 +2048,13 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
         hp1pole(eLC, kDeccaHpHz);
         hp1pole(eRC, kDeccaHpHz);
 
+        // Centre-fill gain: same mechanism as synthMainPath (MAIN). See the
+        // companion decca_centre_gain block there for the derivation.
+        const double gC = std::max(0.0, std::min((double) kDeccaGC, p.decca_centre_gain));
         for (int i = 0; i < irLen; ++i)
         {
-            const double lc = kDeccaGC * eLC[(size_t)i];
-            const double rc = kDeccaGC * eRC[(size_t)i];
+            const double lc = gC * eLC[(size_t)i];
+            const double rc = gC * eRC[(size_t)i];
             iLL[(size_t)i] += lc;
             iRL[(size_t)i] += rc;
             iLR[(size_t)i] += lc;

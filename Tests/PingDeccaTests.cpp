@@ -233,6 +233,115 @@ TEST_CASE("IR_24: tree placement affects the early-reflection envelope", "[engin
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// IR_26 — Decca toe-out widens the L/R stereo image for a lateral source
+// ─────────────────────────────────────────────────────────────────────────────
+// The engine's Decca block applies:
+//     faceL = decca_angle - toe
+//     faceR = decca_angle + toe
+//     faceC = decca_angle
+// With toe=0 all three mics look the same direction, so a laterally-placed
+// source reaches both outer mics through nearly the same pattern gain and the
+// L/R output channels end up near-identical (collapsed image). With toe=π/2
+// the outer mics are ±90° off-axis — the near-side mic sees the source
+// strongly, the far-side mic sees it rejected, and the L/R image opens up.
+//
+// Two checks:
+//   (a) The output at toe=π/2 is meaningfully different from toe=0 (parameter
+//       is wired end-to-end).
+//   (b) For a source pushed to the right of the room the |L - R| asymmetry
+//       within the early window is LARGER at toe=π/2 than at toe=0 — i.e.
+//       toe-out actually produces a wider stereo image rather than just
+//       changing the sound.
+TEST_CASE("IR_26: Decca toe-out widens L/R separation for a lateral source",
+          "[engine][decca][toe-out]")
+{
+    IRSynthParams p = deccaSmallRoomParams();
+    p.main_decca_enabled = true;
+
+    // Place a single source in the far corner of the room so the tree's L
+    // and R mics are at genuinely different distances AND angles to it —
+    // otherwise the symmetric placement makes both outer mics equidistant
+    // and toe-out cannot produce any measurable L/R imbalance even at
+    // ±90°. Both "speaker" slots feed the same corner so the setup is a
+    // mono lateral source.
+    //
+    // Geometry with defaults width=10, depth=8:
+    //   Tree     at (5.0, 4.0)   facing +x
+    //   L mic    at (5.0, 3.0)
+    //   R mic    at (5.0, 5.0)
+    //   Source   at (8.5, 6.8)   — far right, far-y corner
+    // Angle L→source = atan2(3.8, 3.5) ≈ 47°
+    // Angle R→source = atan2(1.8, 3.5) ≈ 27°
+    //
+    // At toe=0 both mics face +x; R has the source 27° off-axis (strong),
+    // L has it 47° off-axis (weaker). At toe=π/2 L rotates to -π/2 and R
+    // rotates to +π/2 — R now has the source ~63° off-axis (moderate),
+    // L has it ~137° off-axis (deep in the rear null). The R/L ratio
+    // should open up noticeably.
+    p.source_lx = 0.85;  p.source_ly = 0.85;
+    p.source_rx = 0.85;  p.source_ry = 0.85;
+    p.decca_cx    = 0.50;
+    p.decca_cy    = 0.50;
+    p.decca_angle = 0.0;            // tree looks along +x (toward the sources)
+
+    IRSynthParams p0 = p;
+    p0.decca_toe_out = 0.0;          // all three mics face +x
+
+    IRSynthParams p90 = p;
+    p90.decca_toe_out = 1.5707963267948966;  // π/2 — outer mics fully side-firing
+
+    auto r0  = IRSynthEngine::synthIR (p0,  [](double, const std::string&) {});
+    auto r90 = IRSynthEngine::synthIR (p90, [](double, const std::string&) {});
+
+    REQUIRE (r0.success);
+    REQUIRE (r90.success);
+    REQUIRE (r0.irLen == r90.irLen);
+
+    // (a) toe-out must actually change the output.
+    const double dLL = l2diffLocal (r90.iLL, r0.iLL);
+    const double dRR = l2diffLocal (r90.iRR, r0.iRR);
+    INFO ("L2 differences  LL=" << dLL << "  RR=" << dRR);
+    CHECK (dLL > 1.0e-6);
+    CHECK (dRR > 1.0e-6);
+
+    // (b) Compare L vs R energy asymmetry within the early 100 ms window.
+    //     outL = iLL + iLR,  outR = iRL + iRR (the in-processor sum for
+    //     speaker 1 feeding the L output and speaker 2 feeding the R output).
+    const int sr = 48000;
+    const int earlyEnd = sr / 10;  // 100 ms
+    REQUIRE (r0.irLen > earlyEnd);
+
+    // Convention: iXY = Speaker X → Mic Y. With mono input lIn=rIn the mic-L
+    // output is iLL + iRL; the mic-R output is iLR + iRR. Because both speakers
+    // are at the same point, iLL≈iRL and iLR≈iRR, but we sum them anyway to
+    // match what the processor actually renders.
+    auto asymmetryEnergy = [&] (const IRSynthResult& r)
+    {
+        double el = 0.0, er = 0.0;
+        for (int i = 0; i < earlyEnd; ++i)
+        {
+            const double l  = r.iLL[(size_t) i] + r.iRL[(size_t) i];  // Mic L output
+            const double rr = r.iLR[(size_t) i] + r.iRR[(size_t) i];  // Mic R output
+            el += l * l;
+            er += rr * rr;
+        }
+        // Relative asymmetry ∈ [0, 1]: 0 = perfectly balanced, ~1 = one channel silent.
+        const double denom = el + er + 1.0e-30;
+        return std::fabs (el - er) / denom;
+    };
+
+    const double asym0  = asymmetryEnergy (r0);
+    const double asym90 = asymmetryEnergy (r90);
+    INFO ("Early-window L/R asymmetry:  toe=0 -> " << asym0
+          << "   toe=π/2 -> " << asym90);
+
+    // toe=π/2 must produce MORE asymmetry than toe=0 — the mics are now
+    // pointing at genuinely different parts of the room. The margin is
+    // conservative so small engine drifts don't flip the inequality.
+    CHECK (asym90 > asym0 * 1.05);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DSP_20 — 1-pole 110 Hz HPF (as used on the Decca centre-mic contribution)
 // ─────────────────────────────────────────────────────────────────────────────
 // The engine applies a 1-pole HPF to the centre-mic contribution before
