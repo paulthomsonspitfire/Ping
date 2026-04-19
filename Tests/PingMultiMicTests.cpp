@@ -4,7 +4,7 @@
 //
 // Layout:
 //   IR_14         Bit-identity regression lock for MAIN path (pre-refactor capture).
-//   IR_15 … IR_21 (added after refactor lands — see Multi-Mic-Work-Plan.md).
+//   IR_15 … IR_21 (added after refactor lands — see Docs/Multi-Mic-Work-Plan.md).
 //   DSP_15 … DSP_19 (added alongside the HP filter, pan law, solo, mixer work).
 //
 // Build target: PingTests (see CMakeLists.txt).
@@ -99,7 +99,7 @@ namespace
 // point reordering or engine change shows up as four mismatched digests.
 //
 // This is the *belt-and-braces* safety net for the synthIR refactor on the
-// feature/multi-mic-paths branch (Decision D1 in Multi-Mic-Work-Plan.md):
+// feature/multi-mic-paths branch (Decision D1 in Docs/Multi-Mic-Work-Plan.md):
 // the refactor extracts the MAIN synthesis body into synthMainPath() and
 // adds a parallel dispatcher.  That refactor must not change the MAIN
 // output by a single bit — IR_14 is the gate.
@@ -113,7 +113,7 @@ TEST_CASE("IR_14: MAIN path full-IR bit-identity regression lock",
 {
     // GOLDEN DIGESTS — captured at feature/multi-mic-paths branch point
     // (v2.5.0, pre-multi-mic refactor) so the Phase 1 synthIR refactor
-    // (C3 in Multi-Mic-Work-Plan.md) can be proven bit-identical.
+    // (C3 in Docs/Multi-Mic-Work-Plan.md) can be proven bit-identical.
     //
     //   irLen:  sample count of each MAIN channel (matches r.irLen)
     //   iLL/iRL/iLR/iRR: 64-bit FNV-1a hex digests over the raw double bytes.

@@ -22,6 +22,13 @@ JuceLibraryCode/
 private_key.bin
 public_key.bin
 
+# Compiled developer tools (rebuild from *.cpp via build_keygen.sh)
+Tools/keygen
+Tools/verify_serial
+
+# macOS .app bundles for developer tools (rebuild from .applescript / .py sources)
+Tools/*.app/
+
 # Python
 __pycache__/
 *.pyc

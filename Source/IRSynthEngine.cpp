@@ -141,7 +141,7 @@ static const std::map<std::string, std::array<std::pair<double,double>, 8>>& ini
         // pure omni below ~1 kHz and progressively narrows above, approaching a
         // wide-cardioid shape (α≈0.7) by 4 kHz and beyond. On-axis gain stays
         // frequency-flat (o+d=1) so the existing micG formula is unchanged.
-        // Used by the Decca Tree capture mode (deep-research-report §"Canonical geometry").
+        // Used by the Decca Tree capture mode (Docs/deep-research-report.md §"Canonical geometry").
         s_mic["M50-like"] = {{
             {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00}, {1.00, 0.00},
             {0.95, 0.05}, {0.85, 0.15}, {0.75, 0.25}, {0.70, 0.30}
@@ -1050,7 +1050,7 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     // iLL/iRL/iLR/iRR 4-channel layout. Non-Decca mode leaves rlx..rry etc.
     // unchanged so IR_11 and IR_14 bit-identity are preserved.
     //
-    // Classical tree defaults per deep-research-report §"Canonical geometry":
+    // Classical tree defaults per Docs/deep-research-report.md §"Canonical geometry":
     //   a  = outer spacing  = 2.0 m
     //   b  = centre advance = 1.2 m
     //   h  = height         = 3.0 m  (matches rz above in typical rooms)
@@ -1157,7 +1157,7 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     // BOTH eLL/eLR (same speaker L path) and eRL/eRR (speaker R path). The
     // centre contribution is high-pass-filtered at 110 Hz first to avoid LF
     // doubling from the near-coincident LF omni response of the three mics
-    // (see deep-research-report §"Centre channel HPF").
+    // (see Docs/deep-research-report.md §"Centre channel HPF").
     if (p.main_decca_enabled)
     {
         std::vector<double> eLC = renderCh(rLC, irLen, den, sr, earlyDiff, reflectionSpreadMs, freqScatterMs);

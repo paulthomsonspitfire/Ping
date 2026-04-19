@@ -96,7 +96,7 @@ struct IRSynthParams
     // ── Direct path (order-0 only, shares MAIN mic pattern + angles) ─────────
     // No extra geometry fields: DIRECT uses receiver_lx/ly/rx/ry, micl_angle,
     // micr_angle and mic_pattern from the MAIN pair (Decision D2 in
-    // Multi-Mic-Work-Plan.md).
+    // Docs/Multi-Mic-Work-Plan.md).
     bool        direct_enabled  = false;
 
     // ── Decca Tree capture mode (MAIN + DIRECT paths only) ───────────────────

@@ -1116,7 +1116,7 @@ Sidecar files: `.ping` (JSON) stored alongside each synthesised WAV, containing 
 
 v2.6.0 extends the synthesis engine, convolution graph, UI, and state persistence so that up to four independent mic-pair IRs can be rendered from a single room: **MAIN**, **DIRECT**, **OUTRIG**, **AMBIENT**. Each path is a full 4-channel true-stereo IR (iLL, iRL, iLR, iRR). A four-strip mixer (`MicMixerComponent`) sits where `OutputLevelMeter` used to be and sums the four paths into the final wet bus.
 
-This section documents the concrete shape of that work — the deeper architectural reasoning lives in `Multi-Mic-Implementation-Brief.md` and the step-by-step task breakdown in `Multi-Mic-Work-Plan.md`.
+This section documents the concrete shape of that work — the deeper architectural reasoning lives in `Docs/Multi-Mic-Implementation-Brief.md` and the step-by-step task breakdown in `Docs/Multi-Mic-Work-Plan.md`.
 
 ### Engine (`IRSynthEngine`)
 
@@ -1278,6 +1278,90 @@ Two cues make the mirror mode unmistakable:
 - **Mirror cursor is built once at construction** — `mirrorCursor = makeMirrorCursor()` runs in the `FloorPlanComponent` ctor. Earlier revisions tried lazy-init on first use (`if (! mirrorCursor.getHandle())`), but `juce::MouseCursor` has no stable public API for "is this an image cursor?" and rebuilding on every drag is wasteful. The 32×32 ARGB image is <5 KB — trivial to keep resident.
 - **Centre guide is clipped to the gridline region, not the full component** — the guide is drawn after the room fill and gridlines, inside the same `g.saveState(); g.reduceClipRegion (roomPath);` block. Rendering it outside the clip would let it extend past the wall stroke on asymmetric rooms (L-shaped, Cathedral), which reads as a glitch rather than a guide.
 - **`setMouseCursor (NormalCursor)` in mouseUp is mandatory** — JUCE does not automatically re-run `mouseMove` hover logic on mouse-up. Without the explicit reset, the mirror-glyph cursor would persist until the user physically moved the pointer, even if the drag ended with the mouse released. Do not remove this call.
+
+---
+
+## Decca Tree capture mode (v2.7.x)
+
+### What it does
+
+Replaces the MAIN path's two user-placed L/R mics with a **rigid three-mic Decca tree** (L, C, R). The classical Decca geometry is a ~2 m outer spacing with the centre mic advanced 1.2 m toward the source, all three mics mounted at 3 m height, rotated together as a rigid array. Engaging Decca mode produces a wider, more detailed stereo image than a coincident pair and (via the centre mic) fills the phantom-centre hole that a spaced pair can leave. Only the MAIN and DIRECT paths are affected — OUTRIG and AMBIENT continue to use their own configured pairs.
+
+### Geometry (file-static, not exposed to UI)
+
+Defined in both `synthMainPath` and `synthDirectPath` (`Source/IRSynthEngine.cpp`):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `kDeccaOuterM` | 2.0 m | L↔R outer spacing (each outer mic is 1.0 m off centre) |
+| `kDeccaAdvanceM` | 1.2 m | Centre mic offset forward of the L/R axis |
+| `kDeccaHeightM` | 3.0 m | Tree height; overrides `rz` up to `He × 0.9` |
+| `kDeccaGC` | 0.707 (1/√2) | Constant-power centre-mic gain (−3 dB) |
+| `kDeccaHpHz` | 110 Hz | 1-pole HPF cutoff applied to centre-mic contributions |
+| `mic_pattern` | `"M50-like"` | Forced pattern (spherical pressure, narrows above 1 kHz) |
+
+These values must stay identical in the two synth helpers so DIRECT stays acoustically aligned with MAIN. When the user rotates the tree via the floor-plan puck, L/R/C are moved as a rigid body around `(decca_cx, decca_cy)` by `decca_angle`; the three face angles are all set to `decca_angle` so the array rotates as a unit. `rz` is overridden to `min(3.0, He × 0.9)` — in tall rooms (He > 3.33 m) this is a no-op; in low-ceiling rooms the clamp prevents invalid geometry.
+
+### Signal combine (additive, per speaker path)
+
+After `renderCh` produces the band-limited ER responses for each of the three mics per speaker, the centre-mic contribution is mixed into both output channels:
+
+```
+H_L_out = H_L_mic + gC · HPF(H_C_mic)
+H_R_out = H_R_mic + gC · HPF(H_C_mic)
+```
+
+In the 4-channel `iLL/iRL/iLR/iRR` layout this means `lc = gC · HPF(eLC)` is added to both `eLL` (speaker L → output L) and `eLR` (speaker L → output R), with the matching `rc` added to `eRL` / `eRR` for the speaker-R path. The HPF is a 1-pole `α = exp(−2π · fc / sr)` filter applied only to the centre-mic stream — it removes the LF doubling that otherwise occurs because the three mics' direct-path omni responses are nearly coincident below ~200 Hz. The combine runs additively before the FDN tail, so the FDN is seeded by the already-combined ER and no separate centre-path tail is needed.
+
+### DIRECT path symmetry
+
+`synthDirectPath` performs the exact same geometry override and centre-mic combine, gated on `p.main_decca_enabled`. Because DIRECT is order-0 only (no reflections, no FDN), the combine is applied to the short direct-arrival IRs before the light LP/HP band-limiting and the +15 dB output trim. This keeps the 4-strip mixer's DIRECT strip acoustically congruent with MAIN when Decca is on.
+
+### Parameters (`IRSynthParams`)
+
+| Field | Range | Default | Meaning |
+|---|---|---|---|
+| `main_decca_enabled` | bool | false | Master on/off for the mode |
+| `decca_cx` | 0–1 | 0.5 | Tree centre X (normalised room width) |
+| `decca_cy` | 0–1 | 0.65 | Tree centre Y (normalised room depth) |
+| `decca_angle` | radians | −π/2 | Forward direction; default faces low-y (source stage) |
+
+When `main_decca_enabled = false` the MAIN path uses the configured `receiver_lx/ly`, `receiver_rx/ry`, `micl_angle`, `micr_angle`, and `mic_pattern` exactly as before — IR_11 and IR_14 bit-identity are preserved (IR_22 guards this).
+
+### UI — floor plan + IR Synth panel
+
+- **`IRSynthComponent`** hosts a `ToggleButton deccaEnableButton` ("Decca Tree") in the MAIN column of the mic-paths strip, occupying the slot that OUTRIG/AMBIENT use for their Enabled toggles. Wired to `main_decca_enabled` via `onClick` which also flips `floorPlanComponent.deccaVisible`.
+- **`FloorPlanComponent`** draws the tree as a single icy-blue puck (`colDecca = 0xff4a9ed4`) at `(deccaCx, deccaCy)` when `deccaVisible == true`. The MAIN L/R pucks (indices 2/3) are hidden — `transducerVisible` returns `! deccaVisible` for `Group::Main`. The three mic positions (L, C, R) are drawn as small dots around the central puck with a beam arc showing the array orientation. Dragging the puck translates the tree; dragging the rotation ring rotates it. Option-mirror puck drag does **not** apply to the Decca puck (it is a single rigid object — mirroring would be meaningless).
+- **Sentinel index `kDeccaIdx = 8`** — hit-testing and drag state use this to distinguish the tree puck from the 8 regular transducer indices. The `mouseUp` callback routes it into `onMainPlacementChanged` since the Decca tree replaces the MAIN pair.
+
+### Sidecar persistence
+
+`PluginProcessor` writes four extra attributes to every `.ping` sidecar:
+
+```xml
+<synthParams ... deccaOn="1" deccaCx="0.5" deccaCy="0.65" deccaAng="-1.5708"/>
+```
+
+Loading uses `defaults.*` as the fallback for each attribute, so pre-Decca sidecars load cleanly with `main_decca_enabled = false`. There is no migration code — backward compatibility comes from the `getBoolAttribute`/`getDoubleAttribute` defaulting.
+
+### Tests (`Tests/PingDeccaTests.cpp`)
+
+| ID | Description |
+|----|-------------|
+| IR_22 | Decca OFF: explicit `main_decca_enabled = false` is bit-identical to the struct default — regression guard on the off branch (protects IR_11 / IR_14) |
+| IR_23 | Decca ON vs OFF: enabling the flag must change MAIN output — proves the flag is wired end-to-end |
+| IR_24 | Moving `decca_cx` shifts the L/C/R arrival pattern and therefore the early-reflection envelope |
+| DSP_20 | Re-implementation of the engine's 1-pole 110 Hz HPF — DC rejection, HF pass-through |
+
+### Key design decisions — Decca Tree
+
+- **`kDecca*` constants are file-static in both `synthMainPath` and `synthDirectPath`** — duplicated rather than shared because `PING_TESTING_BUILD` produces two independent translation units, and a shared header would complicate the JUCE-free test build. The two copies must stay exactly in sync — if you change any constant, update both places and re-run the full test suite (IR_22–24 and the MAIN-path regression locks will catch drift).
+- **`mic_pattern = "M50-like"` is forced when Decca is enabled** — overrides the user's `mic_pattern` setting on the MAIN and DIRECT paths. The classical Decca tree is built around the Neumann M 50's spherical-pressure response (omni at LF, narrowing above 1 kHz) and the acoustic balance of the combine relies on this response. Users can still change `mic_pattern` for OUTRIG/AMBIENT independently.
+- **Centre-mic HPF at 110 Hz is applied only to the centre contribution, not the outer mics** — the HPF removes LF doubling that the near-coincident direct-path omni responses would otherwise produce when the three signals are summed. Applying it to L/R as well would thin the overall response; applying it only to C gives a full-range L/R with a cleanly rolled-off centre fill.
+- **Seed offsets 46/47 for the centre-mic `calcRefs` calls are unique across the dispatcher** — MAIN uses 42–45, MAIN-C uses 46/47, OUTRIG uses 52+, AMBIENT uses 62+, DIRECT uses 72+, DIRECT-C uses 76/77. No pair of seeds is ever shared, so parallel aux-path synthesis (via `std::async`) never produces identical RNG sequences. Do not reuse any of these offsets.
+- **`t_first` includes the centre mic in the min over direct-path distances** — because the centre mic is advanced 1.2 m toward the source, it typically has the shortest direct path of the three. Excluding it would cause the FDN warmup window to start too late, wasting useful seed energy.
+- **Option-mirror drag is disabled on the Decca puck** — `mirrorDrag = hit.index != kDeccaIdx && ...`. The tree is already a symmetric rigid array; mirroring a single puck about x=0.5 would either do nothing visually or break the rigid-body assumption. Do not re-enable mirroring for `kDeccaIdx`.
+- **Decca is MAIN + DIRECT only** — OUTRIG and AMBIENT never see `main_decca_enabled`. This is intentional: the tree is a primary pickup; OUTRIG/AMBIENT are supplementary pairs that mix on top of it. A "Decca everywhere" mode was considered and rejected as conceptually incoherent (you can't have two trees pointing at the same stage).
 
 ---
 
