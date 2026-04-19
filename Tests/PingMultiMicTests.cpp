@@ -549,9 +549,10 @@ TEST_CASE("IR_16: synthIR is deterministic across runs (all paths on)",
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IR_17 — DIRECT path contains no wall reflections (order-0 only)
+// IR_17 — DIRECT path with direct_max_order=0 contains no wall reflections
 // ─────────────────────────────────────────────────────────────────────────────
-// synthDirectPath hardcodes maxOrder = 0, so the only content is the direct
+// synthDirectPath reads IRSynthParams::direct_max_order. This test explicitly
+// pins it to 0 (the historical behaviour), so the only content is the direct
 // arrival per speaker→mic pair plus the 8-band bandpass-filter impulse-response
 // tail. There should be no first-order wall bounces (which would arrive later
 // than the direct path, after ~2× the min-wall distance / c).
@@ -567,10 +568,12 @@ TEST_CASE("IR_16: synthIR is deterministic across runs (all paths on)",
 // reflection would arrive at ~1 ms past direct = ~48 samples later — well
 // inside the window in tiny rooms but outside for room sizes where the test
 // geometry puts the closest wall ≥ a few metres off the direct path.
-TEST_CASE("IR_17: DIRECT path has only order-0 content", "[engine][multimic][direct]")
+TEST_CASE("IR_17: DIRECT with direct_max_order=0 has only order-0 content",
+          "[engine][multimic][direct]")
 {
     IRSynthParams p = smallRoomParams();
-    p.direct_enabled = true;
+    p.direct_enabled   = true;
+    p.direct_max_order = 0;  // explicitly pin historical behaviour
 
     auto r = IRSynthEngine::synthIR(p, [](double, const std::string&){});
     REQUIRE(r.success);
@@ -622,6 +625,11 @@ TEST_CASE("IR_18: DIRECT path peak timing matches geometry",
 {
     IRSynthParams p = smallRoomParams();
     p.direct_enabled = true;
+    // Pin to order-0 so the peak is guaranteed to be the direct arrival. With
+    // direct_max_order > 0 a first-order reflection can outrun or match the
+    // direct peak and the geometry check becomes ambiguous. IR_25 covers the
+    // order > 0 case separately.
+    p.direct_max_order = 0;
 
     auto r = IRSynthEngine::synthIR(p, [](double, const std::string&){});
     REQUIRE(r.success);
@@ -691,6 +699,10 @@ TEST_CASE("IR_19: DIRECT path applies mic polar pattern (figure-8)",
     IRSynthParams base = smallRoomParams();
     base.direct_enabled = true;
     base.mic_pattern    = "figure8";
+    // Pin to order-0: the figure-8 null test only makes sense on the bare
+    // direct arrival. Reflections arrive from other azimuths and would bypass
+    // the null, inflating the 90°-off-axis peak.
+    base.direct_max_order = 0;
 
     // Physical geometry for mic L → spk L (default smallRoomParams).
     const double hm = 1.25;
@@ -850,6 +862,68 @@ TEST_CASE("IR_21: er_only suppresses late energy on all paths",
     checkLateIsSilent("AMBIENT.RR", r.ambient.RR);
     checkLateIsSilent("DIRECT.LL",  r.direct.LL);
     checkLateIsSilent("DIRECT.RR",  r.direct.RR);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IR_25 — DIRECT with direct_max_order=1 contains first-order reflections
+// ─────────────────────────────────────────────────────────────────────────────
+// Counterpart to IR_17: when direct_max_order is raised from 0 to 1, the DIRECT
+// path must include first-order wall / floor / ceiling bounces and therefore
+// carry meaningful energy outside the direct-arrival window.
+//
+// Uses the same ±512-sample window as IR_17. At order-0 the energy outside the
+// window is ≤ −40 dB (IR_17). At order-1 the floor and ceiling reflections are
+// well above that floor (−20 dB is a comfortable margin in the default small
+// room), so we assert the maxOutside/peak ratio has risen by at least 10 dB
+// relative to the order-0 measurement — a robust guard against regression to
+// order-0 without pinning a brittle absolute level.
+TEST_CASE("IR_25: DIRECT with direct_max_order=1 contains wall reflections",
+          "[engine][multimic][direct][reflections]")
+{
+    auto maxOutsidePeakDb = [](const std::vector<double>& v)
+    {
+        const int peakIdx = peakIndex(v);
+        const double peakVal = std::fabs(v[peakIdx]);
+        REQUIRE(peakVal > 0.0);
+        constexpr int kWindow = 512;
+        const int lo = std::max(0, peakIdx - kWindow);
+        const int hi = std::min((int)v.size(), peakIdx + kWindow);
+        double maxOutside = 0.0;
+        for (int i = 0; i < (int)v.size(); ++i)
+        {
+            if (i >= lo && i < hi) continue;
+            const double ax = std::fabs(v[i]);
+            if (ax > maxOutside) maxOutside = ax;
+        }
+        return maxOutside > 0.0
+            ? 20.0 * std::log10(maxOutside / peakVal)
+            : -200.0;
+    };
+
+    IRSynthParams p0 = smallRoomParams();
+    p0.direct_enabled   = true;
+    p0.direct_max_order = 0;
+    auto r0 = IRSynthEngine::synthIR(p0, [](double, const std::string&){});
+    REQUIRE(r0.success);
+    REQUIRE(r0.direct.synthesised);
+    const double order0Db = maxOutsidePeakDb(r0.direct.LL);
+
+    IRSynthParams p1 = smallRoomParams();
+    p1.direct_enabled   = true;
+    p1.direct_max_order = 1;
+    auto r1 = IRSynthEngine::synthIR(p1, [](double, const std::string&){});
+    REQUIRE(r1.success);
+    REQUIRE(r1.direct.synthesised);
+    const double order1Db = maxOutsidePeakDb(r1.direct.LL);
+
+    INFO("order-0 max-outside = " << order0Db << " dB, "
+         "order-1 max-outside = " << order1Db << " dB");
+
+    // Sanity: order-0 is still below the IR_17 threshold of −40 dB.
+    CHECK(order0Db < -40.0);
+    // Order-1 must be at least 10 dB *louder* outside the window — i.e.
+    // closer to 0 dB, so order1Db > order0Db + 10.
+    CHECK(order1Db > order0Db + 10.0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

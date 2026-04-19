@@ -2647,6 +2647,13 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("outrigOn",  p.outrig_enabled);
     ir->setAttribute ("ambientOn", p.ambient_enabled);
 
+    // Experimental early-reflection toggles (see IRSynthEngine.h). Absent in
+    // older sidecars — defaults keep historical behaviour for MAIN/OUTRIG/
+    // AMBIENT and the new direct_max_order default (1) for DIRECT.
+    ir->setAttribute ("directMaxOrder", p.direct_max_order);
+    ir->setAttribute ("lambertScatter", p.lambert_scatter_enabled);
+    ir->setAttribute ("spkDirFull",     p.spk_directivity_full);
+
     ir->setAttribute ("outrigLx",     p.outrig_lx);
     ir->setAttribute ("outrigLy",     p.outrig_ly);
     ir->setAttribute ("outrigRx",     p.outrig_rx);
@@ -2668,10 +2675,12 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     // Decca Tree capture mode (see IRSynthEngine.h). Older sidecars that
     // predate this feature fall back to the IRSynthParams struct defaults
     // (disabled, centred at 0.5/0.65, angle = -π/2).
-    ir->setAttribute ("deccaOn",  p.main_decca_enabled);
-    ir->setAttribute ("deccaCx",  p.decca_cx);
-    ir->setAttribute ("deccaCy",  p.decca_cy);
-    ir->setAttribute ("deccaAng", p.decca_angle);
+    ir->setAttribute ("deccaOn",      p.main_decca_enabled);
+    ir->setAttribute ("deccaCx",      p.decca_cx);
+    ir->setAttribute ("deccaCy",      p.decca_cy);
+    ir->setAttribute ("deccaAng",     p.decca_angle);
+    ir->setAttribute ("deccaCtrGain", p.decca_centre_gain);
+    ir->setAttribute ("deccaToeOut",  p.decca_toe_out);
 }
 
 static void synthesizedIRToXml (const juce::AudioBuffer<float>& buf, double sampleRate, juce::XmlElement& elem)
@@ -2760,6 +2769,10 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.outrig_enabled  = ir->getBoolAttribute ("outrigOn",  defaults.outrig_enabled);
     p.ambient_enabled = ir->getBoolAttribute ("ambientOn", defaults.ambient_enabled);
 
+    p.direct_max_order         = ir->getIntAttribute  ("directMaxOrder", defaults.direct_max_order);
+    p.lambert_scatter_enabled  = ir->getBoolAttribute ("lambertScatter", defaults.lambert_scatter_enabled);
+    p.spk_directivity_full     = ir->getBoolAttribute ("spkDirFull",     defaults.spk_directivity_full);
+
     p.outrig_lx      = ir->getDoubleAttribute ("outrigLx",     defaults.outrig_lx);
     p.outrig_ly      = ir->getDoubleAttribute ("outrigLy",     defaults.outrig_ly);
     p.outrig_rx      = ir->getDoubleAttribute ("outrigRx",     defaults.outrig_rx);
@@ -2779,10 +2792,12 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.ambient_pattern = ir->getStringAttribute ("ambientPat",   juce::String (defaults.ambient_pattern)).toStdString();
 
     // Decca Tree capture mode (attributes absent in pre-Decca sidecars).
-    p.main_decca_enabled = ir->getBoolAttribute   ("deccaOn",  defaults.main_decca_enabled);
-    p.decca_cx           = ir->getDoubleAttribute ("deccaCx",  defaults.decca_cx);
-    p.decca_cy           = ir->getDoubleAttribute ("deccaCy",  defaults.decca_cy);
-    p.decca_angle        = ir->getDoubleAttribute ("deccaAng", defaults.decca_angle);
+    p.main_decca_enabled = ir->getBoolAttribute   ("deccaOn",      defaults.main_decca_enabled);
+    p.decca_cx           = ir->getDoubleAttribute ("deccaCx",      defaults.decca_cx);
+    p.decca_cy           = ir->getDoubleAttribute ("deccaCy",      defaults.decca_cy);
+    p.decca_angle        = ir->getDoubleAttribute ("deccaAng",     defaults.decca_angle);
+    p.decca_centre_gain  = ir->getDoubleAttribute ("deccaCtrGain", defaults.decca_centre_gain);
+    p.decca_toe_out      = ir->getDoubleAttribute ("deccaToeOut",  defaults.decca_toe_out);
 
     return p;
 }
