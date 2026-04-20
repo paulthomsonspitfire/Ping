@@ -59,6 +59,23 @@ struct IRSynthParams
     double micl_angle = -2.35619449019;  // -3π/4 up-left
     double micr_angle = -0.785398163397; // -π/4 up-right
 
+    // Mic elevation tilt (radians): 0 = horizontal, +π/2 = straight up,
+    // -π/2 = straight down. Acts as the elevation component of each mic's
+    // facing axis in the spherical-law-of-cosines polar-pattern formula
+    // (see IRSynthEngine::directivityCos). Default -30° = mic tilted down,
+    // matching real-world orchestral practice (mic at 3 m on a stand looks
+    // down at the source roughly 1 m off the floor a few metres away).
+    //
+    // ── Backward-compatibility note for preset/sidecar loading ────────────
+    // OLD presets / sidecars saved before this feature have no tilt
+    // attributes. PluginProcessor / IRSynthComponent must explicitly fall
+    // back to 0.0 (horizontal) when the XML attribute is missing — NOT to
+    // these struct defaults — so existing user content sounds bit-exactly
+    // as it did before. New presets created after this feature use these
+    // -30° defaults via fresh-instance IRSynthParams. See CLAUDE.md.
+    double micl_tilt = -0.5235987755982988;   // -π/6  (-30°)
+    double micr_tilt = -0.5235987755982988;
+
     // Options
     std::string mic_pattern = "cardioid (LDC)";
     // "omni"|"omni (MK2H)"|"subcardioid"|"wide cardioid (MK21)"|"cardioid (LDC)"|"cardioid (SDC)"|"figure8"
@@ -81,6 +98,11 @@ struct IRSynthParams
     double      outrig_rangle   = -0.785398163397;  // -pi/4 up-right
     double      outrig_height   = 3.0;              // metres above floor
     std::string outrig_pattern  = "cardioid (LDC)";
+    // Per-mic elevation tilt (radians); 0 = horizontal. Same convention as
+    // micl_tilt / micr_tilt. Default -30°. Legacy 0° fallback applies on
+    // load when the attribute is missing.
+    double      outrig_ltilt    = -0.5235987755982988;
+    double      outrig_rtilt    = -0.5235987755982988;
 
     // ── Ambient mics (higher, further-back pair, full ER + Tail) ─────────────
     bool        ambient_enabled = false;
@@ -92,6 +114,10 @@ struct IRSynthParams
     double      ambient_rangle  = -0.785398163397;
     double      ambient_height  = 6.0;              // metres above floor
     std::string ambient_pattern = "omni";
+    // Per-mic elevation tilt (radians); 0 = horizontal. Same convention as
+    // micl_tilt / micr_tilt. Default -30°. Legacy 0° fallback on load.
+    double      ambient_ltilt   = -0.5235987755982988;
+    double      ambient_rtilt   = -0.5235987755982988;
 
     // ── Direct path (shares MAIN mic pattern + angles) ───────────────────────
     // No extra geometry fields: DIRECT uses receiver_lx/ly/rx/ry, micl_angle,
@@ -160,6 +186,11 @@ struct IRSynthParams
     // classic main pair default; 0 collapses the tree back to three forward-
     // facing mics (the pre-experiment behaviour).
     double      decca_toe_out     = 1.5707963267948966;  // π/2 (90°)
+
+    // Single elevation tilt applied to all three mics in the Decca tree
+    // (L, C, R move rigidly together). 0 = horizontal, -π/6 = -30° down.
+    // Legacy 0° fallback on load.
+    double      decca_tilt        = -0.5235987755982988;  // -π/6 (-30°)
 };
 
 /** Per-path 4-channel IR (LL/RL/LR/RR) used for DIRECT/OUTRIG/AMBIENT results. */
@@ -339,7 +370,9 @@ private:
                                          double langle, double rangle,
                                          const std::string& pattern,
                                          uint32_t seedBase,
-                                         IRSynthProgressFn cb);
+                                         IRSynthProgressFn cb,
+                                         double ltilt = 0.0,
+                                         double rtilt = 0.0);
 
     // synthDirectPath — order-0-only IR (direct arrivals only, no reflections,
     // no diffusion, no FDN tail, no modal bank, no end fade). Shares MAIN's

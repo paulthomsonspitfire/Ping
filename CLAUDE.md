@@ -1411,6 +1411,116 @@ Loading uses `defaults.*` fallbacks, so older sidecars load cleanly. IR_11, IR_1
 
 ---
 
+## 3D microphone polar patterns + tilt (v2.7.6)
+
+### What it does
+
+Replaces the engine's previous 2D azimuth-only directivity calculation with a full 3D direction-cosine model. Every reflection now contributes to mic gain via the spherical law of cosines between the source direction (azimuth + elevation) and the mic's facing axis (azimuth + elevation). A new **tilt** parameter sets each mic pair's elevation in radians (`0` = horizontal, negative = pointing down toward the source plane, positive = pointing up). MAIN, OUTRIG, AMBIENT, and DIRECT all expose tilt; the rigid Decca tree exposes a single shared tilt for all three of its mics.
+
+The motivation was that mics in real recording sessions are almost never aimed straight horizontally — orchestral mains hang above the stage and tilt down ~30° toward the section. With 2D directivity, raising or lowering a mic above the source plane only changed the path length, not the polar response, so off-axis high-frequency rolloff was missing for any vertically-displaced source.
+
+### Math (`directivityCos`)
+
+```cpp
+double IRSynthEngine::directivityCos (double az, double el,
+                                      double faceAzimuth, double faceElevation) noexcept
+{
+    return std::sin(el) * std::sin(faceElevation)
+         + std::cos(el) * std::cos(faceElevation) * std::cos(az - faceAzimuth);
+}
+```
+
+Returns `cos(theta)` where `theta` is the 3D angle between the unit source-direction vector and the unit mic-facing vector. Substituted directly into `micG`'s polar formula:
+
+```cpp
+double IRSynthEngine::micG (int band, const std::string& pat, double cosTheta)
+{
+    const auto& mic = getMIC();
+    auto it = mic.find(pat);
+    if (it == mic.end()) return 1.0;
+    const double o = it->second[band].first;
+    const double d = it->second[band].second;
+    return std::max(0.0, o + d * cosTheta);   // omni + directional × cos(theta)
+}
+```
+
+The previous signature was `micG(band, pat, refAng, micFaceAngle)` and computed `cos(refAng - micFaceAngle)` internally. The 2D version is now mathematically a special case of the 3D version with `el = faceElevation = 0`.
+
+### Hoisted per-reflection (not per-band)
+
+Inside `calcRefs`, `cosTh3D` is computed **once per reflection** before the per-band loop:
+
+```cpp
+double az = std::atan2(iy - ry, ix - rx);
+const double hDist   = std::sqrt((ix - rx) * (ix - rx) + (iy - ry) * (iy - ry));
+const double el      = std::atan2(iz - rz, std::max(hDist, 1e-9));
+const double cosTh3D = directivityCos(az, el, micFaceAngle, micFaceTilt);
+
+for (int b = 0; b < N_BANDS; ++b)
+    amps[b] = a * std::pow(10.0, -AIR[b] * dist / 20.0)
+                * micG(b, micPat, cosTh3D) * sg * polarity;
+```
+
+Single trig per reflection, not 8. CPU profile is essentially identical to the 2D version.
+
+### Coordinate convention
+
+- `az` is the world azimuth of the source (image-source) as seen from the receiver, in radians, measured the same way as `micFaceAngle`. `0 = +x`, `π/2 = +y`.
+- `el` is the elevation of the source above the mic plane: `atan2(iz - rz, horizDist)`. **Positive el = source above mic.** A mic at 3 m looking at an instrument at 1 m sees `el ≈ −0.34 rad` (≈ −20°).
+- `faceElevation` (the tilt parameter) uses the same sign convention. **Negative tilt = mic pointing down.** Default `−π/6` (`−30°`) for all mic pairs in fresh presets — a typical orchestral mains setup.
+- `el ± π/2` clamping is **not** needed; `directivityCos` is well-behaved for any combination of source/mic elevations.
+
+### Parameters (`IRSynthParams`)
+
+| Field | Default | Description |
+|---|---|---|
+| `micl_tilt`, `micr_tilt` | `−π/6` (−30°) | MAIN L/R mic tilt |
+| `outrig_ltilt`, `outrig_rtilt` | `−π/6` | OUTRIG L/R mic tilt |
+| `ambient_ltilt`, `ambient_rtilt` | `−π/6` | AMBIENT L/R mic tilt |
+| `decca_tilt` | `−π/6` | Shared tilt for L, C, R mics in the rigid Decca array |
+
+DIRECT does not have its own tilt — it shares MAIN's `micl_tilt`/`micr_tilt` (or `decca_tilt` when Decca is on), matching the existing rule that DIRECT inherits MAIN's mic pattern and angles.
+
+### UI
+
+Three horizontal tilt sliders, one per mic-paths column, in the bottom strip of the IR Synth panel. Range −90..+90°, 1° step. Readout label shows signed degrees (`"-30°"`, `"+12°"`, `"0°"`).
+
+- **MAIN slider** drives `micl_tilt`, `micr_tilt`, **and** `decca_tilt` simultaneously (they always move together — when Decca is engaged the array is the MAIN pickup; when it isn't, both MAIN mics share one tilt knob by design).
+- **OUTRIG slider** drives `outrig_ltilt` and `outrig_rtilt` as a pair.
+- **AMBIENT slider** drives `ambient_ltilt` and `ambient_rtilt` as a pair.
+
+There is no per-mic tilt knob; pair-only is intentional (matches how real Decca/outrigger arrays are aimed in practice and keeps the UI compact). Sliders write into `TransducerState::tilt[]` / `deccaTilt`, then `IRSynthComponent::buildParamsFromState` marshals them into `IRSynthParams`. `setParams` round-trips back from `IRSynthParams` to slider values via `jlimit(-90, +90)` so any out-of-range legacy value clamps cleanly.
+
+To accommodate the new row, `layoutMicPathsStrip`'s `stripH` was bumped from 130 to 154 px. The MAIN/OUTRIG/AMBIENT column lambdas all gained one extra row identical in height to the existing height-slider row.
+
+### Persistence
+
+Both `irSynthParamsToXml` and `irSynthParamsFromXml` (in `PluginProcessor.cpp`) handle the new attributes:
+
+- Sidecar / APVTS XML attributes: `miclTilt`, `micrTilt`, `outrigLtilt`, `outrigRtilt`, `ambientLtilt`, `ambientRtilt`, `deccaTilt`.
+- **Read fallback is `0.0`, not the IRSynthParams struct default of `−π/6`.** Pre-tilt sidecars/presets must restore as horizontal mics so existing user content sounds bit-identical to the pre-v2.7.6 engine.
+- New presets saved via the UI use the `−π/6` default that the slider initialises to.
+
+### Tests
+
+- **DSP_21** (`Tests/PingDSPTests.cpp`) — covers `directivityCos` directly via a header-free `directivityCosLocal` clone. Verifies the spherical-law-of-cosines identity, the trivial el = faceEl = 0 reduction to plain `cos(az − faceAz)`, perpendicular cases at ±π/2, antipodal cases, and several non-trivial 3D angle-pair points.
+- **IR_11 / IR_14** — both regression locks were intentionally invalidated by the engine change and recaptured. Onset index for IR_11 is unchanged at 482 (the `cosTheta` change is multiplicative — it does not move the first-non-silent sample). IR_14's full-IR digests changed for all four channels.
+- **IR_19** — the figure-8 azimuth-null test was updated to pin `micl_tilt = micr_tilt = 0.0` so it remains a pure azimuth-plane test. With the new −30° default a low-elevation source lands inside the lobe and the original null collapses; pinning to 0° keeps the test focused on what it's actually checking (the polar-pattern lookup).
+- **IR_22..IR_26** — the Decca regression tests keep using the new `−π/6` default for `decca_tilt` (their golden values were already captured against the new engine math).
+
+### Key design decisions — 3D mic tilt
+
+- **`cos(theta)` is hoisted out of the per-band loop** — `micG` no longer recomputes the angle for each of 8 bands. This kept CPU cost identical to the 2D version even though we added a `sin/sin/cos/cos/cos` per reflection.
+- **`directivityCos` is a private static method, not a free function** — keeps the engine's directivity model self-contained and avoids polluting any other translation unit's namespace. The DSP test re-implements it locally (`directivityCosLocal`) so the test build does not need access to engine internals.
+- **Tilt is per-mic in `IRSynthParams` but per-pair in the UI** — the engine has the flexibility for asymmetric tilts (useful if anyone wants to script a custom preset by hand) while the UI exposes only the pair-coupled slider, since asymmetric tilt within a single L/R pair has no realistic use case and would complicate the UI.
+- **Decca tilt is a single field, not three** — the L, C, R mics in the Decca tree are a rigid array. Independently tilting the centre mic relative to the outers is not how real Decca rigs work, and would invite confusion about which tilt the MAIN slider was driving.
+- **Read fallback for missing tilt attributes is `0.0`, not the new `−π/6` default** — older presets and sidecars predate this feature; reloading them with `−π/6` would silently change the IR character. The IRSynthParams struct default applies only to fresh presets created in the new build.
+- **MAIN slider drives Decca tilt too** — when Decca is engaged the array replaces the MAIN L/R pair, so binding the MAIN slider to both keeps the user's mental model simple ("the MAIN tilt knob aims whatever MAIN actually is").
+- **No DIRECT-specific tilt parameter** — DIRECT inherits MAIN's mic pattern and angles by design; tilt extends the same rule. Adding `direct_tilt` would require an extra UI slot and break the "DIRECT = a near-field tap of the MAIN pickup" mental model.
+- **Coordinate convention is right-handed and matches the existing 2D `micFaceAngle`** — `az = atan2(dy, dx)` (azimuth measured the same way as the existing mic angle), `el = atan2(dz, horizDist)` (positive = source above mic). Negative tilt = mic pointing down. Do not introduce a separate sign convention for tilt vs source elevation; both use the same atan2 arrangement so `directivityCos` is symmetric in its arguments.
+
+---
+
 ## Licence system
 
 - **Algorithm:** Ed25519 (libsodium). Public key embedded in `LicenceVerifier.h`.

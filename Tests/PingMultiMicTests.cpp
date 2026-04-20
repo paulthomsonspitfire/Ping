@@ -121,13 +121,20 @@ TEST_CASE("IR_14: MAIN path full-IR bit-identity regression lock",
     // Any change to IRSynthEngine math that touches MAIN output (seeds,
     // geometry formulas, FDN parameters, blend factors, etc.) will flip
     // one or more digests.  Update intentionally via the capture case.
+    //
+    // Updated v2.7.6 (3D mic tilt): micG now uses a 3D direction cosine
+    // computed once per reflection, replacing the previous 2D azimuth-only
+    // gain. With the new *_tilt defaults of -π/6 (-30°), the per-reflection
+    // mic gain factor changes for every reflection — all four channel
+    // digests flip. irLen is unchanged because no length-affecting
+    // parameter (room size, RT60, FDN topology) is touched.
     static const int         golden_irLen = 813146;
-    static const std::string golden_iLL   = "30e1e1aece03b09a";
-    static const std::string golden_iRL   = "2a6eba6d1480aa74";
-    static const std::string golden_iLR   = "be0e5f3e01df5cfb";
-    static const std::string golden_iRR   = "cb5312c58cc7d95a";
+    static const std::string golden_iLL   = "5d50b767e97a82d9";
+    static const std::string golden_iRL   = "c0b941904b9cd51d";
+    static const std::string golden_iLR   = "9cbf0b51f4e087ad";
+    static const std::string golden_iRR   = "3e4f471a33168215";
 
-    static const bool goldenCaptured = true;   // captured by IR_14_CAPTURE at feature/multi-mic-paths branch point (v2.5.0, pre-refactor)
+    static const bool goldenCaptured = true;   // recaptured for v2.7.6 3D mic tilt (IRSynthParams *_tilt = -π/6 default)
     if (! goldenCaptured)
     {
         SUCCEED("IR_14 golden digests not yet captured — run [capture14] first.");
@@ -703,6 +710,13 @@ TEST_CASE("IR_19: DIRECT path applies mic polar pattern (figure-8)",
     // direct arrival. Reflections arrive from other azimuths and would bypass
     // the null, inflating the 90°-off-axis peak.
     base.direct_max_order = 0;
+    // Pin tilt to 0° (horizontal). The figure-8 null this test checks is a
+    // pure azimuth-plane null; with the new tilt feature defaulting to -30°,
+    // a source below horizontal lands inside the lobe and the null collapses.
+    // This test is a regression guard for the polar-pattern lookup, not for
+    // tilt behaviour — DSP_21 covers the 3D direction-cosine math directly.
+    base.micl_tilt = 0.0;
+    base.micr_tilt = 0.0;
 
     // Physical geometry for mic L → spk L (default smallRoomParams).
     const double hm = 1.25;

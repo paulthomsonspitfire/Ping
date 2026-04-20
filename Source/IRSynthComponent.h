@@ -203,6 +203,20 @@ private:
     juce::Label    outrigHeightLabel, ambientHeightLabel;
     juce::Label    outrigHeightReadout, ambientHeightReadout;
 
+    // 3D mic-tilt sliders. One slider per mic-paths column controls the
+    // elevation of that path's mics (range −90..+90°, 1° step). MAIN's tilt
+    // slider drives both micl_tilt and micr_tilt as a pair (they are always
+    // moved together — the L/R rig is a rigid array on the floor plan, so
+    // an independent L vs R tilt has no acoustic meaning we can model
+    // here). When Decca mode is active the same MAIN slider also drives
+    // decca_tilt (rigid 3-mic array). DIRECT shares MAIN's tilt and so has
+    // no slider of its own. OUTRIG and AMBIENT each get one slider that
+    // drives both L and R tilts of that pair. See IRSynthParams::*_tilt
+    // and TransducerState::tilt[] / deccaTilt for the underlying fields.
+    juce::Slider mainTiltSlider, outrigTiltSlider, ambientTiltSlider;
+    juce::Label  mainTiltLabel,  outrigTiltLabel,  ambientTiltLabel;
+    juce::Label  mainTiltReadout, outrigTiltReadout, ambientTiltReadout;
+
     // Information labels shown in the MAIN and DIRECT columns of the strip.
     // MAIN has no per-column controls (it is always synthesised and configured
     // elsewhere); DIRECT has only an enable toggle (it inherits MAIN pair).

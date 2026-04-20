@@ -2662,6 +2662,8 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("outrigRang",   p.outrig_rangle);
     ir->setAttribute ("outrigHeight", p.outrig_height);
     ir->setAttribute ("outrigPat",    juce::String (p.outrig_pattern));
+    ir->setAttribute ("outrigLtilt",  p.outrig_ltilt);
+    ir->setAttribute ("outrigRtilt",  p.outrig_rtilt);
 
     ir->setAttribute ("ambientLx",     p.ambient_lx);
     ir->setAttribute ("ambientLy",     p.ambient_ly);
@@ -2671,6 +2673,14 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("ambientRang",   p.ambient_rangle);
     ir->setAttribute ("ambientHeight", p.ambient_height);
     ir->setAttribute ("ambientPat",    juce::String (p.ambient_pattern));
+    ir->setAttribute ("ambientLtilt",  p.ambient_ltilt);
+    ir->setAttribute ("ambientRtilt",  p.ambient_rtilt);
+
+    // 3D mic-tilt elevations (radians). MAIN's L/R tilts plus the rigid
+    // Decca array tilt. See IRSynthEngine::directivityCos and the
+    // "3D microphone polar patterns + tilt" section in CLAUDE.md.
+    ir->setAttribute ("miclTilt",     p.micl_tilt);
+    ir->setAttribute ("micrTilt",     p.micr_tilt);
 
     // Decca Tree capture mode (see IRSynthEngine.h). Older sidecars that
     // predate this feature fall back to the IRSynthParams struct defaults
@@ -2681,6 +2691,7 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("deccaAng",     p.decca_angle);
     ir->setAttribute ("deccaCtrGain", p.decca_centre_gain);
     ir->setAttribute ("deccaToeOut",  p.decca_toe_out);
+    ir->setAttribute ("deccaTilt",    p.decca_tilt);
 }
 
 static void synthesizedIRToXml (const juce::AudioBuffer<float>& buf, double sampleRate, juce::XmlElement& elem)
@@ -2781,6 +2792,11 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.outrig_rangle  = ir->getDoubleAttribute ("outrigRang",   defaults.outrig_rangle);
     p.outrig_height  = ir->getDoubleAttribute ("outrigHeight", defaults.outrig_height);
     p.outrig_pattern = ir->getStringAttribute ("outrigPat",    juce::String (defaults.outrig_pattern)).toStdString();
+    // Pre-tilt sidecars: missing attribute → 0.0 (legacy behaviour, mic
+    // facing horizontal). Do NOT fall back to the IRSynthParams default
+    // (-π/6) — that would silently retune every old preset.
+    p.outrig_ltilt   = ir->getDoubleAttribute ("outrigLtilt",  0.0);
+    p.outrig_rtilt   = ir->getDoubleAttribute ("outrigRtilt",  0.0);
 
     p.ambient_lx     = ir->getDoubleAttribute ("ambientLx",     defaults.ambient_lx);
     p.ambient_ly     = ir->getDoubleAttribute ("ambientLy",     defaults.ambient_ly);
@@ -2790,6 +2806,12 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.ambient_rangle = ir->getDoubleAttribute ("ambientRang",   defaults.ambient_rangle);
     p.ambient_height = ir->getDoubleAttribute ("ambientHeight", defaults.ambient_height);
     p.ambient_pattern = ir->getStringAttribute ("ambientPat",   juce::String (defaults.ambient_pattern)).toStdString();
+    p.ambient_ltilt  = ir->getDoubleAttribute ("ambientLtilt",  0.0);
+    p.ambient_rtilt  = ir->getDoubleAttribute ("ambientRtilt",  0.0);
+
+    // MAIN mic 3D tilt (radians). Pre-tilt sidecars: 0.0 fallback.
+    p.micl_tilt = ir->getDoubleAttribute ("miclTilt", 0.0);
+    p.micr_tilt = ir->getDoubleAttribute ("micrTilt", 0.0);
 
     // Decca Tree capture mode (attributes absent in pre-Decca sidecars).
     p.main_decca_enabled = ir->getBoolAttribute   ("deccaOn",      defaults.main_decca_enabled);
@@ -2798,6 +2820,7 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.decca_angle        = ir->getDoubleAttribute ("deccaAng",     defaults.decca_angle);
     p.decca_centre_gain  = ir->getDoubleAttribute ("deccaCtrGain", defaults.decca_centre_gain);
     p.decca_toe_out      = ir->getDoubleAttribute ("deccaToeOut",  defaults.decca_toe_out);
+    p.decca_tilt         = ir->getDoubleAttribute ("deccaTilt",    0.0);
 
     return p;
 }

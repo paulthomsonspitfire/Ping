@@ -976,7 +976,8 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
                                         p.outrig_langle, p.outrig_rangle,
                                         p.outrig_pattern,
                                         /*seedBase*/ 52,
-                                        outrigCb); });
+                                        outrigCb,
+                                        p.outrig_ltilt, p.outrig_rtilt); });
 
     if (p.ambient_enabled)
         ambientFut = std::async (std::launch::async,
@@ -987,7 +988,8 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
                                         p.ambient_langle, p.ambient_rangle,
                                         p.ambient_pattern,
                                         /*seedBase*/ 62,
-                                        ambientCb); });
+                                        ambientCb,
+                                        p.ambient_ltilt, p.ambient_rtilt); });
 
     if (p.direct_enabled)
         directFut = std::async (std::launch::async,
@@ -1115,6 +1117,13 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     double faceL = p.micl_angle;
     double faceR = p.micr_angle;
     double faceC = p.micl_angle;   // unused in non-Decca mode
+    // Mic elevation tilt (radians) — same convention as faceL/faceR but in
+    // the elevation plane. 0 = horizontal. Used as the faceElevation arg to
+    // directivityCos (3D spherical-law-of-cosines mic directivity). In Decca
+    // mode all three mics share one tilt (the rigid array rotates together).
+    double tiltL = p.micl_tilt;
+    double tiltR = p.micr_tilt;
+    double tiltC = p.micl_tilt;    // unused in non-Decca mode
     std::string mainMicPattern = p.mic_pattern;
 
     if (p.main_decca_enabled)
@@ -1146,6 +1155,10 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         faceL = p.decca_angle - toe;
         faceR = p.decca_angle + toe;
         faceC = p.decca_angle;
+        // Decca tree is a rigid 3-mic array — all three mics share decca_tilt.
+        tiltL = p.decca_tilt;
+        tiltR = p.decca_tilt;
+        tiltC = p.decca_tilt;
         // Decca uses the user-selected MAIN mic pattern (p.mic_pattern already
         // assigned into mainMicPattern above). The previous hardcoded override
         // to "cardioid (LDC)" was a diagnostic: M50-like is effectively omni
@@ -1175,10 +1188,10 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     const double jitterOrder2PlusMs = close ? 2.5 : 0.0;
     const double reflectionSpreadMs = 0.0;  // disabled — was causing collapse when close
 
-    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 42, mainMicPattern, p.spkl_angle, faceL, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
-    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 43, mainMicPattern, p.spkr_angle, faceL, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
-    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 44, mainMicPattern, p.spkl_angle, faceR, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
-    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 45, mainMicPattern, p.spkr_angle, faceR, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 42, mainMicPattern, p.spkl_angle, faceL, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltL);
+    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 43, mainMicPattern, p.spkr_angle, faceL, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltL);
+    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 44, mainMicPattern, p.spkl_angle, faceR, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltR);
+    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 45, mainMicPattern, p.spkr_angle, faceR, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltR);
 
     // Centre-mic rays (Decca only). Seed offsets 46/47 are unique across the
     // dispatcher (MAIN=42+, OUTRIG=52+, AMBIENT=62+, DIRECT=72+), so parallel
@@ -1186,8 +1199,8 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     std::vector<Ref> rLC, rRC;
     if (p.main_decca_enabled)
     {
-        rLC = calcRefs(rcx, rcy, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 46, mainMicPattern, p.spkl_angle, faceC, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
-        rRC = calcRefs(rcx, rcy, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 47, mainMicPattern, p.spkr_angle, faceC, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+        rLC = calcRefs(rcx, rcy, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 46, mainMicPattern, p.spkl_angle, faceC, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltC);
+        rRC = calcRefs(rcx, rcy, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 47, mainMicPattern, p.spkr_angle, faceC, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltC);
     }
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size() + rLC.size() + rRC.size()) + " reflections…");
@@ -1583,7 +1596,9 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
                                              double langle, double rangle,
                                              const std::string& pattern,
                                              uint32_t seedBase,
-                                             IRSynthProgressFn cb)
+                                             IRSynthProgressFn cb,
+                                             double ltilt,
+                                             double rtilt)
 {
     MicIRChannels out;
     int sr = p.sample_rate;
@@ -1661,10 +1676,10 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
     const double jitterOrder2PlusMs = close ? 2.5 : 0.0;
     const double reflectionSpreadMs = 0.0;
 
-    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 0, pattern, p.spkl_angle, langle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
-    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 1, pattern, p.spkr_angle, langle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
-    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 2, pattern, p.spkl_angle, rangle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
-    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 3, pattern, p.spkr_angle, rangle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs);
+    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 0, pattern, p.spkl_angle, langle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, ltilt);
+    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 1, pattern, p.spkr_angle, langle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, ltilt);
+    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 2, pattern, p.spkl_angle, rangle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, rtilt);
+    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 3, pattern, p.spkr_angle, rangle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, rtilt);
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size()) + " reflections…");
 
@@ -1929,6 +1944,12 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
     double faceL = p.micl_angle;
     double faceR = p.micr_angle;
     double faceC = p.micl_angle;
+    // Mic elevation tilt (radians) — see synthMainPath for the convention.
+    // DIRECT shares MAIN's mic angles + tilt so the direct-arrival cue stays
+    // acoustically aligned with the MAIN path.
+    double tiltL = p.micl_tilt;
+    double tiltR = p.micr_tilt;
+    double tiltC = p.micl_tilt;
     std::string mainMicPattern = p.mic_pattern;
 
     if (p.main_decca_enabled)
@@ -1954,6 +1975,10 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
         faceL = p.decca_angle - toe;
         faceR = p.decca_angle + toe;
         faceC = p.decca_angle;
+        // Decca tree is a rigid 3-mic array — all three mics share decca_tilt.
+        tiltL = p.decca_tilt;
+        tiltR = p.decca_tilt;
+        tiltC = p.decca_tilt;
         // DIRECT uses the same user-selected MAIN mic pattern as the main
         // path — mainMicPattern = p.mic_pattern above is already correct.
         // Keep the rz override in sync with synthMainPath so the tree height
@@ -2036,16 +2061,16 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
     // No jitter at all for DIRECT: close-speaker jitter would misalign the direct pulse.
     const double jitter01 = 0.0, jitter2 = 0.0;
 
-    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 72, mainMicPattern, p.spkl_angle, faceL, maxRefDist, jitter01, jitter2);
-    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 73, mainMicPattern, p.spkr_angle, faceL, maxRefDist, jitter01, jitter2);
-    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 74, mainMicPattern, p.spkl_angle, faceR, maxRefDist, jitter01, jitter2);
-    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 75, mainMicPattern, p.spkr_angle, faceR, maxRefDist, jitter01, jitter2);
+    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 72, mainMicPattern, p.spkl_angle, faceL, maxRefDist, jitter01, jitter2, tiltL);
+    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 73, mainMicPattern, p.spkr_angle, faceL, maxRefDist, jitter01, jitter2, tiltL);
+    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 74, mainMicPattern, p.spkl_angle, faceR, maxRefDist, jitter01, jitter2, tiltR);
+    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 75, mainMicPattern, p.spkr_angle, faceR, maxRefDist, jitter01, jitter2, tiltR);
 
     std::vector<Ref> rLC, rRC;
     if (p.main_decca_enabled)
     {
-        rLC = calcRefs(rcx, rcy, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 76, mainMicPattern, p.spkl_angle, faceC, maxRefDist, jitter01, jitter2);
-        rRC = calcRefs(rcx, rcy, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 77, mainMicPattern, p.spkr_angle, faceC, maxRefDist, jitter01, jitter2);
+        rLC = calcRefs(rcx, rcy, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 76, mainMicPattern, p.spkl_angle, faceC, maxRefDist, jitter01, jitter2, tiltC);
+        rRC = calcRefs(rcx, rcy, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 77, mainMicPattern, p.spkr_angle, faceC, maxRefDist, jitter01, jitter2, tiltC);
     }
 
     // No diffusion, no frequency scatter, no reflection spread — just the bpF cascade.
