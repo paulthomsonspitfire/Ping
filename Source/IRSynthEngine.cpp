@@ -160,18 +160,42 @@ double IRSynthEngine::eyring (double vol, double mAbs, double tS)
     return 0.161 * vol / (-tS * l);
 }
 
+// ── directivityCos — 3D source-to-mic-axis cosine ─────────────────────────
+// Spherical law of cosines:  cos(theta) = sin(el)·sin(faceEl)
+//                                       + cos(el)·cos(faceEl)·cos(az - faceAz)
+// where (az, el) is the direction the sound arrives from (source direction
+// in the receiver's frame) and (faceAz, faceEl) is the mic's pointing axis.
+// At faceEl = 0 (horizontal) this reduces to cos(el)·cos(az - faceAz) — the
+// old 2D formula multiplied by a cos(el) elevation factor. Sources directly
+// overhead (el = ±π/2) therefore correctly map to the mic's vertical-axis
+// rejection (cos(theta) = sin(el)·sin(faceEl)).
+//
+// This is the single source of truth for 3D mic directivity in the engine.
+// Tests/PingDSPTests.cpp duplicates the formula as directivityCosLocal for
+// DSP_21 to keep the DSP test layer free of IRSynthEngine.h coupling.
+double IRSynthEngine::directivityCos (double az, double el,
+                                      double faceAzimuth, double faceElevation) noexcept
+{
+    return std::sin(el) * std::sin(faceElevation)
+         + std::cos(el) * std::cos(faceElevation) * std::cos(az - faceAzimuth);
+}
+
 // ── micG — per-octave-band polar pattern gain ─────────────────────────────
 // band ∈ [0, 7] indexing octave bands [125 Hz .. 16 kHz]. Called once per
 // (reflection, band) from calcRefs so each frequency band sees its own
 // off-axis rejection while on-axis (o + d = 1) remains frequency-flat.
-double IRSynthEngine::micG (int band, double az, const std::string& pat, double faceAngle)
+//
+// cosTheta is precomputed by the caller via directivityCos, hoisted out of
+// the per-band loop so the spherical-law-of-cosines call (4 trig ops) runs
+// once per reflection rather than once per (reflection × band).
+double IRSynthEngine::micG (int band, const std::string& pat, double cosTheta)
 {
     const auto& mic = getMIC();
     auto it = mic.find(pat);
     if (it == mic.end()) return 1.0;
     const double o = it->second[band].first;
     const double d = it->second[band].second;
-    return std::max(0.0, o + d * std::cos(az - faceAngle));
+    return std::max(0.0, o + d * cosTheta);
 }
 
 // ── spkG — verbatim from JS (pure cardioid) ────────────────────────────────
@@ -251,7 +275,8 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
     double spkFaceAngle, double micFaceAngle,
     double maxRefDist,
     double minJitterMs,
-    double highOrderJitterMs)
+    double highOrderJitterMs,
+    double micFaceTilt)
 {
     double W = p.width, D = p.depth;
     Rng rng = mkRng(seed);
@@ -285,6 +310,15 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                 if (eo && t >= ec) continue;
                 // Screen-style room coordinates: 0 = right, +pi/2 = down.
                 double az = std::atan2(iy - ry, ix - rx);
+                // 3D mic directivity: compute the source elevation in the receiver's
+                // frame and the spherical-law-of-cosines projection onto the mic axis
+                // ONCE per reflection, then reuse across all 8 bands. The cos(el)
+                // factor implicit in directivityCos correctly attenuates sources that
+                // are well above or below the mic plane (e.g. ceiling-bounce image
+                // sources arriving from steep elevations).
+                const double hDist   = std::sqrt((ix - rx) * (ix - rx) + (iy - ry) * (iy - ry));
+                const double el      = std::atan2(iz - rz, std::max(hDist, 1e-9));
+                const double cosTh3D = directivityCos(az, el, micFaceAngle, micFaceTilt);
                 // micG is now called per-band inside the loop below so each octave
                 // band sees its own off-axis rejection (frequency-dependent polar pattern).
                 // Source directivity: by default, direct (0) and first-order (1)
@@ -319,7 +353,7 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                     a *= std::pow(rW[b], std::abs(nx) + std::abs(ny));
                     if (std::abs(ny) > 0) a *= std::pow(oF, std::abs(ny));
                     if (std::abs(nz) > 0) a *= std::pow(1.0 - vHfA * std::min(b / 3.0, 1.0), std::abs(nz));
-                    amps[b] = a * std::pow(10.0, -AIR[b] * dist / 20.0) * micG(b, az, micPat, micFaceAngle) * sg * polarity;
+                    amps[b] = a * std::pow(10.0, -AIR[b] * dist / 20.0) * micG(b, micPat, cosTh3D) * sg * polarity;
                 }
                 refs.push_back({ t, amps, az });
 

@@ -238,7 +238,18 @@ private:
     // ── engine helpers ─────────────────────────────────────────────────────
     static double eyring (double vol, double mAbs, double tS);
 
-    static double micG  (int band, double az, const std::string& pat, double faceAngle);
+    // 3D mic directivity: cos(theta) between source direction (az, el) and the
+    // mic's facing axis (faceAzimuth, faceElevation). Spherical law of cosines.
+    // Single source of truth — duplicated locally as directivityCosLocal in
+    // PingDSPTests.cpp to keep the DSP test suite self-contained (DSP_21).
+    static double directivityCos (double az, double el,
+                                  double faceAzimuth, double faceElevation) noexcept;
+
+    // Per-octave-band polar pattern gain. cosTheta is the precomputed
+    // dot product of the source direction with the mic's facing axis,
+    // produced by directivityCos. Hoisted out of the band loop so the
+    // 3D math runs once per reflection rather than once per (reflection × band).
+    static double micG  (int band, const std::string& pat, double cosTheta);
     static double spkG  (double faceAngle, double azToReceiver);
 
     // Seeded RNG (matches JS mkRng)
@@ -263,7 +274,8 @@ private:
         double spkFaceAngle, double micFaceAngle,
         double maxRefDist,
         double minJitterMs = 0.0,
-        double highOrderJitterMs = 0.0);  // jitter for order 2+ (when close, breaks periodic echo)
+        double highOrderJitterMs = 0.0,   // jitter for order 2+ (when close, breaks periodic echo)
+        double micFaceTilt = 0.0);        // mic elevation tilt in radians (0 = horizontal); see directivityCos
 
     static std::vector<double> bpF  (const std::vector<double>& buf, double fc, int sr);
     static std::vector<double> bpFQ (const std::vector<double>& buf, double fc, double Q, int sr);
