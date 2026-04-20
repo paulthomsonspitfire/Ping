@@ -1,0 +1,61 @@
+3D Microphone Polar Patterns & Tilt — pre-feature baseline
+===========================================================
+
+Branch:   feature/3d-mic-tilt
+Captured: 2026-04-20
+Base:     main @ 6f5005f (feat(IRManager): hide multi-mic aux siblings ...)
+
+Test suite: 100% pass (48/48), total runtime 537.46 s.
+
+This file documents the bit-identical engine outputs as they stood
+*before* any 3D mic tilt work began. Once the engine math has been
+refactored to use directivityCos() and the per-image-source elevation
+angle, both IR_11 and IR_14 will (intentionally) produce different
+samples — even at tilt = 0° — because:
+  • micG() is now called with a 3D cosTheta (sin·sin + cos·cos·cos)
+    instead of cos(az - faceAz). The values agree to ≥ 12 sig-figs at
+    el = 0, but the small floating-point reordering propagates through
+    24-bit IEEE-754 arithmetic and changes the FNV-1a digests.
+  • IR_11's onset index *should* remain 482 (geometry is unchanged),
+    but the 30 sample values will shift in their lower bits.
+
+The Phase 3 recapture step writes the new values back into
+Tests/PingEngineTests.cpp (IR_11) and Tests/PingMultiMicTests.cpp
+(IR_14). This file is the audit trail proving that nothing audible
+changed in the engine's *intent* — only the bit-identity reference
+was updated to track an intentional internal refactor.
+
+============================================================
+Baseline IR_11 — golden_iLL[30] starting at sample 482
+============================================================
+
+static const int    onset_offset  = 482;
+static const double golden_iLL[30] = {
+    0.0052927134129422404, 0.025850623093826929, 0.098790551473608698, 0.25510989862362599, 0.46033578576352852,
+    0.55445942760216815, 0.3882393874148819, 0.26079919379761762, 0.30054579023705974, -0.15329375949400414,
+    -0.5909881757641684, -0.12294205308476477, 0.10450350710082784, -0.052034920526822626, 0.10158570457510742,
+    -0.014029216253808506, -0.1073193022313957, 0.030432050219118666, -0.023830794009623724, -0.034904119652530902,
+    -0.0081060900095294517, -0.05409658931995532, -0.030988639707726473, -0.0060261163942318041, -0.011655866427774234,
+    0.0039614456144860975, 0.0024202862420677524, -0.0068283180647273241, -0.005204534250850051, -0.012607241189241678
+};
+
+============================================================
+Baseline IR_14 — MAIN path FNV-1a 64-bit digests (default IRSynthParams)
+============================================================
+
+static const int         golden_irLen = 813146;
+static const std::string golden_iLL   = "30e1e1aece03b09a";
+static const std::string golden_iRL   = "2a6eba6d1480aa74";
+static const std::string golden_iLR   = "be0e5f3e01df5cfb";
+static const std::string golden_iRR   = "cb5312c58cc7d95a";
+
+============================================================
+Phase 3 recapture (filled in after engine refactor lands)
+============================================================
+
+# Run:
+#   ./build/PingTests "[capture]" -s    → new IR_11 values
+#   ./build/PingTests "[capture14]" -s  → new IR_14 digests
+# Then paste the values into the two test files and into the section below.
+
+[ to be filled in during Phase 3 ]
