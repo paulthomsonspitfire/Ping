@@ -1,5 +1,46 @@
 #include "IRManager.h"
 
+namespace
+{
+    // Multi-mic IRs are saved as a set of sibling files with a shared base stem:
+    //   Venue.wav           ← MAIN (has the .ping sidecar)
+    //   Venue_direct.wav    ← DIRECT
+    //   Venue_outrig.wav    ← OUTRIG
+    //   Venue_ambient.wav   ← AMBIENT
+    //
+    // PingProcessor::loadIRFromFile auto-loads the three aux siblings whenever the
+    // MAIN file is selected, so showing the aux files as separate combo entries is
+    // redundant and confusing. We hide them here — but only when the MAIN base file
+    // actually exists in the same directory. An orphaned aux file (no base sibling)
+    // stays visible as a fallback so the user can still load it directly.
+    const juce::StringArray kAuxSuffixes { "_direct", "_outrig", "_ambient" };
+
+    bool endsWithAuxSuffix (const juce::String& stem, juce::String& baseStemOut)
+    {
+        for (const auto& suf : kAuxSuffixes)
+        {
+            if (stem.endsWithIgnoreCase (suf))
+            {
+                baseStemOut = stem.dropLastCharacters (suf.length());
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool hasBaseSiblingInSameDir (const juce::File& auxFile, const juce::String& baseStem)
+    {
+        auto parent = auxFile.getParentDirectory();
+        if (! parent.isDirectory())
+            return false;
+        static const juce::StringArray exts { ".wav", ".WAV", ".aiff", ".aif", ".AIFF", ".AIF" };
+        for (const auto& ext : exts)
+            if (parent.getChildFile (baseStem + ext).existsAsFile())
+                return true;
+        return false;
+    }
+}
+
 juce::File IRManager::getIRFolder()
 {
     auto dir = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
@@ -70,6 +111,18 @@ void IRManager::scanFolder()
         userSubDirs.sort();
         for (const auto& sub : userSubDirs)
             addFilesFromDir (sub, sub.getFileName(), false);
+    }
+
+    // ── Pass 3: drop aux multi-mic siblings when the MAIN base file is present ─
+    for (int i = irEntries.size() - 1; i >= 0; --i)
+    {
+        const auto& e = irEntries.getReference (i);
+        juce::String baseStem;
+        if (endsWithAuxSuffix (e.file.getFileNameWithoutExtension(), baseStem)
+            && hasBaseSiblingInSameDir (e.file, baseStem))
+        {
+            irEntries.remove (i);
+        }
     }
 }
 
