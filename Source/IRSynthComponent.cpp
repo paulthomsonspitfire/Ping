@@ -244,20 +244,21 @@ IRSynthComponent::IRSynthComponent()
     ambientHeightReadout.setText (juce::String (ambientHeightSlider.getValue(), 1) + " m",
                                   juce::dontSendNotification);
 
-    deccaCentreGainLabel.setText  ("Centre fill", juce::dontSendNotification);
+    deccaCentreGainLabel.setText  ("C mic", juce::dontSendNotification);
     // Readout in dB to match mixing intuition (0.5 → −6 dB, 0.707 → −3 dB).
+    // Compact format (no space, no decimal) to fit the 48 px readout column.
     {
         const double v = deccaCentreGainSlider.getValue();
         const auto txt = (v <= 1e-6) ? juce::String ("off")
-                                     : juce::String (20.0 * std::log10 (v), 1) + " dB";
+                                     : juce::String ((int) std::round (20.0 * std::log10 (v))) + "dB";
         deccaCentreGainReadout.setText (txt, juce::dontSendNotification);
     }
 
-    deccaToeOutLabel.setText ("Toe-out", juce::dontSendNotification);
+    deccaToeOutLabel.setText ("Splay", juce::dontSendNotification);
     {
         const int deg = (int) std::round (deccaToeOutSlider.getValue());
         const auto txt = (deg == 0) ? juce::String ("off")
-                                    : juce::String ("\xc2\xb1") + juce::String (deg) + juce::String::fromUTF8 ("\xc2\xb0");
+                                    : juce::String::fromUTF8 ("\xc2\xb1") + juce::String (deg) + juce::String::fromUTF8 ("\xc2\xb0");
         deccaToeOutReadout.setText (txt, juce::dontSendNotification);
     }
 
@@ -278,7 +279,7 @@ IRSynthComponent::IRSynthComponent()
     {
         const double v = deccaCentreGainSlider.getValue();
         const auto txt = (v <= 1e-6) ? juce::String ("off")
-                                     : juce::String (20.0 * std::log10 (v), 1) + " dB";
+                                     : juce::String ((int) std::round (20.0 * std::log10 (v))) + "dB";
         deccaCentreGainReadout.setText (txt, juce::dontSendNotification);
         if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
     };
@@ -288,7 +289,7 @@ IRSynthComponent::IRSynthComponent()
     {
         const int deg = (int) std::round (deccaToeOutSlider.getValue());
         const auto txt = (deg == 0) ? juce::String ("off")
-                                    : juce::String ("\xc2\xb1") + juce::String (deg) + juce::String::fromUTF8 ("\xc2\xb0");
+                                    : juce::String::fromUTF8 ("\xc2\xb1") + juce::String (deg) + juce::String::fromUTF8 ("\xc2\xb0");
         deccaToeOutReadout.setText (txt, juce::dontSendNotification);
         floorPlanComponent.repaint();   // visual toe-out ticks update live
         if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
@@ -829,12 +830,20 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
                                    ctrlW - labelW - gap, rowH);
         y += rowH + 2;
 
+        // Decca Centre-fill + Toe-out rows share a tighter label / wider readout
+        // column layout so the numeric values ("-6dB", "±90°") fit without
+        // truncation. The default readoutW (38 px) is too narrow for the ± / °
+        // glyphs and the dB suffix; bumping it to 50 px and reducing labelW to
+        // 44 px keeps the slider roughly the same width.
+        const int dLabelW   = 44;
+        const int dReadoutW = 50;
+        const int dSlW      = ctrlW - dLabelW - gap - dReadoutW - gap;
+
         // Decca Centre-fill row — label + slider + dB readout.
         {
-            const int slW = ctrlW - labelW - gap - readoutW - gap;
-            deccaCentreGainLabel.setBounds   (x0, y, labelW, rowH);
-            deccaCentreGainSlider.setBounds  (x0 + labelW + gap, y, slW, rowH);
-            deccaCentreGainReadout.setBounds (x0 + labelW + gap + slW + gap, y, readoutW, rowH);
+            deccaCentreGainLabel.setBounds   (x0, y, dLabelW, rowH);
+            deccaCentreGainSlider.setBounds  (x0 + dLabelW + gap, y, dSlW, rowH);
+            deccaCentreGainReadout.setBounds (x0 + dLabelW + gap + dSlW + gap, y, dReadoutW, rowH);
             y += rowH + 2;
         }
 
@@ -844,10 +853,9 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
         // directly above the bottom bar with only a small margin, per user
         // request to bring Toe-out close to the RT60 readout.
         {
-            const int slW = ctrlW - labelW - gap - readoutW - gap;
-            deccaToeOutLabel.setBounds   (x0, y, labelW, rowH);
-            deccaToeOutSlider.setBounds  (x0 + labelW + gap, y, slW, rowH);
-            deccaToeOutReadout.setBounds (x0 + labelW + gap + slW + gap, y, readoutW, rowH);
+            deccaToeOutLabel.setBounds   (x0, y, dLabelW, rowH);
+            deccaToeOutSlider.setBounds  (x0 + dLabelW + gap, y, dSlW, rowH);
+            deccaToeOutReadout.setBounds (x0 + dLabelW + gap + dSlW + gap, y, dReadoutW, rowH);
             y += rowH + 2;
         }
 
@@ -1050,7 +1058,7 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     {
         const double v = p.decca_centre_gain;
         const auto txt = (v <= 1e-6) ? juce::String ("off")
-                                     : juce::String (20.0 * std::log10 (v), 1) + " dB";
+                                     : juce::String ((int) std::round (20.0 * std::log10 (v))) + "dB";
         deccaCentreGainReadout.setText (txt, juce::dontSendNotification);
     }
     {
@@ -1058,7 +1066,7 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
         deccaToeOutSlider.setValue (deg, juce::dontSendNotification);
         const int degI = (int) std::round (deg);
         const auto txt = (degI == 0) ? juce::String ("off")
-                                     : juce::String ("\xc2\xb1") + juce::String (degI) + juce::String::fromUTF8 ("\xc2\xb0");
+                                     : juce::String::fromUTF8 ("\xc2\xb1") + juce::String (degI) + juce::String::fromUTF8 ("\xc2\xb0");
         deccaToeOutReadout.setText (txt, juce::dontSendNotification);
     }
     outrigHeightSlider.setValue  (p.outrig_height,  juce::dontSendNotification);
