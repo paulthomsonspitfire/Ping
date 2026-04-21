@@ -3,9 +3,10 @@
 trim_factory_irs.py — Trim trailing silence from P!NG factory IR .wav files.
 
 Reads every .wav file under the target directory (recursively), removes silent
-tail audio below −80 dB of peak, adds a 200 ms safety tail (minimum 300 ms
-total length), and writes the result back in place with the same bit depth,
-sample rate and channel count.
+tail audio below −90 dB of peak, adds a 500 ms safety tail (minimum 300 ms
+total length), applies a cosine end-fade over that final 500 ms, and writes
+the result back in place with the same bit depth, sample rate and channel
+count.
 
 Matches the logic in PingProcessor::loadIRFromBuffer (the universal silence
 trim added in v2.3.3) so that loading factory IRs from disk gives the same
@@ -31,10 +32,14 @@ import math
 import shutil
 import tempfile
 
-THRESHOLD_DB  = -80.0          # trim below this level relative to peak
-SAFETY_TAIL_S =  0.200         # 200 ms safety margin after last significant sample
+THRESHOLD_DB  = -90.0          # trim below this level relative to peak
+SAFETY_TAIL_S =  0.500         # 500 ms safety margin after last significant sample (also fade length)
 MIN_LEN_S     =  0.300         # never trim shorter than 300 ms
 DRY_RUN       = False          # set True to report changes without writing
+
+# Linear amplitude equivalent of THRESHOLD_DB, used both as the relative
+# (peak × factor) threshold and as an absolute dBFS floor cap.
+THRESHOLD_FACTOR = 10.0 ** (THRESHOLD_DB / 20.0)  # −90 dB → ~3.162e-5
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +213,10 @@ def _write_wav(path: str, samples, sample_rate: int, bit_depth: int,
 
 def trim_ir(samples, sample_rate: int):
     """
-    Apply −80 dB silence trim.
+    Apply THRESHOLD_DB (default −90 dB) silence trim with a cosine end-fade
+    over the final SAFETY_TAIL_S (default 500 ms). Mirrors the universal trim
+    in PingProcessor::loadIRFromBuffer.
+
     Returns (trimmed_samples, original_n_frames, new_n_frames).
     """
     n_frames = len(samples[0])
@@ -222,7 +230,11 @@ def trim_ir(samples, sample_rate: int):
             if v > peak:
                 peak = v
 
-    threshold = peak * 1e-4  # −80 dB
+    # Relative threshold, capped at THRESHOLD_FACTOR absolute dBFS — synth IRs
+    # have peaks > 1.0 (they receive a +15 dB output boost) so without the cap
+    # peak × factor could exceed the absolute dBFS threshold and cut audible
+    # tail content.
+    threshold = min(peak * THRESHOLD_FACTOR, THRESHOLD_FACTOR)
 
     # Last sample above threshold across all channels
     last_significant = 0
@@ -239,11 +251,28 @@ def trim_ir(samples, sample_rate: int):
 
     new_len = min(last_significant + safety_tail + 1, n_frames)
     new_len = max(new_len, min_len)
+    new_len = min(new_len, n_frames)
 
-    if new_len >= n_frames:
-        return samples, n_frames, n_frames  # nothing to trim
+    # Slice. Fade is applied below ONLY when we actually truncated so that
+    # re-running this script on an already-trimmed file is a bit-identical
+    # no-op (mirrors the plugin's universal trim block guard — prevents
+    # compounding cos² attenuation on repeated passes).
+    trimmed = [list(ch_samples[:new_len]) for ch_samples in samples]
 
-    trimmed = [ch_samples[:new_len] for ch_samples in samples]
+    if new_len < n_frames:
+        # Cosine end-fade over the final `safety_tail` samples of the trimmed
+        # buffer (clamped to the buffer length for very short IRs). Unity at
+        # fade_start, zero at final sample.
+        fade_samps = min(safety_tail, new_len)
+        if fade_samps > 1:
+            fade_start = new_len - fade_samps
+            for ch in range(n_channels):
+                ch_samples = trimmed[ch]
+                for i in range(fade_start, new_len):
+                    t = (i - fade_start) / float(fade_samps)
+                    env = 0.5 * (1.0 + math.cos(math.pi * t))
+                    ch_samples[i] *= env
+
     return trimmed, n_frames, new_len
 
 

@@ -2283,7 +2283,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             synthesizedIRSampleRate = bufferSampleRate;
         }
 
-        // Auto-trim trailing silence: scan for last sample above -80 dB, add 200 ms safety tail.
+        // Auto-trim trailing silence: scan for last sample above -90 dB, add 500 ms safety tail.
         // Must run BEFORE rawSynthBuffer is saved so the stored raw copy is already trimmed.
         {
             const int nSamples = buffer.getNumSamples();
@@ -2297,7 +2297,10 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                     peak = juce::jmax (peak, std::abs (p[i]));
             }
 
-            const float threshold = juce::jmin (peak * 1.0e-4f, 1.0e-4f); // −80 dB below peak, capped at −80 dBFS absolute
+            // 10^(-90/20) ≈ 3.162e-5 — used both as (peak × factor) relative threshold
+            // and as an absolute −90 dBFS floor cap (for synth IRs whose peak > 1.0).
+            constexpr float kSilenceFactor = 3.1622777e-5f;
+            const float threshold = juce::jmin (peak * kSilenceFactor, kSilenceFactor);
 
             int lastSignificant = 0;
             for (int ch = 0; ch < nCh; ++ch)
@@ -2313,7 +2316,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 }
             }
 
-            const int safetyTail = (int) (0.2 * bufferSampleRate); // 200 ms
+            const int safetyTail = (int) (0.5 * bufferSampleRate); // 500 ms (also fade length)
             const int minLen     = (int) (0.3 * bufferSampleRate); // 300 ms floor
             int newLen = juce::jmin (lastSignificant + safetyTail + 1, nSamples);
             newLen     = juce::jmax (newLen, minLen);
@@ -2324,10 +2327,28 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 for (int ch = 0; ch < nCh; ++ch)
                     trimmed.copyFrom (ch, 0, buffer, ch, 0, newLen);
                 buffer = std::move (trimmed);
+
+                // End-fade: cosine fade over the last safetyTail (500 ms) samples to smooth
+                // the hard cut-point introduced above. Applied ONLY when we actually truncated
+                // so reloading an already-trimmed buffer is idempotent (no compounding cos²
+                // attenuation that would become audible under heavy output boost).
+                const int curLen    = buffer.getNumSamples();
+                const int curCh     = buffer.getNumChannels();
+                const int fadeSamps = juce::jmin (safetyTail, curLen);
+                const int fadeStart = curLen - fadeSamps;
+                for (int ch = 0; ch < curCh; ++ch)
+                {
+                    float* p = buffer.getWritePointer (ch);
+                    for (int i = fadeStart; i < curLen; ++i)
+                    {
+                        const float t = (float)(i - fadeStart) / (float)juce::jmax (fadeSamps, 1);
+                        p[i] *= 0.5f * (1.0f + std::cos (juce::MathConstants<float>::pi * t));
+                    }
+                }
             }
         }
 
-        // save raw copy before any transforms (silence already trimmed) into the right slot
+        // save raw copy before any transforms (silence already trimmed + faded) into the right slot
         if      (path == MicPath::Main)    rawSynthBuffer         = buffer;
         else if (path == MicPath::Outrig)  rawSynthOutrigBuffer   = buffer;
         else if (path == MicPath::Ambient) rawSynthAmbientBuffer  = buffer;
@@ -2420,7 +2441,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
     // allocated at 8×RT60 (up to 60 s) but contain only 8–15 s of actual reverb signal.
     // File-loaded factory IRs skip the fromSynth silence-trim block above, so without this
     // they arrive with a huge silent tail that makes the NUPC background thread unable to
-    // keep up at small buffer sizes (persistent glitching). Threshold: −80 dB below peak.
+    // keep up at small buffer sizes (persistent glitching). Threshold: −90 dB below peak.
     // Synth IRs are already trimmed in the fromSynth block; this is a fast no-op for them.
     {
         const int nSamples = buffer.getNumSamples();
@@ -2434,7 +2455,10 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 peak = juce::jmax (peak, std::abs (p[i]));
         }
 
-        const float threshold = juce::jmin (peak * 1.0e-4f, 1.0e-4f); // −80 dB below peak, capped at −80 dBFS absolute
+        // 10^(-90/20) ≈ 3.162e-5 — used both as (peak × factor) relative threshold
+        // and as an absolute −90 dBFS floor cap (for synth IRs whose peak > 1.0).
+        constexpr float kSilenceFactor = 3.1622777e-5f;
+        const float threshold = juce::jmin (peak * kSilenceFactor, kSilenceFactor);
 
         int lastSignificant = 0;
         for (int ch = 0; ch < nCh; ++ch)
@@ -2450,7 +2474,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             }
         }
 
-        const int safetyTail = (int) (0.2 * bufferSampleRate); // 200 ms
+        const int safetyTail = (int) (0.5 * bufferSampleRate); // 500 ms (also fade length)
         const int minLen     = (int) (0.3 * bufferSampleRate); // 300 ms floor
         int newLen = juce::jmin (lastSignificant + safetyTail + 1, nSamples);
         newLen     = juce::jmax (newLen, minLen);
@@ -2461,11 +2485,13 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             for (int ch = 0; ch < nCh; ++ch)
                 trimmed.copyFrom (ch, 0, buffer, ch, 0, newLen);
             buffer = std::move (trimmed);
-        }
 
-        // End-fade: apply a cosine fade over the last safetyTail (200 ms) samples so the IR
-        // decays smoothly to silence rather than ending abruptly at the −80 dB cut point.
-        {
+            // End-fade: cosine fade over the last safetyTail (500 ms) samples to smooth
+            // the hard cut-point introduced above. Applied ONLY when we actually truncated —
+            // reloading an already-trimmed IR (factory preset, user-saved WAV, rawSynthBuffer)
+            // hits newLen == nSamples, skips both this branch and the fade, and therefore
+            // produces a bit-identical buffer on every reload. Without this gate the fade
+            // would compound (cos², cos³, …) and become audible under heavy output boost.
             const int curLen    = buffer.getNumSamples();
             const int curCh     = buffer.getNumChannels();
             const int fadeSamps = juce::jmin (safetyTail, curLen);
