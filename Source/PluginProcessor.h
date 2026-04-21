@@ -84,6 +84,13 @@ public:
         Also saves IRSynthParams sidecar (.ping) for recall when loading from IR Synth list. */
     juce::File saveCurrentIRToFile (const juce::String& name);
 
+    /** Write the current synth IR set (MAIN from currentIRBuffer + any non-empty
+        rawSynth{Direct,Outrig,Ambient}Buffer) into destDir using <stem>.wav as the
+        MAIN and <stem>_direct.wav / _outrig.wav / _ambient.wav as aux siblings.
+        Also writes <stem>.ping alongside the MAIN. Creates destDir if missing.
+        Returns the MAIN File on success, or juce::File() on failure / no IR loaded. */
+    juce::File writeSynthIRSetToDirectory (const juce::File& destDir, const juce::String& stem);
+
     /** Load IRSynthParams from a .ping sidecar if it exists. Returns default params if not found. */
     static IRSynthParams loadIRSynthParamsFromSidecar (const juce::File& irFile);
 

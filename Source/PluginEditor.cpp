@@ -38,6 +38,77 @@ namespace
         }
         return result;
     }
+
+    // Copy a file-based IR set to destDir under newStem: the MAIN .wav/.aiff,
+    // its .ping sidecar (if any), and any _direct/_outrig/_ambient siblings
+    // that exist next to sourceMain. All files are renamed so they share newStem.
+    // Applies fixImportedFilePermissions to every written file.
+    // Returns the destination MAIN file on success, or juce::File() on failure.
+    juce::File copyIRSetWithSiblings (const juce::File& sourceMain,
+                                      const juce::File& destDir,
+                                      const juce::String& newStem)
+    {
+        if (sourceMain == juce::File() || ! sourceMain.existsAsFile())
+            return {};
+        if (destDir == juce::File())
+            return {};
+        if (! destDir.exists())
+            destDir.createDirectory();
+
+        const auto srcDir  = sourceMain.getParentDirectory();
+        const auto srcStem = sourceMain.getFileNameWithoutExtension();
+        const auto mainExt = sourceMain.getFileExtension();   // includes dot
+
+        auto destMain = destDir.getChildFile (newStem + mainExt);
+        if (! sourceMain.copyFileTo (destMain))
+            return {};
+        PingProcessor::fixImportedFilePermissions (destMain);
+
+        // Sidecar alongside the MAIN file (same stem, .ping extension).
+        auto srcSidecar = srcDir.getChildFile (srcStem + ".ping");
+        if (srcSidecar.existsAsFile())
+        {
+            auto destSidecar = destDir.getChildFile (newStem + ".ping");
+            if (srcSidecar.copyFileTo (destSidecar))
+                PingProcessor::fixImportedFilePermissions (destSidecar);
+        }
+
+        // Multi-mic aux siblings. Search using the MAIN extension first, then
+        // fall back to the other common WAV/AIFF extensions so mismatched sets
+        // (e.g. MAIN.wav + _outrig.aiff) still copy cleanly.
+        const char* const suffixes[] = { "_direct", "_outrig", "_ambient" };
+        const char* const tryExts[]  = { ".wav", ".aiff", ".aif" };
+        for (const char* suffix : suffixes)
+        {
+            juce::File srcSibling;
+            // Prefer the MAIN extension; fall back otherwise.
+            {
+                auto candidate = srcDir.getChildFile (srcStem + suffix + mainExt);
+                if (candidate.existsAsFile())
+                    srcSibling = candidate;
+            }
+            if (srcSibling == juce::File())
+            {
+                for (const char* ext : tryExts)
+                {
+                    auto candidate = srcDir.getChildFile (srcStem + suffix + ext);
+                    if (candidate.existsAsFile())
+                    {
+                        srcSibling = candidate;
+                        break;
+                    }
+                }
+            }
+            if (srcSibling == juce::File())
+                continue;
+
+            auto destSibling = destDir.getChildFile (newStem + suffix + srcSibling.getFileExtension());
+            if (srcSibling.copyFileTo (destSibling))
+                PingProcessor::fixImportedFilePermissions (destSibling);
+        }
+
+        return destMain;
+    }
 }
 
 PingEditor::PingEditor (PingProcessor& p)
@@ -1908,49 +1979,39 @@ void PingEditor::exportPreset (const juce::String& presetName)
             if (presetDest.replaceWithData (data.getData(), data.getSize()))
                 PingProcessor::fixImportedFilePermissions (presetDest);
 
-            // Write associated IR + sidecar
+            // Write associated IR set (MAIN + any _direct/_outrig/_ambient
+            // siblings + .ping sidecar). The preset's irFilePath keeps pointing
+            // at the original location; Import Preset rewrites it on the
+            // receiving end using the filename stem so the new MAIN name takes
+            // effect there.
             auto selectedFile = pingProcessor.getSelectedIRFile();
             if (selectedFile != juce::File() && selectedFile.existsAsFile())
             {
-                auto irDest = destDir.getChildFile (selectedFile.getFileName());
-                selectedFile.copyFileTo (irDest);
-                PingProcessor::fixImportedFilePermissions (irDest);
-
-                auto srcSidecar = selectedFile.getSiblingFile (
-                    selectedFile.getFileNameWithoutExtension() + ".ping");
-                if (srcSidecar.existsAsFile())
-                {
-                    auto sidecarDest = destDir.getChildFile (srcSidecar.getFileName());
-                    srcSidecar.copyFileTo (sidecarDest);
-                    PingProcessor::fixImportedFilePermissions (sidecarDest);
-                }
+                copyIRSetWithSiblings (selectedFile, destDir,
+                                       selectedFile.getFileNameWithoutExtension());
             }
             else if (pingProcessor.isIRFromSynth()
                      && pingProcessor.getCurrentIRBuffer().getNumSamples() > 0)
             {
-                auto irDest = destDir.getChildFile (name + " IR.wav");
-                const auto& buf = pingProcessor.getCurrentIRBuffer();
-                double sr = pingProcessor.getCurrentIRSampleRate();
-
-                juce::WavAudioFormat wavFormat;
-                auto* rawStream = new juce::FileOutputStream (irDest);
-                if (rawStream->openedOk())
+                // Use the preset name as the IR stem (no " IR" suffix) so
+                // synth exports match the Save IR / factory naming convention.
+                // writeSynthIRSetToDirectory writes <name>.wav + .ping plus any
+                // populated _direct/_outrig/_ambient raw aux buffers.
+                auto mainDest = pingProcessor.writeSynthIRSetToDirectory (destDir, name);
+                if (mainDest != juce::File())
                 {
-                    std::unique_ptr<juce::AudioFormatWriter> writer (
-                        wavFormat.createWriterFor (rawStream, sr,
-                                                   (unsigned int) buf.getNumChannels(), 24, {}, 0));
-                    if (writer)
-                        writer->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
+                    PingProcessor::fixImportedFilePermissions (mainDest);
+                    auto sidecarDest = mainDest.getSiblingFile (
+                        mainDest.getFileNameWithoutExtension() + ".ping");
+                    if (sidecarDest.existsAsFile())
+                        PingProcessor::fixImportedFilePermissions (sidecarDest);
+                    for (const char* suffix : { "_direct", "_outrig", "_ambient" })
+                    {
+                        auto auxDest = destDir.getChildFile (name + suffix + ".wav");
+                        if (auxDest.existsAsFile())
+                            PingProcessor::fixImportedFilePermissions (auxDest);
+                    }
                 }
-                else
-                {
-                    delete rawStream;
-                }
-
-                PingProcessor::fixImportedFilePermissions (irDest);
-                PingProcessor::writeIRSynthSidecar (irDest, pingProcessor.getLastIRSynthParams());
-                auto sidecarDest = destDir.getChildFile (name + " IR.ping");
-                PingProcessor::fixImportedFilePermissions (sidecarDest);
             }
         });
 }
@@ -2097,45 +2158,33 @@ void PingEditor::exportIR()
             if (dest == juce::File())
                 return;
 
+            // Export writes the MAIN .wav/.aiff at the exact path the user chose,
+            // plus .ping sidecar and any _direct/_outrig/_ambient siblings next
+            // to it, all renamed to share the chosen stem.
+            const auto destDir  = dest.getParentDirectory();
+            const auto destStem = dest.getFileNameWithoutExtension();
+
             if (selectedFile != juce::File() && selectedFile.existsAsFile())
             {
-                selectedFile.copyFileTo (dest);
-                PingProcessor::fixImportedFilePermissions (dest);
-
-                auto srcSidecar = selectedFile.getSiblingFile (
-                    selectedFile.getFileNameWithoutExtension() + ".ping");
-                if (srcSidecar.existsAsFile())
-                {
-                    auto destSidecar = dest.getSiblingFile (
-                        dest.getFileNameWithoutExtension() + ".ping");
-                    srcSidecar.copyFileTo (destSidecar);
-                    PingProcessor::fixImportedFilePermissions (destSidecar);
-                }
+                copyIRSetWithSiblings (selectedFile, destDir, destStem);
             }
             else
             {
-                const auto& buf = pingProcessor.getCurrentIRBuffer();
-                double sr = pingProcessor.getCurrentIRSampleRate();
-
-                juce::WavAudioFormat wavFormat;
-                auto* rawStream = new juce::FileOutputStream (dest);
-                if (! rawStream->openedOk())
+                auto mainDest = pingProcessor.writeSynthIRSetToDirectory (destDir, destStem);
+                if (mainDest != juce::File())
                 {
-                    delete rawStream;
-                    return;
+                    PingProcessor::fixImportedFilePermissions (mainDest);
+                    auto destSidecar = mainDest.getSiblingFile (
+                        mainDest.getFileNameWithoutExtension() + ".ping");
+                    if (destSidecar.existsAsFile())
+                        PingProcessor::fixImportedFilePermissions (destSidecar);
+                    for (const char* suffix : { "_direct", "_outrig", "_ambient" })
+                    {
+                        auto auxDest = destDir.getChildFile (destStem + suffix + ".wav");
+                        if (auxDest.existsAsFile())
+                            PingProcessor::fixImportedFilePermissions (auxDest);
+                    }
                 }
-
-                std::unique_ptr<juce::AudioFormatWriter> writer (
-                    wavFormat.createWriterFor (rawStream, sr,
-                                               (unsigned int) buf.getNumChannels(), 24, {}, 0));
-                if (writer)
-                    writer->writeFromAudioSampleBuffer (buf, 0, buf.getNumSamples());
-
-                PingProcessor::fixImportedFilePermissions (dest);
-
-                PingProcessor::writeIRSynthSidecar (dest, pingProcessor.getLastIRSynthParams());
-                auto destSidecar = dest.getSiblingFile (dest.getFileNameWithoutExtension() + ".ping");
-                PingProcessor::fixImportedFilePermissions (destSidecar);
             }
         });
 }
@@ -2159,31 +2208,34 @@ void PingEditor::importIR()
             if (! targetDir.exists())
                 targetDir.createDirectory();
 
-            auto targetName = src.getFileNameWithoutExtension();
-            auto targetFile = targetDir.getChildFile (targetName + src.getFileExtension());
-
-            int suffix = 2;
-            while (targetFile.existsAsFile())
+            // Resolve a collision-free stem. Check against the MAIN file AND any
+            // sibling suffixes so we don't clash with an existing set partially.
+            auto srcStem = src.getFileNameWithoutExtension();
+            auto srcExt  = src.getFileExtension();
+            auto stemInUse = [&] (const juce::String& stem) -> bool
             {
-                targetFile = targetDir.getChildFile (
-                    targetName + " (" + juce::String (suffix) + ")" + src.getFileExtension());
+                if (targetDir.getChildFile (stem + srcExt).existsAsFile()) return true;
+                for (const char* sfx : { "_direct", "_outrig", "_ambient" })
+                    for (const char* ext : { ".wav", ".aiff", ".aif" })
+                        if (targetDir.getChildFile (stem + sfx + ext).existsAsFile()) return true;
+                return false;
+            };
+
+            juce::String destStem = srcStem;
+            int suffix = 2;
+            while (stemInUse (destStem))
+            {
+                destStem = srcStem + " (" + juce::String (suffix) + ")";
                 ++suffix;
             }
 
-            if (src.copyFileTo (targetFile))
+            // copyIRSetWithSiblings copies MAIN + .ping + any _direct/_outrig/_ambient
+            // siblings from srcDir, renamed under destStem. Siblings with missing
+            // base files are not present in the common case (the selected .wav IS
+            // the MAIN), so this mirrors Export IR precisely.
+            auto targetFile = copyIRSetWithSiblings (src, targetDir, destStem);
+            if (targetFile != juce::File() && targetFile.existsAsFile())
             {
-                PingProcessor::fixImportedFilePermissions (targetFile);
-
-                auto srcSidecar = src.getSiblingFile (
-                    src.getFileNameWithoutExtension() + ".ping");
-                if (srcSidecar.existsAsFile())
-                {
-                    auto destSidecar = targetFile.getSiblingFile (
-                        targetFile.getFileNameWithoutExtension() + ".ping");
-                    srcSidecar.copyFileTo (destSidecar);
-                    PingProcessor::fixImportedFilePermissions (destSidecar);
-                }
-
                 pingProcessor.getIRManager().refresh();
                 refreshIRList();
 

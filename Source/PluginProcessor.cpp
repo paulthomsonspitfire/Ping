@@ -2158,15 +2158,17 @@ void PingProcessor::loadMicPathFromFile (const juce::File& baseIRFile, MicPath p
                       /*deferConvolverLoad=*/false, path);
 }
 
-juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
+juce::File PingProcessor::writeSynthIRSetToDirectory (const juce::File& destDir, const juce::String& stem)
 {
     if (currentIRBuffer.getNumSamples() == 0) return {};
-    juce::String safeName = name.trim();
+    if (destDir == juce::File()) return {};
+
+    juce::String safeName = stem.trim();
     if (safeName.isEmpty()) return {};
     safeName = safeName.replaceCharacters ("/\\:*?\"<>|", "----------");
-    auto folder = IRManager::getIRFolder();
-    if (! folder.exists())
-        folder.createDirectory();
+
+    if (! destDir.exists())
+        destDir.createDirectory();
 
     // Writes a 4-channel 24-bit WAV of `src` to `dest`. Returns true on success.
     auto writeBufferAsWav = [] (const juce::File& dest,
@@ -2190,7 +2192,7 @@ juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
     };
 
     // ── MAIN path ────────────────────────────────────────────────────────────
-    auto file = folder.getChildFile (safeName + ".wav");
+    auto file = destDir.getChildFile (safeName + ".wav");
     if (! writeBufferAsWav (file, currentIRBuffer, currentIRSampleRate))
         return {};
     writeIRSynthParamsSidecar (file, lastIRSynthParams);
@@ -2203,16 +2205,21 @@ juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
     // output, which is what we want to persist), so we save the raw buffers
     // captured by loadIRFromBuffer. Skip any path whose raw buffer is empty.
     if (rawSynthDirectBuffer.getNumSamples() > 0)
-        writeBufferAsWav (folder.getChildFile (safeName + "_direct.wav"),
+        writeBufferAsWav (destDir.getChildFile (safeName + "_direct.wav"),
                           rawSynthDirectBuffer, rawSynthSampleRate);
     if (rawSynthOutrigBuffer.getNumSamples() > 0)
-        writeBufferAsWav (folder.getChildFile (safeName + "_outrig.wav"),
+        writeBufferAsWav (destDir.getChildFile (safeName + "_outrig.wav"),
                           rawSynthOutrigBuffer, rawSynthSampleRate);
     if (rawSynthAmbientBuffer.getNumSamples() > 0)
-        writeBufferAsWav (folder.getChildFile (safeName + "_ambient.wav"),
+        writeBufferAsWav (destDir.getChildFile (safeName + "_ambient.wav"),
                           rawSynthAmbientBuffer, rawSynthSampleRate);
 
     return file;
+}
+
+juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
+{
+    return writeSynthIRSetToDirectory (IRManager::getIRFolder(), name);
 }
 
 void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth, bool deferConvolverLoad, MicPath path)
