@@ -1252,39 +1252,32 @@ void IRSynthComponent::buttonClicked (juce::Button* b)
         onDone();
     else if (b == &saveIRButton && onSaveIRFn)
     {
-        juce::String name = irCombo.getText().trim();
-        if (name.endsWith ("*"))
-            name = name.dropLastCharacters (1).trim();
-        if (name.isEmpty())
-            return;
+        juce::String current = irCombo.getText().trim();
+        if (current.endsWith ("*"))
+            current = current.dropLastCharacters (1).trim();
+        if (current.isEmpty())
+            current = "My IR";
 
-        if (dirty)
-        {
-            auto* aw = new juce::AlertWindow ("Save IR As", "Enter a name for the IR:",
-                                              juce::MessageBoxIconType::NoIcon, this);
-            aw->addTextEditor ("irName", name, "Name:");
-            aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
-            aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        auto* aw = new juce::AlertWindow ("Save IR As", "Enter a name for the IR:",
+                                          juce::MessageBoxIconType::NoIcon, this);
+        aw->addTextEditor ("irName", current, "Name:");
+        aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
-            aw->enterModalState (true, juce::ModalCallbackFunction::create (
-                [this, aw] (int result)
+        aw->enterModalState (true, juce::ModalCallbackFunction::create (
+            [this, aw] (int result)
+            {
+                if (result == 1)
                 {
-                    if (result == 1)
+                    juce::String saveName = aw->getTextEditorContents ("irName").trim();
+                    if (saveName.isNotEmpty() && onSaveIRFn)
                     {
-                        juce::String saveName = aw->getTextEditorContents ("irName").trim();
-                        if (saveName.isNotEmpty() && onSaveIRFn)
-                        {
-                            onSaveIRFn (saveName);
-                            dirty = false;
-                        }
+                        onSaveIRFn (saveName);
+                        dirty = false;
                     }
-                    delete aw;
-                }), true);
-        }
-        else
-        {
-            onSaveIRFn (name);
-        }
+                }
+                delete aw;
+            }), true);
     }
 }
 
@@ -1304,6 +1297,10 @@ void IRSynthComponent::comboBoxChanged (juce::ComboBox* combo)
 
 void IRSynthComponent::setIRList (const juce::Array<IRManager::IREntry>& entries)
 {
+    // Preserve the currently displayed text across list rebuilds. ComboBox::clear()
+    // with dontSendNotification clears items but not the text field; the caller
+    // decides what (if anything) to display afterwards via setSelectedIRDisplayName.
+    const juce::String previousText = irCombo.getText();
     irCombo.clear (juce::dontSendNotification);
 
     bool factoryHeaderAdded = false;
@@ -1349,7 +1346,7 @@ void IRSynthComponent::setIRList (const juce::Array<IRManager::IREntry>& entries
     }
 
     irCombo.setEditableText (true);
-    irCombo.setText ("", juce::dontSendNotification);
+    irCombo.setText (previousText, juce::dontSendNotification);
 }
 
 void IRSynthComponent::setSelectedIRDisplayName (const juce::String& name)
