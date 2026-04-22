@@ -486,6 +486,30 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     tailConvolver.reset();
     tailConvolver.prepare (spec);
 
+    // All convolvers were just reset + re-prepared — they are back to unity pass-through
+    // until loadImpulseResponse fires again via the callAsync posted at the end of this
+    // function. Clear the per-path IR-loaded gates so processBlock's MAIN / Direct /
+    // Outrig / Ambient strips don't feed a full-level pass-through signal into the wet
+    // bus during the window between here and the async IR reload completing. Each flag
+    // will be re-asserted by its corresponding loadIRFromBuffer call, which also arms
+    // irLoadFadeSamplesRemaining for the wet fade-in that masks the NUPC partial-swap.
+    // Without this, a re-prepare (sample-rate change, PDC recompute, Logic track-switch
+    // after transport stop) would produce a brief loud burst of unfiltered sum-of-LR
+    // audio instead of the silent-wet + 1 s fade-in the initial-load path provides.
+    mainIRLoaded   .store (false);
+    directIRLoaded .store (false);
+    outrigIRLoaded .store (false);
+    ambientIRLoaded.store (false);
+
+    // Reset the per-path convolver-ready trackers too. After reset() the convolvers
+    // are back to unity pass-through with no real engine installed, so their next
+    // readiness transition (once the deferred loadIRFromBuffer fires from the
+    // callAsync at the end of prepareToPlay) will correctly re-arm the wet fade.
+    mainConvPrevReady   .store (false);
+    directConvPrevReady .store (false);
+    outrigConvPrevReady .store (false);
+    ambientConvPrevReady.store (false);
+
     erLevelSmoothed.reset (sampleRate, 0.02);
     tailLevelSmoothed.reset (sampleRate, 0.02);
 
@@ -1574,14 +1598,88 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         buffer.clear();
         const float trueStereoWetGain = 2.0f;
 
+        // ── Convolver readiness gating & fade re-arm ────────────────────────
+        // juce::dsp::Convolution defaults to a unity (pass-through) IR until the NUPC
+        // background thread kicked off by loadImpulseResponse() has actually published
+        // a real engine — typically tens to hundreds of ms after loadImpulseResponse()
+        // returns. Two independent problems follow from that:
+        //
+        //   1. If we open the wet path the moment loadImpulseResponse() returns
+        //      (checking only mainIRLoaded etc.), the wet bus contains pass-through
+        //      of the post-predelay dry signal at high gain (trueStereoWetGain = 2.0,
+        //      summed across 4–8 mono convolvers) until JUCE swaps in the real IR.
+        //      When that swap happens, the audible content changes abruptly — click.
+        //
+        //   2. The irLoadFadeSamplesRemaining wet-bus fade is armed at loadImpulseResponse()
+        //      time. For a newly-instantiated plugin the fade may have already expired
+        //      (or be near full gain) by the moment the convolvers are actually ready,
+        //      so the step from "wet bus muted because we're gating on readiness" to
+        //      "wet bus at full real-convolved gain" is not covered by the fade.
+        //
+        // Fix: (a) AND all of a path's convolvers into a single readiness flag (every
+        // convolver must have a real IR, otherwise summing mixes real output with unity
+        // pass-through from the laggards); (b) when a path transitions not-ready → ready
+        // between two blocks, re-arm irLoadFadeSamplesRemaining to full so the real
+        // signal ramps in smoothly. getCurrentIRSize() returns 0 until the real engine
+        // is installed; it's safe to read from the audio thread because currentEngine
+        // is only mutated from this same thread inside processSamples → installPendingEngine.
+        const bool mainReady = tsErConvLL  .getCurrentIRSize() > 0
+                            && tsErConvRL  .getCurrentIRSize() > 0
+                            && tsErConvLR  .getCurrentIRSize() > 0
+                            && tsErConvRR  .getCurrentIRSize() > 0
+                            && tsTailConvLL.getCurrentIRSize() > 0
+                            && tsTailConvRL.getCurrentIRSize() > 0
+                            && tsTailConvLR.getCurrentIRSize() > 0
+                            && tsTailConvRR.getCurrentIRSize() > 0;
+        const bool directReady = tsDirectConvLL.getCurrentIRSize() > 0
+                              && tsDirectConvRL.getCurrentIRSize() > 0
+                              && tsDirectConvLR.getCurrentIRSize() > 0
+                              && tsDirectConvRR.getCurrentIRSize() > 0;
+        const bool outrigReady = tsOutrigErConvLL  .getCurrentIRSize() > 0
+                              && tsOutrigErConvRL  .getCurrentIRSize() > 0
+                              && tsOutrigErConvLR  .getCurrentIRSize() > 0
+                              && tsOutrigErConvRR  .getCurrentIRSize() > 0
+                              && tsOutrigTailConvLL.getCurrentIRSize() > 0
+                              && tsOutrigTailConvRL.getCurrentIRSize() > 0
+                              && tsOutrigTailConvLR.getCurrentIRSize() > 0
+                              && tsOutrigTailConvRR.getCurrentIRSize() > 0;
+        const bool ambientReady = tsAmbErConvLL  .getCurrentIRSize() > 0
+                               && tsAmbErConvRL  .getCurrentIRSize() > 0
+                               && tsAmbErConvLR  .getCurrentIRSize() > 0
+                               && tsAmbErConvRR  .getCurrentIRSize() > 0
+                               && tsAmbTailConvLL.getCurrentIRSize() > 0
+                               && tsAmbTailConvRL.getCurrentIRSize() > 0
+                               && tsAmbTailConvLR.getCurrentIRSize() > 0
+                               && tsAmbTailConvRR.getCurrentIRSize() > 0;
+
+        const bool mainJustReady    = mainReady    && ! mainConvPrevReady   .load (std::memory_order_relaxed);
+        const bool directJustReady  = directReady  && ! directConvPrevReady .load (std::memory_order_relaxed);
+        const bool outrigJustReady  = outrigReady  && ! outrigConvPrevReady .load (std::memory_order_relaxed);
+        const bool ambientJustReady = ambientReady && ! ambientConvPrevReady.load (std::memory_order_relaxed);
+
+        // If any active path's convolvers transitioned to ready this block, arm (or
+        // re-arm, taking the max with whatever is already counting down) the wet fade.
+        // Inactive paths don't need the fade — their contribution is gated off anyway.
+        const bool anyActivePathJustReady = (mainOnRaw    && mainJustReady)
+                                         || (directOnRaw  && directJustReady)
+                                         || (outrigOnRaw  && outrigJustReady)
+                                         || (ambientOnRaw && ambientJustReady);
+        if (anyActivePathJustReady)
+        {
+            const int cur = irLoadFadeSamplesRemaining.load (std::memory_order_relaxed);
+            if (cur < kIRLoadFadeSamples)
+                irLoadFadeSamplesRemaining.store (kIRLoadFadeSamples, std::memory_order_relaxed);
+        }
+
+        mainConvPrevReady   .store (mainReady,    std::memory_order_relaxed);
+        directConvPrevReady .store (directReady,  std::memory_order_relaxed);
+        outrigConvPrevReady .store (outrigReady,  std::memory_order_relaxed);
+        ambientConvPrevReady.store (ambientReady, std::memory_order_relaxed);
+
         // ── MAIN ────────────────────────────────────────────────────────────
         float mainPkL = 0.f, mainPkR = 0.f;
         float erPkL = 0.f, erPkR = 0.f, tailPkL = 0.f, tailPkR = 0.f;
-        // Gated on mainIRLoaded: juce::dsp::Convolution defaults to a unity IR
-        // (pass-through) before loadImpulseResponse(); without this gate, enabling
-        // MAIN before any IR exists would feed the post-predelay dry signal straight
-        // into the wet bus.
-        if (mainOnRaw && mainIRLoaded.load())
+        if (mainOnRaw && mainIRLoaded.load() && mainReady)
         {
             juce::AudioBuffer<float> lEr (1, numSamples), rEr (1, numSamples);
             juce::AudioBuffer<float> lTail (1, numSamples), rTail (1, numSamples);
@@ -1684,9 +1782,11 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         updatePeak (mainPeakR,      mainPkR);
 
         // ── DIRECT ──────────────────────────────────────────────────────────
-        // Gated on directIRLoaded — see MAIN block above for rationale.
+        // Gated on directIRLoaded AND directReady (precomputed above from all 4 direct
+        // convolvers' getCurrentIRSize() > 0) — see the readiness block above for
+        // rationale.
         float directPkL = 0.f, directPkR = 0.f;
-        if (directOnRaw && directIRLoaded.load())
+        if (directOnRaw && directIRLoaded.load() && directReady)
         {
             juce::AudioBuffer<float> dL (1, numSamples), dR (1, numSamples);
             runFour (tsDirectConvLL, tsDirectConvRL, tsDirectConvLR, tsDirectConvRR, dL, dR);
@@ -1720,9 +1820,9 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         updatePeak (directPeakR, directPkR);
 
         // ── OUTRIG ──────────────────────────────────────────────────────────
-        // Gated on outrigIRLoaded — see MAIN block above for rationale.
+        // Gated on outrigIRLoaded AND outrigReady — see the readiness block above.
         float outrigPkL = 0.f, outrigPkR = 0.f;
-        if (outrigOnRaw && outrigIRLoaded.load())
+        if (outrigOnRaw && outrigIRLoaded.load() && outrigReady)
         {
             juce::AudioBuffer<float> oEL (1, numSamples), oER (1, numSamples);
             juce::AudioBuffer<float> oTL (1, numSamples), oTR (1, numSamples);
@@ -1760,9 +1860,9 @@ void PingProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBu
         updatePeak (outrigPeakR, outrigPkR);
 
         // ── AMBIENT ─────────────────────────────────────────────────────────
-        // Gated on ambientIRLoaded — see MAIN block above for rationale.
+        // Gated on ambientIRLoaded AND ambientReady — see the readiness block above.
         float ambientPkL = 0.f, ambientPkR = 0.f;
-        if (ambientOnRaw && ambientIRLoaded.load())
+        if (ambientOnRaw && ambientIRLoaded.load() && ambientReady)
         {
             juce::AudioBuffer<float> aEL (1, numSamples), aER (1, numSamples);
             juce::AudioBuffer<float> aTL (1, numSamples), aTR (1, numSamples);
@@ -2158,15 +2258,17 @@ void PingProcessor::loadMicPathFromFile (const juce::File& baseIRFile, MicPath p
                       /*deferConvolverLoad=*/false, path);
 }
 
-juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
+juce::File PingProcessor::writeSynthIRSetToDirectory (const juce::File& destDir, const juce::String& stem)
 {
     if (currentIRBuffer.getNumSamples() == 0) return {};
-    juce::String safeName = name.trim();
+    if (destDir == juce::File()) return {};
+
+    juce::String safeName = stem.trim();
     if (safeName.isEmpty()) return {};
     safeName = safeName.replaceCharacters ("/\\:*?\"<>|", "----------");
-    auto folder = IRManager::getIRFolder();
-    if (! folder.exists())
-        folder.createDirectory();
+
+    if (! destDir.exists())
+        destDir.createDirectory();
 
     // Writes a 4-channel 24-bit WAV of `src` to `dest`. Returns true on success.
     auto writeBufferAsWav = [] (const juce::File& dest,
@@ -2190,7 +2292,7 @@ juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
     };
 
     // ── MAIN path ────────────────────────────────────────────────────────────
-    auto file = folder.getChildFile (safeName + ".wav");
+    auto file = destDir.getChildFile (safeName + ".wav");
     if (! writeBufferAsWav (file, currentIRBuffer, currentIRSampleRate))
         return {};
     writeIRSynthParamsSidecar (file, lastIRSynthParams);
@@ -2203,16 +2305,21 @@ juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
     // output, which is what we want to persist), so we save the raw buffers
     // captured by loadIRFromBuffer. Skip any path whose raw buffer is empty.
     if (rawSynthDirectBuffer.getNumSamples() > 0)
-        writeBufferAsWav (folder.getChildFile (safeName + "_direct.wav"),
+        writeBufferAsWav (destDir.getChildFile (safeName + "_direct.wav"),
                           rawSynthDirectBuffer, rawSynthSampleRate);
     if (rawSynthOutrigBuffer.getNumSamples() > 0)
-        writeBufferAsWav (folder.getChildFile (safeName + "_outrig.wav"),
+        writeBufferAsWav (destDir.getChildFile (safeName + "_outrig.wav"),
                           rawSynthOutrigBuffer, rawSynthSampleRate);
     if (rawSynthAmbientBuffer.getNumSamples() > 0)
-        writeBufferAsWav (folder.getChildFile (safeName + "_ambient.wav"),
+        writeBufferAsWav (destDir.getChildFile (safeName + "_ambient.wav"),
                           rawSynthAmbientBuffer, rawSynthSampleRate);
 
     return file;
+}
+
+juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
+{
+    return writeSynthIRSetToDirectory (IRManager::getIRFolder(), name);
 }
 
 void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth, bool deferConvolverLoad, MicPath path)
@@ -2283,7 +2390,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             synthesizedIRSampleRate = bufferSampleRate;
         }
 
-        // Auto-trim trailing silence: scan for last sample above -80 dB, add 200 ms safety tail.
+        // Auto-trim trailing silence: scan for last sample above -90 dB, add 500 ms safety tail.
         // Must run BEFORE rawSynthBuffer is saved so the stored raw copy is already trimmed.
         {
             const int nSamples = buffer.getNumSamples();
@@ -2297,7 +2404,10 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                     peak = juce::jmax (peak, std::abs (p[i]));
             }
 
-            const float threshold = juce::jmin (peak * 1.0e-4f, 1.0e-4f); // −80 dB below peak, capped at −80 dBFS absolute
+            // 10^(-90/20) ≈ 3.162e-5 — used both as (peak × factor) relative threshold
+            // and as an absolute −90 dBFS floor cap (for synth IRs whose peak > 1.0).
+            constexpr float kSilenceFactor = 3.1622777e-5f;
+            const float threshold = juce::jmin (peak * kSilenceFactor, kSilenceFactor);
 
             int lastSignificant = 0;
             for (int ch = 0; ch < nCh; ++ch)
@@ -2313,7 +2423,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 }
             }
 
-            const int safetyTail = (int) (0.2 * bufferSampleRate); // 200 ms
+            const int safetyTail = (int) (0.5 * bufferSampleRate); // 500 ms (also fade length)
             const int minLen     = (int) (0.3 * bufferSampleRate); // 300 ms floor
             int newLen = juce::jmin (lastSignificant + safetyTail + 1, nSamples);
             newLen     = juce::jmax (newLen, minLen);
@@ -2324,10 +2434,28 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 for (int ch = 0; ch < nCh; ++ch)
                     trimmed.copyFrom (ch, 0, buffer, ch, 0, newLen);
                 buffer = std::move (trimmed);
+
+                // End-fade: cosine fade over the last safetyTail (500 ms) samples to smooth
+                // the hard cut-point introduced above. Applied ONLY when we actually truncated
+                // so reloading an already-trimmed buffer is idempotent (no compounding cos²
+                // attenuation that would become audible under heavy output boost).
+                const int curLen    = buffer.getNumSamples();
+                const int curCh     = buffer.getNumChannels();
+                const int fadeSamps = juce::jmin (safetyTail, curLen);
+                const int fadeStart = curLen - fadeSamps;
+                for (int ch = 0; ch < curCh; ++ch)
+                {
+                    float* p = buffer.getWritePointer (ch);
+                    for (int i = fadeStart; i < curLen; ++i)
+                    {
+                        const float t = (float)(i - fadeStart) / (float)juce::jmax (fadeSamps, 1);
+                        p[i] *= 0.5f * (1.0f + std::cos (juce::MathConstants<float>::pi * t));
+                    }
+                }
             }
         }
 
-        // save raw copy before any transforms (silence already trimmed) into the right slot
+        // save raw copy before any transforms (silence already trimmed + faded) into the right slot
         if      (path == MicPath::Main)    rawSynthBuffer         = buffer;
         else if (path == MicPath::Outrig)  rawSynthOutrigBuffer   = buffer;
         else if (path == MicPath::Ambient) rawSynthAmbientBuffer  = buffer;
@@ -2420,7 +2548,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
     // allocated at 8×RT60 (up to 60 s) but contain only 8–15 s of actual reverb signal.
     // File-loaded factory IRs skip the fromSynth silence-trim block above, so without this
     // they arrive with a huge silent tail that makes the NUPC background thread unable to
-    // keep up at small buffer sizes (persistent glitching). Threshold: −80 dB below peak.
+    // keep up at small buffer sizes (persistent glitching). Threshold: −90 dB below peak.
     // Synth IRs are already trimmed in the fromSynth block; this is a fast no-op for them.
     {
         const int nSamples = buffer.getNumSamples();
@@ -2434,7 +2562,10 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
                 peak = juce::jmax (peak, std::abs (p[i]));
         }
 
-        const float threshold = juce::jmin (peak * 1.0e-4f, 1.0e-4f); // −80 dB below peak, capped at −80 dBFS absolute
+        // 10^(-90/20) ≈ 3.162e-5 — used both as (peak × factor) relative threshold
+        // and as an absolute −90 dBFS floor cap (for synth IRs whose peak > 1.0).
+        constexpr float kSilenceFactor = 3.1622777e-5f;
+        const float threshold = juce::jmin (peak * kSilenceFactor, kSilenceFactor);
 
         int lastSignificant = 0;
         for (int ch = 0; ch < nCh; ++ch)
@@ -2450,7 +2581,7 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             }
         }
 
-        const int safetyTail = (int) (0.2 * bufferSampleRate); // 200 ms
+        const int safetyTail = (int) (0.5 * bufferSampleRate); // 500 ms (also fade length)
         const int minLen     = (int) (0.3 * bufferSampleRate); // 300 ms floor
         int newLen = juce::jmin (lastSignificant + safetyTail + 1, nSamples);
         newLen     = juce::jmax (newLen, minLen);
@@ -2461,11 +2592,13 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
             for (int ch = 0; ch < nCh; ++ch)
                 trimmed.copyFrom (ch, 0, buffer, ch, 0, newLen);
             buffer = std::move (trimmed);
-        }
 
-        // End-fade: apply a cosine fade over the last safetyTail (200 ms) samples so the IR
-        // decays smoothly to silence rather than ending abruptly at the −80 dB cut point.
-        {
+            // End-fade: cosine fade over the last safetyTail (500 ms) samples to smooth
+            // the hard cut-point introduced above. Applied ONLY when we actually truncated —
+            // reloading an already-trimmed IR (factory preset, user-saved WAV, rawSynthBuffer)
+            // hits newLen == nSamples, skips both this branch and the fade, and therefore
+            // produces a bit-identical buffer on every reload. Without this gate the fade
+            // would compound (cos², cos³, …) and become audible under heavy output boost.
             const int curLen    = buffer.getNumSamples();
             const int curCh     = buffer.getNumChannels();
             const int fadeSamps = juce::jmin (safetyTail, curLen);
@@ -2662,6 +2795,8 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("outrigRang",   p.outrig_rangle);
     ir->setAttribute ("outrigHeight", p.outrig_height);
     ir->setAttribute ("outrigPat",    juce::String (p.outrig_pattern));
+    ir->setAttribute ("outrigLtilt",  p.outrig_ltilt);
+    ir->setAttribute ("outrigRtilt",  p.outrig_rtilt);
 
     ir->setAttribute ("ambientLx",     p.ambient_lx);
     ir->setAttribute ("ambientLy",     p.ambient_ly);
@@ -2671,6 +2806,14 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("ambientRang",   p.ambient_rangle);
     ir->setAttribute ("ambientHeight", p.ambient_height);
     ir->setAttribute ("ambientPat",    juce::String (p.ambient_pattern));
+    ir->setAttribute ("ambientLtilt",  p.ambient_ltilt);
+    ir->setAttribute ("ambientRtilt",  p.ambient_rtilt);
+
+    // 3D mic-tilt elevations (radians). MAIN's L/R tilts plus the rigid
+    // Decca array tilt. See IRSynthEngine::directivityCos and the
+    // "3D microphone polar patterns + tilt" section in CLAUDE.md.
+    ir->setAttribute ("miclTilt",     p.micl_tilt);
+    ir->setAttribute ("micrTilt",     p.micr_tilt);
 
     // Decca Tree capture mode (see IRSynthEngine.h). Older sidecars that
     // predate this feature fall back to the IRSynthParams struct defaults
@@ -2681,6 +2824,7 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("deccaAng",     p.decca_angle);
     ir->setAttribute ("deccaCtrGain", p.decca_centre_gain);
     ir->setAttribute ("deccaToeOut",  p.decca_toe_out);
+    ir->setAttribute ("deccaTilt",    p.decca_tilt);
 }
 
 static void synthesizedIRToXml (const juce::AudioBuffer<float>& buf, double sampleRate, juce::XmlElement& elem)
@@ -2781,6 +2925,11 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.outrig_rangle  = ir->getDoubleAttribute ("outrigRang",   defaults.outrig_rangle);
     p.outrig_height  = ir->getDoubleAttribute ("outrigHeight", defaults.outrig_height);
     p.outrig_pattern = ir->getStringAttribute ("outrigPat",    juce::String (defaults.outrig_pattern)).toStdString();
+    // Pre-tilt sidecars: missing attribute → 0.0 (legacy behaviour, mic
+    // facing horizontal). Do NOT fall back to the IRSynthParams default
+    // (-π/6) — that would silently retune every old preset.
+    p.outrig_ltilt   = ir->getDoubleAttribute ("outrigLtilt",  0.0);
+    p.outrig_rtilt   = ir->getDoubleAttribute ("outrigRtilt",  0.0);
 
     p.ambient_lx     = ir->getDoubleAttribute ("ambientLx",     defaults.ambient_lx);
     p.ambient_ly     = ir->getDoubleAttribute ("ambientLy",     defaults.ambient_ly);
@@ -2790,6 +2939,12 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.ambient_rangle = ir->getDoubleAttribute ("ambientRang",   defaults.ambient_rangle);
     p.ambient_height = ir->getDoubleAttribute ("ambientHeight", defaults.ambient_height);
     p.ambient_pattern = ir->getStringAttribute ("ambientPat",   juce::String (defaults.ambient_pattern)).toStdString();
+    p.ambient_ltilt  = ir->getDoubleAttribute ("ambientLtilt",  0.0);
+    p.ambient_rtilt  = ir->getDoubleAttribute ("ambientRtilt",  0.0);
+
+    // MAIN mic 3D tilt (radians). Pre-tilt sidecars: 0.0 fallback.
+    p.micl_tilt = ir->getDoubleAttribute ("miclTilt", 0.0);
+    p.micr_tilt = ir->getDoubleAttribute ("micrTilt", 0.0);
 
     // Decca Tree capture mode (attributes absent in pre-Decca sidecars).
     p.main_decca_enabled = ir->getBoolAttribute   ("deccaOn",      defaults.main_decca_enabled);
@@ -2798,6 +2953,7 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.decca_angle        = ir->getDoubleAttribute ("deccaAng",     defaults.decca_angle);
     p.decca_centre_gain  = ir->getDoubleAttribute ("deccaCtrGain", defaults.decca_centre_gain);
     p.decca_toe_out      = ir->getDoubleAttribute ("deccaToeOut",  defaults.decca_toe_out);
+    p.decca_tilt         = ir->getDoubleAttribute ("deccaTilt",    0.0);
 
     return p;
 }
@@ -2909,6 +3065,35 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
     {
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
+
+        // Backfill missing `value` properties on parameter trees.  When a preset
+        // does not contain a particular parameter (e.g. an older preset saved
+        // before the multi-mic mixer / Plate / Bloom / Cloud / Shimmer params
+        // existed), JUCE's APVTS `updateParameterConnectionsToChildTrees`
+        // creates a child tree node with only the `id` attribute and never
+        // arms the adapter's `needsUpdate` flag — so the next call to
+        // `flushParameterValuesToValueTree` (during the next save) skips
+        // those params entirely and the saved XML again has `<PARAM id="X"/>`
+        // with no value.  The bug perpetuates: every subsequent save loses
+        // the values too.  Writing the default value into the tree node
+        // breaks the cycle: the property exists, future flushes can update
+        // it normally when the user tweaks the control, and explicit value
+        // changes (Slider/ButtonAttachment -> setValueNotifyingHost) write
+        // through correctly.
+        {
+            auto stateTree = apvts.state;
+            const juce::Identifier idProp { "id" };
+            const juce::Identifier valueProp { "value" };
+            for (int i = 0; i < stateTree.getNumChildren(); ++i)
+            {
+                auto child = stateTree.getChild (i);
+                if (child.hasProperty (valueProp)) continue;
+                auto idStr = child.getProperty (idProp).toString();
+                if (idStr.isEmpty()) continue;
+                if (auto* raw = apvts.getRawParameterValue (idStr))
+                    child.setProperty (valueProp, raw->load(), nullptr);
+            }
+        }
 
         // EQ frequency migration: if a band's gain is 0 dB (inactive), reset its
         // frequency to the current default.  Old presets had different defaults

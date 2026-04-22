@@ -22,6 +22,17 @@ struct TransducerState
        -2.35619449019,  -0.785398163397,       // OUTRIG mics: same facing
        -2.35619449019,  -0.785398163397        // AMBIENT mics: same facing
     };
+    // 3D mic-tilt elevation (radians). 0 = mic faces horizontally; negative
+    // tilts the mic downward (toward the floor / source plane). Indices 0/1
+    // (speakers) are unused — kept in the array for indexing symmetry with
+    // cx/cy/angle. Default −π/6 (≈ −30°) for all 6 mic slots matches the
+    // *_tilt defaults in IRSynthParams.
+    double tilt[8] = {
+        0.0, 0.0,                              // speakers (unused)
+       -0.5235987755982988, -0.5235987755982988, // MAIN  L/R: −30°
+       -0.5235987755982988, -0.5235987755982988, // OUTRIG L/R: −30°
+       -0.5235987755982988, -0.5235987755982988  // AMBIENT L/R: −30°
+    };
 
     // Decca Tree capture mode (see Source/IRSynthEngine.h). These fields hold
     // the tree-centre position and face angle used when FloorPlanComponent's
@@ -31,6 +42,9 @@ struct TransducerState
     double deccaCx    = 0.5;
     double deccaCy    = 0.65;
     double deccaAngle = -1.5707963267948966; // -π/2: forward = low-y (source stage)
+    // Decca tree elevation tilt (rigid array — single value applied to L/C/R).
+    // Default −π/6 (≈ −30°) matches IRSynthParams::decca_tilt.
+    double deccaTilt  = -0.5235987755982988;
 };
 
 /**

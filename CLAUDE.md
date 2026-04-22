@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.7.1 (see `CMakeLists.txt`)
+**Current version:** 2.7.8 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -144,7 +144,7 @@ Paste the printed `onset_offset` and `golden_iLL[30]` values into `IR_11` in `Pi
 - **`SimpleAllpass` struct must stay in sync** — The `effLen` field (default 0 = use `buf.size()`) must be present in both `PingDSPTests.cpp` and `PluginProcessor.h`. Plate stages set `effLen` each block via `plateSize` (14× alloc, range 0.5–14.0). Bloom stages also now set `effLen` each block via `bloomSize` (2× alloc, range 0.25–2.0). Plate buffers at 14× base primes; Bloom buffers at 2× base primes.
 - **IR_10 onset detection** — IR_10 measures RT60 by scanning the IR for the first sample above a noise floor threshold (`onsetIdx`), then scanning forward from that point for the first window where energy drops 60 dB below peak. Without onset detection, the scan started at i=0 and the 10 ms smoothing window (480 samples at 48 kHz) could end before the direct-path arrival, finding silence and setting measuredRT60=0. Engine changes that shift the onset (e.g. changing `sz`/`rz` heights) move the onset but the scan self-corrects automatically. Do not revert IR_10 to a fixed-start scan.
 - **IR_11 golden onset index** — currently 482 for the 10×8×5 m small-room params with speaker at 1 m / mic at 3 m. The onset shifted from 371 to 482 when `sz`/`rz` were changed from `He × 0.55` to fixed physical heights. If the engine geometry changes again, re-run `./PingTests "[capture]" -s` and paste the new values (see Golden regression lock section above).
-- **IR_13 silence-trim precondition** — verifies the last 500 ms of the full-length synthIR output is below −60 dB of peak. The actual trim threshold in `loadIRFromBuffer` is `jmin(peak × 1e-4, 1e-4)` (−80 dB below peak, capped at −80 dBFS absolute); −60 dB is a conservative precondition check sufficient to catch FDN decay regressions without being brittle.
+- **IR_13 silence-trim precondition** — verifies the last 500 ms of the full-length synthIR output is below −60 dB of peak. The actual trim threshold in `loadIRFromBuffer` is `jmin(peak × 3.162e-5, 3.162e-5)` (−90 dB below peak, capped at −90 dBFS absolute); −60 dB is a conservative precondition check sufficient to catch FDN decay regressions without being brittle.
 
 ---
 
@@ -377,12 +377,12 @@ Displayed in the bottom strip under the Tail Rate knob (`tailRateSlider.getX()`)
 
 `PluginProcessor` stores a **raw (pre-processing) copy** of the last synthesised buffer. When `loadIRFromBuffer` is called with `fromSynth=true`, two steps run in order inside the `fromSynth` block before any other transforms:
 
-**Step 1 — Auto-trim trailing silence.** `synthIR()` always allocates `8 × max_RT60` (up to 30 s), but the reverb signal decays to below −80 dB well before the end. The trim scans all channels from the end backwards for the last sample above the threshold, then keeps that point plus a 200 ms safety tail (minimum 300 ms), then applies a cosine end-fade over those final 200 ms so the IR decays smoothly to silence. This runs *before* `rawSynthBuffer` is saved so the stored copy is already silence-free.
+**Step 1 — Auto-trim trailing silence.** `synthIR()` always allocates `8 × max_RT60` (up to 30 s), but the reverb signal decays to below −90 dB well before the end. The trim scans all channels from the end backwards for the last sample above the threshold, then keeps that point plus a 500 ms safety tail (minimum 300 ms), then applies a cosine end-fade over those final 500 ms **only when it actually truncated** so the IR decays smoothly to silence at the new cut-point. This runs *before* `rawSynthBuffer` is saved so the stored copy is already trimmed and faded.
 
 ```cpp
-// threshold = jmin(peak × 1e-4, 1e-4)  — −80 dB below peak, capped at −80 dBFS absolute
-// newLen    = lastSignificant + 200 ms safety tail, min 300 ms
-// end-fade  = cosine fade applied over the final 200 ms of newLen
+// threshold = jmin(peak × 3.162e-5, 3.162e-5)  — −90 dB below peak, capped at −90 dBFS absolute
+// newLen    = lastSignificant + 500 ms safety tail, min 300 ms
+// end-fade  = cosine fade applied over the final 500 ms of newLen — ONLY when newLen < nSamples
 ```
 
 **Step 2 — Save raw copy.** After silence trim, the buffer is saved as `rawSynthBuffer` before any reversal/trim/stretch/decay transforms:
@@ -1011,12 +1011,12 @@ Steps applied in order:
 1. **Reverse** (if `reverse == true`) — sample order flipped per channel. Reverse Trim then skips `trimFrac × length` samples from the start of the reversed IR.
 2. **Stretch** — linear-interpolation time-scale to `stretchFactor × originalLength`.
 3. **Decay envelope** — exponential fade: `env(t) = exp(−decayParam × 6 × t)`, where `decayParam = 1 − UI_decay`.
-4. **Trailing silence trim** — applied to **all** IRs (synth and file-based alike) after the decay envelope and before expansion. Scans all channels from the end to find the last sample above the threshold, keeps that point plus a 200 ms safety tail (minimum 300 ms), then applies a cosine end-fade over those final 200 ms so the IR decays smoothly to silence rather than cutting off abruptly. This is critical for factory IRs that were synthesised and saved as `.wav` files: `synthIR()` allocates `8 × max_RT60` (up to 60 s), but the actual reverb signal occupies only 8–15 s. Without trimming, the 8 NUPC tail convolvers each hold a 40–60 s IR; the background FFT thread cannot keep up at small buffer sizes (128–256 samples), causing persistent crackle on large/long factory presets. The trim brings factory file IRs down to the same effective length as freshly synthesised ones (which are trimmed in the `fromSynth` path before `rawSynthBuffer` is saved).
+4. **Trailing silence trim** — applied to **all** IRs (synth and file-based alike) after the decay envelope and before expansion. Scans all channels from the end to find the last sample above the threshold, keeps that point plus a 500 ms safety tail (minimum 300 ms), then applies a cosine end-fade over those final 500 ms **only when it actually truncated** so the IR decays smoothly to silence at the new cut-point. This is critical for factory IRs that were synthesised and saved as `.wav` files: `synthIR()` allocates `8 × max_RT60` (up to 60 s), but the actual reverb signal occupies only 8–15 s. Without trimming, the 8 NUPC tail convolvers each hold a 40–60 s IR; the background FFT thread cannot keep up at small buffer sizes (128–256 samples), causing persistent crackle on large/long factory presets. The trim brings factory file IRs down to the same effective length as freshly synthesised ones (which are trimmed in the `fromSynth` path before `rawSynthBuffer` is saved). The truncate-gated fade guarantees reload idempotency — see the "Trailing silence is trimmed from ALL IRs" Key Design Decision for the full reasoning.
 
 ```cpp
-// threshold = jmin(peak × 1e-4, 1e-4)  — −80 dB below peak, capped at −80 dBFS absolute
-// newLen    = lastSignificant + 200 ms safety tail, min 300 ms
-// end-fade  = cosine fade applied over the final 200 ms of newLen
+// threshold = jmin(peak × 3.162e-5, 3.162e-5)  — −90 dB below peak, capped at −90 dBFS absolute
+// newLen    = lastSignificant + 500 ms safety tail, min 300 ms
+// end-fade  = cosine fade applied over the final 500 ms of newLen — ONLY when newLen < nSamples
 ```
 
 5. **Mono/stereo → 4-channel expansion** (file IRs only, skipped for synth IRs which arrive as 4-channel) — a 2-channel stereo (or 1-channel mono) buffer is padded to 4 channels: iLL = ch0, iRR = ch1 (or ch0 for mono), cross-channels iRL/iLR zeroed. The two non-zero channels are scaled ×0.5 (cancels the `trueStereoWetGain = 2.0f` in `processBlock`). An additional **−15 dB** scalar (`juce::Decibels::decibelsToGain(-15.0f)`) is applied to the whole expanded buffer to compensate for the observed level excess of file-based IRs relative to synthesised IRs. Synth IRs bypass this block entirely because they arrive with `numCh == 4`.
@@ -1411,6 +1411,116 @@ Loading uses `defaults.*` fallbacks, so older sidecars load cleanly. IR_11, IR_1
 
 ---
 
+## 3D microphone polar patterns + tilt (v2.7.6)
+
+### What it does
+
+Replaces the engine's previous 2D azimuth-only directivity calculation with a full 3D direction-cosine model. Every reflection now contributes to mic gain via the spherical law of cosines between the source direction (azimuth + elevation) and the mic's facing axis (azimuth + elevation). A new **tilt** parameter sets each mic pair's elevation in radians (`0` = horizontal, negative = pointing down toward the source plane, positive = pointing up). MAIN, OUTRIG, AMBIENT, and DIRECT all expose tilt; the rigid Decca tree exposes a single shared tilt for all three of its mics.
+
+The motivation was that mics in real recording sessions are almost never aimed straight horizontally — orchestral mains hang above the stage and tilt down ~30° toward the section. With 2D directivity, raising or lowering a mic above the source plane only changed the path length, not the polar response, so off-axis high-frequency rolloff was missing for any vertically-displaced source.
+
+### Math (`directivityCos`)
+
+```cpp
+double IRSynthEngine::directivityCos (double az, double el,
+                                      double faceAzimuth, double faceElevation) noexcept
+{
+    return std::sin(el) * std::sin(faceElevation)
+         + std::cos(el) * std::cos(faceElevation) * std::cos(az - faceAzimuth);
+}
+```
+
+Returns `cos(theta)` where `theta` is the 3D angle between the unit source-direction vector and the unit mic-facing vector. Substituted directly into `micG`'s polar formula:
+
+```cpp
+double IRSynthEngine::micG (int band, const std::string& pat, double cosTheta)
+{
+    const auto& mic = getMIC();
+    auto it = mic.find(pat);
+    if (it == mic.end()) return 1.0;
+    const double o = it->second[band].first;
+    const double d = it->second[band].second;
+    return std::max(0.0, o + d * cosTheta);   // omni + directional × cos(theta)
+}
+```
+
+The previous signature was `micG(band, pat, refAng, micFaceAngle)` and computed `cos(refAng - micFaceAngle)` internally. The 2D version is now mathematically a special case of the 3D version with `el = faceElevation = 0`.
+
+### Hoisted per-reflection (not per-band)
+
+Inside `calcRefs`, `cosTh3D` is computed **once per reflection** before the per-band loop:
+
+```cpp
+double az = std::atan2(iy - ry, ix - rx);
+const double hDist   = std::sqrt((ix - rx) * (ix - rx) + (iy - ry) * (iy - ry));
+const double el      = std::atan2(iz - rz, std::max(hDist, 1e-9));
+const double cosTh3D = directivityCos(az, el, micFaceAngle, micFaceTilt);
+
+for (int b = 0; b < N_BANDS; ++b)
+    amps[b] = a * std::pow(10.0, -AIR[b] * dist / 20.0)
+                * micG(b, micPat, cosTh3D) * sg * polarity;
+```
+
+Single trig per reflection, not 8. CPU profile is essentially identical to the 2D version.
+
+### Coordinate convention
+
+- `az` is the world azimuth of the source (image-source) as seen from the receiver, in radians, measured the same way as `micFaceAngle`. `0 = +x`, `π/2 = +y`.
+- `el` is the elevation of the source above the mic plane: `atan2(iz - rz, horizDist)`. **Positive el = source above mic.** A mic at 3 m looking at an instrument at 1 m sees `el ≈ −0.34 rad` (≈ −20°).
+- `faceElevation` (the tilt parameter) uses the same sign convention. **Negative tilt = mic pointing down.** Default `−π/6` (`−30°`) for all mic pairs in fresh presets — a typical orchestral mains setup.
+- `el ± π/2` clamping is **not** needed; `directivityCos` is well-behaved for any combination of source/mic elevations.
+
+### Parameters (`IRSynthParams`)
+
+| Field | Default | Description |
+|---|---|---|
+| `micl_tilt`, `micr_tilt` | `−π/6` (−30°) | MAIN L/R mic tilt |
+| `outrig_ltilt`, `outrig_rtilt` | `−π/6` | OUTRIG L/R mic tilt |
+| `ambient_ltilt`, `ambient_rtilt` | `−π/6` | AMBIENT L/R mic tilt |
+| `decca_tilt` | `−π/6` | Shared tilt for L, C, R mics in the rigid Decca array |
+
+DIRECT does not have its own tilt — it shares MAIN's `micl_tilt`/`micr_tilt` (or `decca_tilt` when Decca is on), matching the existing rule that DIRECT inherits MAIN's mic pattern and angles.
+
+### UI
+
+Three horizontal tilt sliders, one per mic-paths column, in the bottom strip of the IR Synth panel. Range −90..+90°, 1° step. Readout label shows signed degrees (`"-30°"`, `"+12°"`, `"0°"`).
+
+- **MAIN slider** drives `micl_tilt`, `micr_tilt`, **and** `decca_tilt` simultaneously (they always move together — when Decca is engaged the array is the MAIN pickup; when it isn't, both MAIN mics share one tilt knob by design).
+- **OUTRIG slider** drives `outrig_ltilt` and `outrig_rtilt` as a pair.
+- **AMBIENT slider** drives `ambient_ltilt` and `ambient_rtilt` as a pair.
+
+There is no per-mic tilt knob; pair-only is intentional (matches how real Decca/outrigger arrays are aimed in practice and keeps the UI compact). Sliders write into `TransducerState::tilt[]` / `deccaTilt`, then `IRSynthComponent::buildParamsFromState` marshals them into `IRSynthParams`. `setParams` round-trips back from `IRSynthParams` to slider values via `jlimit(-90, +90)` so any out-of-range legacy value clamps cleanly.
+
+To accommodate the new row, `layoutMicPathsStrip`'s `stripH` was bumped from 130 to 154 px. The MAIN/OUTRIG/AMBIENT column lambdas all gained one extra row identical in height to the existing height-slider row.
+
+### Persistence
+
+Both `irSynthParamsToXml` and `irSynthParamsFromXml` (in `PluginProcessor.cpp`) handle the new attributes:
+
+- Sidecar / APVTS XML attributes: `miclTilt`, `micrTilt`, `outrigLtilt`, `outrigRtilt`, `ambientLtilt`, `ambientRtilt`, `deccaTilt`.
+- **Read fallback is `0.0`, not the IRSynthParams struct default of `−π/6`.** Pre-tilt sidecars/presets must restore as horizontal mics so existing user content sounds bit-identical to the pre-v2.7.6 engine.
+- New presets saved via the UI use the `−π/6` default that the slider initialises to.
+
+### Tests
+
+- **DSP_21** (`Tests/PingDSPTests.cpp`) — covers `directivityCos` directly via a header-free `directivityCosLocal` clone. Verifies the spherical-law-of-cosines identity, the trivial el = faceEl = 0 reduction to plain `cos(az − faceAz)`, perpendicular cases at ±π/2, antipodal cases, and several non-trivial 3D angle-pair points.
+- **IR_11 / IR_14** — both regression locks were intentionally invalidated by the engine change and recaptured. Onset index for IR_11 is unchanged at 482 (the `cosTheta` change is multiplicative — it does not move the first-non-silent sample). IR_14's full-IR digests changed for all four channels.
+- **IR_19** — the figure-8 azimuth-null test was updated to pin `micl_tilt = micr_tilt = 0.0` so it remains a pure azimuth-plane test. With the new −30° default a low-elevation source lands inside the lobe and the original null collapses; pinning to 0° keeps the test focused on what it's actually checking (the polar-pattern lookup).
+- **IR_22..IR_26** — the Decca regression tests keep using the new `−π/6` default for `decca_tilt` (their golden values were already captured against the new engine math).
+
+### Key design decisions — 3D mic tilt
+
+- **`cos(theta)` is hoisted out of the per-band loop** — `micG` no longer recomputes the angle for each of 8 bands. This kept CPU cost identical to the 2D version even though we added a `sin/sin/cos/cos/cos` per reflection.
+- **`directivityCos` is a private static method, not a free function** — keeps the engine's directivity model self-contained and avoids polluting any other translation unit's namespace. The DSP test re-implements it locally (`directivityCosLocal`) so the test build does not need access to engine internals.
+- **Tilt is per-mic in `IRSynthParams` but per-pair in the UI** — the engine has the flexibility for asymmetric tilts (useful if anyone wants to script a custom preset by hand) while the UI exposes only the pair-coupled slider, since asymmetric tilt within a single L/R pair has no realistic use case and would complicate the UI.
+- **Decca tilt is a single field, not three** — the L, C, R mics in the Decca tree are a rigid array. Independently tilting the centre mic relative to the outers is not how real Decca rigs work, and would invite confusion about which tilt the MAIN slider was driving.
+- **Read fallback for missing tilt attributes is `0.0`, not the new `−π/6` default** — older presets and sidecars predate this feature; reloading them with `−π/6` would silently change the IR character. The IRSynthParams struct default applies only to fresh presets created in the new build.
+- **MAIN slider drives Decca tilt too** — when Decca is engaged the array replaces the MAIN L/R pair, so binding the MAIN slider to both keeps the user's mental model simple ("the MAIN tilt knob aims whatever MAIN actually is").
+- **No DIRECT-specific tilt parameter** — DIRECT inherits MAIN's mic pattern and angles by design; tilt extends the same rule. Adding `direct_tilt` would require an extra UI slot and break the "DIRECT = a near-field tap of the MAIN pickup" mental model.
+- **Coordinate convention is right-handed and matches the existing 2D `micFaceAngle`** — `az = atan2(dy, dx)` (azimuth measured the same way as the existing mic angle), `el = atan2(dz, horizDist)` (positive = source above mic). Negative tilt = mic pointing down. Do not introduce a separate sign convention for tilt vs source elevation; both use the same atan2 arrangement so `directivityCos` is symmetric in its arguments.
+
+---
+
 ## Licence system
 
 - **Algorithm:** Ed25519 (libsodium). Public key embedded in `LicenceVerifier.h`.
@@ -1492,9 +1602,13 @@ Starting a **new chat** and referencing **@CLAUDE.md** is a good way to give the
 - **Version label is derived from `ProjectInfo::versionString`** — Do not hard-code the version string in `PluginEditor.cpp`. JUCE generates `ProjectInfo::versionString` automatically from `project(Ping VERSION x.y.z)` in `CMakeLists.txt`, so the label is always in sync with the build. Update `CMakeLists.txt` version when cutting a release; do not update `PluginEditor.cpp` separately.
 - **Installer version lives in `Installer/build_installer.sh`** — The package filename/version passed to `pkgbuild` is controlled by the script `VERSION` variable. When cutting a release, bump both `project(Ping VERSION x.y.z)` in `CMakeLists.txt` and `VERSION` in `Installer/build_installer.sh` to keep the generated `.pkg` name/version in sync.
 - **IR Input Gain and IR Input Drive live in Row 1; Wet Output Gain sits near `irKnobsCenterX`** — IR Input Gain (GAIN) and IR Input Drive (DRIVE) were moved to the small-knob Row 1 strip at the top of the main area. Wet Output Gain is positioned at `outputGainCenterX = irKnobsCenterX + smallKnobSize / 2 + controlShift` (controlShift = 50). `outputGainY = dryWetCenterY − smallKnobSize − irKnobGap` moves with `cy`. Do not re-introduce the old `irGainShift` formula — it was removed when the gain knobs moved to Row 1.
-- **Trailing silence is trimmed from ALL IRs at load time (universal trim)** — `loadIRFromBuffer` applies a silence trim to every IR — both freshly synthesised and loaded from file — after the decay envelope and before 4-channel expansion. The threshold is `jmin(peak × 1e-4, 1e-4)`: −80 dB below the IR's own peak, capped at −80 dBFS absolute. The cap matters because synth IRs receive a +15 dB boost and can have peaks well above 1.0; without the cap, `peak × 1e-4` could exceed 1e-4 in absolute terms, cutting the tail while it is still perceptibly loud. The trim keeps the last sample above the threshold plus a 200 ms safety tail (min 300 ms), then applies a cosine end-fade over those final 200 ms to smooth the transition to silence. This is critical for factory `.wav` IRs: `synthIR()` allocates `8 × max_RT60` (up to 60 s), but factory files were saved without trimming, so the 8 NUPC tail convolvers would each hold a 40–60 s IR. At small buffer sizes (128–256 samples), the NUPC background FFT thread cannot process a 50-second IR within the audio callback budget, causing persistent crackle on large-space presets ("Cello Epic Hall", "Large Concert", etc.). Freshly synthesised IRs are trimmed in the `fromSynth` path before `rawSynthBuffer` is saved; the universal trim ensures file IRs get the same treatment. Do not gate this trim with `if (fromSynth)` — that was the original bug.
+- **Trailing silence is trimmed from ALL IRs at load time (universal trim)** — `loadIRFromBuffer` applies a silence trim to every IR — both freshly synthesised and loaded from file — after the decay envelope and before 4-channel expansion. The threshold is `jmin(peak × 3.162e-5, 3.162e-5)`: −90 dB below the IR's own peak, capped at −90 dBFS absolute. The cap matters because synth IRs receive a +15 dB boost and can have peaks well above 1.0; without the cap, `peak × 3.162e-5` could exceed 3.162e-5 in absolute terms, cutting the tail while it is still perceptibly loud. The trim keeps the last sample above the threshold plus a 500 ms safety tail (min 300 ms), then applies a cosine end-fade over those final 500 ms to smooth the transition to silence. This is critical for factory `.wav` IRs: `synthIR()` allocates `8 × max_RT60` (up to 60 s), but factory files were saved without trimming, so the 8 NUPC tail convolvers would each hold a 40–60 s IR. At small buffer sizes (128–256 samples), the NUPC background FFT thread cannot process a 50-second IR within the audio callback budget, causing persistent crackle on large-space presets ("Cello Epic Hall", "Large Concert", etc.). Freshly synthesised IRs are trimmed in the `fromSynth` path before `rawSynthBuffer` is saved; the universal trim ensures file IRs get the same treatment. Do not gate this trim with `if (fromSynth)` — that was the original bug.
+- **End-fade is gated on actual truncation — do not apply it unconditionally** — Both trim blocks (`fromSynth` and universal) wrap the cosine end-fade inside the same `if (newLen < nSamples)` guard as the truncation itself, so the fade is applied **only** when there is a new hard cut-point to smooth. Reloading an already-trimmed IR (factory preset, user-saved WAV, `rawSynthBuffer` via `reloadSynthIR`) finds `newLen == nSamples`, skips the truncate, and therefore also skips the fade — yielding a bit-identical buffer on every reload. Without this gate, the fade would compound: each load multiplies the last 500 ms by `cos_window` again, giving `cos²` on the second load, `cos³` on the third, etc. At unity gain this is inaudible (the affected samples are already below −90 dB), but under heavy wet-output boost (+20–30 dB) or when the IR is convolved with a loud source, the mid-fade attenuation difference (≈ 6 dB per reload cycle at the envelope midpoint) becomes audible as a steeper, shorter decay. A user who saves and reloads a preset 3× would lose ≈ 12 dB in the middle of the tail's final 500 ms. Idempotency is preserved on every path tested: fresh synth → saved → reload, `reloadSynthIR` from `rawSynthBuffer` after Reverse/Trim/Stretch/Decay changes, factory-preset reloads, and the offline `trim_factory_irs.py` (which has the same guard). Do not "optimise" by hoisting the fade out of the `if` block; do not apply it in a separate unconditional pass.
 - **`loadSelectedIR()` is the single entry point for all IR reloads — never call `loadIRFromFile()` or `reloadSynthIR()` directly from parameter listeners** — `parameterChanged` (Stretch, Decay) and all UI callbacks must go through `loadSelectedIR()`, which routes to `reloadSynthIR()` for synth IRs and `loadIRFromFile()` for file IRs. Bypassing this (e.g. calling `loadIRFromFile(getLastLoadedIRFile())` directly) will clobber any active synth IR because `lastLoadedIRFile` is never cleared when a synth IR is loaded.
 - **`audioEnginePrepared` prevents the setStateInformation → prepareToPlay race condition — do not remove this flag** — JUCE `Convolution::loadImpulseResponse` spawns a NUPC background thread that prepares FFT partitions and atomically swaps them in on the next `process()` call. If `setStateInformation` calls `loadImpulseResponse` on all 9 true-stereo convolvers (9 threads) and then `prepareToPlay` calls `reset()` on those same convolvers while the threads are still active, there is a data race on NUPC internal state. The symptom is permanent memory corruption: distortion that persists after stop/restart, escalating crackling on each subsequent preset load, and crackle audible immediately when opening a saved Logic session. This started manifesting when the convolution block was replaced from 2 stereo convolvers to 9 mono convolvers (8 ts*Conv + 1 tailConvolver) — 9× more background threads means near-certain collision. **Fix:** `audioEnginePrepared` (`std::atomic<bool>`, starts `false`, set to `true` at the END of `prepareToPlay`) distinguishes two cases: (a) Initial session load (`audioEnginePrepared = false`): `setStateInformation` saves `rawSynthBuffer` via `loadIRFromBuffer(..., deferConvolverLoad=true)` (early-returns after the `fromSynth` block without calling `loadImpulseResponse`) or just notes `selectedIRFile`, then returns without spawning any background threads. `prepareToPlay` then does all `reset()` + `prepare()` calls cleanly, sets `audioEnginePrepared = true`, and posts a `callAsync` that fires `reloadSynthIR()` / `loadIRFromFile()` on the message thread after the audio engine is fully prepared. (b) Live preset switch (`audioEnginePrepared = true`): `setStateInformation` calls `loadIRFromFile` / `loadIRFromBuffer` immediately — no `prepareToPlay` follows, so there is nothing to race against. The `callAsync` in `prepareToPlay` also handles sample-rate changes: when the host calls `releaseResources → prepareToPlay` (no `setStateInformation`), `prepareToPlay` resets the convolvers and then reloads from the already-stored `selectedIRFile` or `rawSynthBuffer`.
+- **`processBlock` gates each strip on convolver readiness *and* re-arms the wet fade on the first ready block** — Two independent problems arise when a strip is enabled before its `juce::dsp::Convolution` instances have actually installed a real engine: (1) `juce::dsp::Convolution` defaults to a unity pass-through until the NUPC background thread kicked off by `loadImpulseResponse` has swapped in a real engine (tens to hundreds of ms), so summing 4–8 mono convolvers at pass-through feeds the post-predelay dry signal into the wet bus at `trueStereoWetGain × 2 × default-0-dB-levels` ≈ 4×; (2) the 1-second `irLoadFadeSamplesRemaining` fade is armed at `loadImpulseResponse()` time, so for new instances the fade can expire before the convolvers are actually ready, leaving no ramp to mask the switch from "muted-by-gate" to "real-convolved-at-full-gain". **Fix:** at the top of the wet block, compute a per-path `*Ready` bool that ANDs `getCurrentIRSize() > 0` across all of that path's convolvers (4 for DIRECT, 8 each for MAIN/OUTRIG/AMBIENT); AND it into each strip's gate (`if (mainOnRaw && mainIRLoaded.load() && mainReady)`); and track the previous block's readiness in `*ConvPrevReady` atomics. On a `not-ready → ready` transition on any *active* path, `store(kIRLoadFadeSamples)` into `irLoadFadeSamplesRemaining` (taking the max with any existing countdown) so the wet signal ramps in from silence over 1 s once the real IR is live. `*ConvPrevReady` flags are also cleared in `prepareToPlay` so the next ready transition re-arms the fade after any re-prepare. `getCurrentIRSize()` is safe to read from the audio thread — it queries `currentEngine` which is only mutated from this same thread inside `processSamples → installPendingEngine`. Do not replace the per-block `*Ready` computation with a static flag, do not relax the AND across all convolvers (any laggard would re-introduce the pass-through leak), and do not remove the `*ConvPrevReady` gate on fade re-arm (without it the fade would re-trigger every block for as long as the path is active, silencing steady-state wet).
+- **`setStateInformation` backfills missing `value` properties on parameter trees — do not remove this** — After `apvts.replaceState(ValueTree::fromXml(*xml))`, JUCE's `updateParameterConnectionsToChildTrees` creates an empty `<PARAM id="X"/>` child (no `value` attribute) for every parameter missing from the loaded XML — e.g. mixer `mainGain/Pan/On` + the 23 other mixer params, or Plate/Bloom/Cloud/Shimmer params when loading a pre-feature preset. `setNewState` then calls `setDenormalisedValue(getDenormalisedDefaultValue())` on the adapter, but `setDenormalisedValue` is guarded on `! approximatelyEqual(new, current)`: if the live `unnormalisedValue` already equals the default (the usual case), it's a no-op and `needsUpdate` is **never** set to `true`. The next `flushParameterValuesToValueTree` then skips that adapter entirely (it's gated on `needsUpdate.compare_exchange_strong(true, false)`), so the subsequent save re-serialises `<PARAM id="X"/>` with no value, perpetuating the problem across every load/save cycle. The symptom is silent data loss: 24 mixer params saved as `<PARAM id="..."/>` (no value) on every preset the user creates, even after they tweak controls — because if the controls happen to land back at default values between save operations, they still get flushed with `needsUpdate = false`. **Fix:** right after `apvts.replaceState(...)`, walk `apvts.state`'s children and for any `<PARAM>` lacking a `value` attribute, write the current `getRawParameterValue(id)->load()` into the tree via `child.setProperty("value", ..., nullptr)`. This breaks the cycle: the property exists on disk going forward, user interaction via `SliderAttachment`/`ButtonAttachment` → `setValueNotifyingHost` correctly sets `needsUpdate = true` and flushes the new value, and old presets load into their default values exactly as before (the fix only affects what gets *written*, not what gets *read*). Do not replace this with a call to `setValueNotifyingHost` for every parameter — that would spam host automation and break presets that legitimately load a parameter at exactly the default value. Do not gate the backfill on parameter ID (e.g. "only mixer params") — the same cycle afflicts every newer parameter, and the walk is O(N) once per state load, not per block.
+- **`prepareToPlay` clears `*IRLoaded` flags — do not remove this** — The four atomic bools `mainIRLoaded` / `directIRLoaded` / `outrigIRLoaded` / `ambientIRLoaded` gate `processBlock`'s per-strip wet contribution: when a flag is `false`, the strip short-circuits to its smoother-advance `else` branch and contributes nothing. `juce::dsp::Convolution::reset()` + `prepare()` (called at the top of `prepareToPlay` on every re-prepare) wipe the loaded IR and leave the convolver in its default unity pass-through state. If the corresponding `*IRLoaded` flag stays `true` from a previous load, `processBlock` will run the strip with pass-through convolvers before the message-thread `callAsync` (posted at the end of `prepareToPlay`) has had a chance to call `loadIRFromFile` / `reloadSynthIR`. Result: a few ms to a few tens of ms of full-level sum-of-LR audio (~4× the input, amplified by `trueStereoWetGain = 2.0f` × two summed convolver paths × default 0 dB ER+Tail levels) dumped into the wet bus with no fade, no filter, and no reverb character — audible as a loud distortion burst at the start of audio on every re-prepare (sample-rate change, PDC recompute, track-switch-after-transport-stop in Logic). The fix is to `store(false)` all four flags in `prepareToPlay` right after the final `tailConvolver.prepare(spec)` call. The subsequent `callAsync` will re-assert each flag from inside `loadIRFromBuffer` (at lines 2272, 2609–2611), which also arms `irLoadFadeSamplesRemaining = kIRLoadFadeSamples` *before* kicking off the NUPC background threads — so the 1-second wet fade-in masks the partial-swap window exactly as it does on first-ever load. During the gap itself (prepareToPlay return → callAsync fires → loadImpulseResponse completes) all four strips are silent and dry passes through uninterrupted. Do not move this `store(false)` block elsewhere, do not gate it on any condition (the four `atomic<bool>::store(false)` calls are cheap no-ops on a fresh instance where they were already `false`), and do not add a symmetric `store(true)` anywhere other than `loadIRFromBuffer` — the flag lifecycle must remain `false → true` via load, `true → false` via prepareToPlay, with no other transitions. Continuous-playback UI-link track switching in Logic (with both tracks' plugins staying active) does not trigger `prepareToPlay`, so this change is a pure no-op for that scenario.
 - **`isRestoringState` prevents triple IR loading during preset changes — do not remove this flag** — `setStateInformation` calls `loadIRFromFile` once directly (Load #1). Then `apvts.replaceState()` queues async `parameterChanged` notifications for every changed parameter; the "stretch" and "decay" listeners each call `loadSelectedIR()` when they fire (Loads #2 and #3). 3 loads × 8 convolvers = 24 `loadImpulseResponse` calls in milliseconds. The NUPC background FFT thread is completely overwhelmed and cannot keep up → persistent crackling on any preset load, regardless of IR length. The fix: `isRestoringState` (`std::atomic<bool>` on `PingProcessor`) is set to `true` at the start of `setStateInformation`, then cleared via `juce::MessageManager::callAsync([this]() { isRestoringState.store(false); })` at the end. `callAsync` posts to the **end** of the message-thread FIFO, so it fires after all queued `parameterChanged` notifications have already been processed. `PingEditor::parameterChanged` checks `pingProcessor.getIsRestoringState()` (a public `const noexcept` getter wrapping the private atomic) and returns immediately if set. This is why recalculating the same IR in the IR Synth didn't crackle — synthesis takes ~30 s, only one load fires, and the NUPC thread is ready. Do not remove `isRestoringState` or replace `callAsync` with a synchronous clear — clearing before `parameterChanged` fires would defeat the guard.
 - **Preset and IR save overwrite prompts are selection-based** — Save actions only prompt when the typed name matches the currently selected existing item in the corresponding editable combo (`presetCombo` or IR synth `irCombo`) and the target file already exists. Typing a different name saves directly as a new file. Use async JUCE dialogs (`AlertWindow::showAsync`) in plugin UI; avoid blocking modal loops.
 - **`getStateInformation` must strip custom children from the APVTS state XML before adding fresh ones** — `setStateInformation` calls `apvts.replaceState(ValueTree::fromXml(*xml))`, which puts our custom child elements (`irSynthParams`, `synthIR`) into the APVTS state tree as child ValueTrees. On the next save, `apvts.copyState().createXml()` includes those children. If `getStateInformation` then adds new copies without removing the old ones, each save/load cycle accumulates duplicate children. The `synthIR` child contains a base64-encoded 4-channel IR buffer (~10–15 MB); after 2–3 cycles the state exceeds DAW size limits and Logic silently truncates it, causing `getXmlFromBinary` to return nullptr and all parameters to revert to defaults. Fix: `while (auto* old = xml->getChildByName("irSynthParams")) xml->removeChildElement(old, true);` (and same for `"synthIR"`) before adding fresh children.
@@ -1935,11 +2049,11 @@ The full chain for both Save Preset and Export Preset is: `ensurePresetNamed` �
 
 ### Export Preset
 
-Uses JUCE `FileChooser` (async folder picker). Writes the full plugin state (via `getStateInformation`) as `<name>.xml` into the chosen folder. Also exports the associated IR alongside:
-- **File-based IR**: Copies the `.wav` and its `.ping` sidecar (if present) into the same folder.
-- **Synth IR**: Writes the current IR buffer as `<name> IR.wav` plus a `.ping` sidecar into the same folder.
+Uses JUCE `FileChooser` (async folder picker). Writes the full plugin state (via `getStateInformation`) as `<name>.xml` into the chosen folder. Also exports the associated IR set alongside via `copyIRSetWithSiblings` (file-based IRs) or `PingProcessor::writeSynthIRSetToDirectory` (synth IRs):
+- **File-based IR**: Copies the MAIN `.wav`/`.aiff`, its `.ping` sidecar (if present), AND any `_direct` / `_outrig` / `_ambient` siblings found next to the MAIN file, all under the MAIN's existing stem.
+- **Synth IR**: Writes the current IR buffer as `<name>.wav` (plain stem — **no " IR" suffix**) plus a `.ping` sidecar into the same folder, along with `<name>_direct.wav` / `<name>_outrig.wav` / `<name>_ambient.wav` for any non-empty `rawSynth{Direct,Outrig,Ambient}Buffer`. Matches the factory / Save IR naming convention exactly.
 
-The recipient gets a folder containing everything needed to use the preset.
+The recipient gets a folder containing every active mic path needed to use the preset.
 
 ### Import Preset
 
@@ -1947,15 +2061,15 @@ Uses JUCE `FileChooser` (async open dialog, `.xml` filter). Before importing the
 
 ### Export IR
 
-Handles two cases:
-- **File-based IR**: Copies the `.wav` file and its `.ping` sidecar (if present) to the chosen location.
-- **Synth IR (no file on disk)**: Writes the current IR buffer as a 24-bit WAV plus a `.ping` sidecar (via `writeIRSynthSidecar`) to the chosen location.
+Handles two cases, both via the same helpers used by Export Preset:
+- **File-based IR**: `copyIRSetWithSiblings` copies the MAIN WAV + `.ping` sidecar + any `_direct` / `_outrig` / `_ambient` siblings found next to the MAIN file, all renamed to share the user-chosen destination stem.
+- **Synth IR (no file on disk)**: `PingProcessor::writeSynthIRSetToDirectory` writes the current IR buffer as `<stem>.wav` + `.ping` sidecar into the destination folder, along with `<stem>_direct.wav` / `<stem>_outrig.wav` / `<stem>_ambient.wav` for any non-empty aux raw buffers. Uses the plain destination stem — same naming as Save IR / factory content.
 
-Fixes permissions on all exported files.
+Fixes permissions on every exported file.
 
 ### Import IR
 
-Uses JUCE `FileChooser` (async open dialog, `.wav`/`.aiff` filter). Copies the selected file and its `.ping` sidecar (if present, checked as a sibling file) into `~/Library/Audio/Impulse Responses/Ping/` with collision avoidance. Fixes permissions, refreshes the IR list, selects and loads the imported IR. When triggered from the IR Synth panel, also refreshes the 4-channel IR list.
+Uses JUCE `FileChooser` (async open dialog, `.wav`/`.aiff` filter). Uses the same `copyIRSetWithSiblings` helper as Export IR so picking any MAIN `.wav` in a shared folder automatically sweeps up the associated `.ping` sidecar **and** any `_direct` / `_outrig` / `_ambient` siblings, copying everything into `~/Library/Audio/Impulse Responses/Ping/` under a collision-avoided stem. Collision check looks at the MAIN name AND all possible sibling suffixes (`<stem>_direct.wav`, etc.) before settling on `<stem> (2)` / `<stem> (3)` — this guarantees the whole set shares one unambiguous stem. Fixes permissions on every file, refreshes the IR list, selects and loads the imported IR. When triggered from the IR Synth panel, also refreshes the 4-channel IR list.
 
 ---
 
@@ -1992,7 +2106,7 @@ Uses JUCE `FileChooser` (async open dialog, `.wav`/`.aiff` filter). Copies the s
   # Trim the currently-installed factory IRs on this machine:
   python3 Tools/trim_factory_irs.py "/Library/Application Support/Ping/Factory IRs"
   ```
-  The script handles WAVE_FORMAT_EXTENSIBLE (4-channel 24-bit) files, applies −80 dB trim with 200 ms safety tail (minimum 300 ms), and writes in-place atomically. User-saved IRs created before v2.3.3 may be 8×RT60 (up to 60 s) — these are the main target. Future saves via `saveCurrentIRToFile` write `currentIRBuffer` which is already trimmed at load time.
+  The script handles WAVE_FORMAT_EXTENSIBLE (4-channel 24-bit) files, applies −90 dB trim with 500 ms safety tail (minimum 300 ms) and a matching cosine end-fade, and writes in-place atomically. User-saved IRs created before v2.3.3 may be 8×RT60 (up to 60 s) — these are the main target. Future saves via `saveCurrentIRToFile` write `currentIRBuffer` which is already trimmed at load time.
 
   **Critical — file permissions must be preserved on write:** `tempfile.mkstemp` creates temp files with mode `0600` (owner-only). When the script rewrites a file owned by root (as factory IRs are after `.pkg` install), the output ends up `0600` — unreadable by the plugin running as the user. JUCE's `createReaderFor` silently returns nullptr for unreadable files, so the IR silently fails to load with no error or waveform update. Fix is in `_write_wav`: `os.stat(path).st_mode` is captured before writing, then `os.chmod(tmp, orig_mode)` is called on the temp file before `os.replace`. **If IRs stop loading after running the trim script on installed files, check permissions first:** `ls -la "/Library/Application Support/Ping/Factory IRs/Large Spaces/"` — any file showing `-rw-------` instead of `-rw-r--r--` needs `sudo chmod 644 <file>`.
 

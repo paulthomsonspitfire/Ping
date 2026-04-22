@@ -75,6 +75,13 @@ struct VenueDef
 static const double PI_2   =  1.57079632679;
 static const double NEG_3PI4 = -2.35619449019;
 static const double NEG_PI4  = -0.785398163397;
+static const double NEG_PI_6 = -0.5235987755982988; // -30° default mic tilt
+
+// Outrigger / ambient face angles: straight up (-π/2) rotated 20° "in toward the source"
+// For L mic (at low x), rotating toward +x = adding 20° → -π/2 + π/9
+// For R mic (at high x), rotating toward -x = subtracting 20° → -π/2 - π/9
+static const double OUT_L_ANG = -1.57079632679 +  0.349065850398866; // -π/2 + π/9 ≈ -70°
+static const double OUT_R_ANG = -1.57079632679 -  0.349065850398866; // -π/2 - π/9 ≈ -110°
 
 // Helper: build IRSynthParams with common angles applied
 static IRSynthParams makeP(
@@ -131,6 +138,68 @@ static EQPreset brightChamberEQ()
     return eq;
 }
 
+// ── Standard factory mic setup ──────────────────────────────────────────────
+// Applied to every venue before synthesis. Configures:
+//   • MAIN  = Decca tree (MK21), centred on x=0.5 at existing mic-pair y
+//   • OUTRIG = MK21 spaced pair at (0.25, decca_y) and (0.75, decca_y),
+//              faces pointed 20° in toward the source from straight-up
+//   • AMBIENT = omni pair at (0.10, 0.90) and (0.90, 0.90), same face angles
+//   • DIRECT  = order-1 near-field tap, shares MAIN (Decca) mic pattern
+//   • All mics tilted -30° (factory default)
+//   • Lambert scatter OFF, speaker-directivity fade OFF (full cardioid)
+// Speaker positions are preserved as authored per venue.
+static void applyStandardMicSetup (IRSynthParams& p)
+{
+    // Use existing receiver pair's average y as the Decca / outrig row depth.
+    const double deccaY = (p.receiver_ly + p.receiver_ry) * 0.5;
+
+    // MAIN path — Decca tree (all three mics MK21, -30° tilt)
+    p.mic_pattern         = "wide cardioid (MK21)";
+    p.micl_tilt           = NEG_PI_6;
+    p.micr_tilt           = NEG_PI_6;
+    p.main_decca_enabled  = true;
+    p.decca_cx            = 0.5;
+    p.decca_cy            = deccaY;
+    p.decca_angle         = -PI_2;                 // forward (toward low-y, i.e. stage)
+    p.decca_centre_gain   = 0.5;                   // struct default
+    p.decca_toe_out       = 1.5707963267948966;    // π/2 (struct default)
+    p.decca_tilt          = NEG_PI_6;
+
+    // OUTRIG path
+    p.outrig_enabled      = true;
+    p.outrig_lx           = 0.25;
+    p.outrig_ly           = deccaY;
+    p.outrig_rx           = 0.75;
+    p.outrig_ry           = deccaY;
+    p.outrig_langle       = OUT_L_ANG;
+    p.outrig_rangle       = OUT_R_ANG;
+    p.outrig_height       = 3.0;
+    p.outrig_pattern      = "wide cardioid (MK21)";
+    p.outrig_ltilt        = NEG_PI_6;
+    p.outrig_rtilt        = NEG_PI_6;
+
+    // AMBIENT path
+    p.ambient_enabled     = true;
+    p.ambient_lx          = 0.10;
+    p.ambient_ly          = 0.90;
+    p.ambient_rx          = 0.90;
+    p.ambient_ry          = 0.90;
+    p.ambient_langle      = OUT_L_ANG;
+    p.ambient_rangle      = OUT_R_ANG;
+    p.ambient_height      = 6.0;
+    p.ambient_pattern     = "omni";
+    p.ambient_ltilt       = NEG_PI_6;
+    p.ambient_rtilt       = NEG_PI_6;
+
+    // DIRECT — shares MAIN mic pattern + angles; direct_max_order=1 = first-order bounces
+    p.direct_enabled      = true;
+    p.direct_max_order    = 1;
+
+    // Experimental early-reflection toggles
+    p.lambert_scatter_enabled = false;
+    p.spk_directivity_full    = true;
+}
+
 // ── Venue table ───────────────────────────────────────────────────────────────
 static const std::vector<VenueDef> VENUES = {
 
@@ -151,10 +220,12 @@ static const std::vector<VenueDef> VENUES = {
       warmHallEQ() },
 
     // Concertgebouw Amsterdam (Grote Zaal)
-    // 44 × 28 × 17 m. Verified. RT60 ~2.2 s with audience.
+    // 27.5 × 27.75 × 18 m per the hall's own rental spec (floor area 763 m²
+    // matches 27.5 × 27.75 exactly). Older "44 × 28 × 17" figure was wrong —
+    // likely confused with an overall building length. RT60 ~2.2 s with audience.
     // Wooden panelling walls, plaster ceiling, balconies on three sides.
     { "Halls", "Concertgebouw Amsterdam",
-      makeP("Rectangular", 44, 28, 17,
+      makeP("Rectangular", 28, 28, 18,
             "Hardwood floor", "Painted plaster", "Plywood panel",
             0.05, 0.45, 0.50,
             "None (flat)", 0.35, 0.55,
@@ -187,11 +258,12 @@ static const std::vector<VenueDef> VENUES = {
             "cardioid", 2.255505160484458, 0.7654008428193579) },
 
     // King's College Chapel, Cambridge
-    // ~88 × 12 × 29 m (289 ft × 40 ft × 95 ft, verified). Famous fan vault.
-    // Stone floor and walls; stained-glass windows in lower bays only (~15% wall area).
-    // Target RT60: 4-6 s with partial audience. Reducing window fraction to preserve stone reflectivity.
+    // 88.4 × 12.2 × 24.4 m (289 ft × 40 ft × 80 ft interior height). Famous fan vault.
+    // Previous 29 m height was the exterior (to top of pinnacles); interior to the
+    // crown of the fan vault is 80 ft ≈ 24 m. Stone floor and walls; stained-glass
+    // windows in lower bays only (~15% wall area). Target RT60: 4-6 s with partial audience.
     { "Halls", "King's College Chapel Cambridge",
-      makeP("Cathedral", 88, 12, 29,
+      makeP("Cathedral", 88, 12, 24,
             "Rough stone / rock", "Rough stone / rock", "Rough stone / rock",
             0.15, 0.10, 0.25,
             "Fan vault  (King's College)", 0.60, 0.05,
@@ -214,12 +286,13 @@ static const std::vector<VenueDef> VENUES = {
     // ── LARGE SPACES ───────────────────────────────────────────────────────
 
     // Royal Albert Hall, London
-    // ~67 × 56 × 30 m elliptical / cylindrical. Post-1969: 3,000 acoustic mushrooms
-    // suspended from ceiling (modelled as Acoustic ceiling tile); velvet box draping
-    // (Heavy curtains for walls); Proms audience ~ maximum absorption.
-    // Target RT60: ~2.5-3.0 s.
+    // 67 × 56 × 41 m elliptical / cylindrical (219 × 185 × 135 ft interior).
+    // Height was previously 30 m; the real interior rises to 135 ft ≈ 41 m at the
+    // dome peak. Post-1969: 3,000 acoustic mushrooms suspended from ceiling
+    // (modelled as Acoustic ceiling tile); velvet box draping (Heavy curtains for
+    // walls); Proms audience ~ maximum absorption. Target RT60: ~2.5-3.0 s.
     { "Large Spaces", "Royal Albert Hall London",
-      makeP("Cylindrical", 67, 56, 30,
+      makeP("Cylindrical", 67, 56, 41,
             "Carpet (thin)", "Painted plaster", "Painted plaster",
             0.00, 0.67, 0.55,
             "Coffered dome  (circular hall)", 0.56, 0.50,
@@ -253,11 +326,12 @@ static const std::vector<VenueDef> VENUES = {
       warmHallEQ() },
 
     // Hansa Tonstudio — Meistersaal (Großer Saal), Berlin
-    // ~26 × 25 × 7 m (from published 650 m² floor area, 7 m ceiling).
-    // Grand ornate ballroom from 1913. Large windows, wood floors, plaster walls.
-    // Recorded Bowie, U2, Depeche Mode.
+    // ~26 × 18 × 7 m (published floor area 463 m², wall height 7 m, volume
+    // ~3,000 m³). Previous 26 × 25 gave 650 m² / 4,550 m³ which didn't match
+    // either the stated area or volume. Grand ornate ballroom from 1913.
+    // Large windows, wood floors, plaster walls. Recorded Bowie, U2, Depeche Mode.
     { "Large Spaces", "Hansa Meistersaal Berlin",
-      makeP("Rectangular", 26, 25, 7,
+      makeP("Rectangular", 26, 18, 7,
             "Hardwood floor", "Painted plaster", "Painted plaster",
             0.20, 0.15, 0.45,
             "None (flat)", 0.00, 0.00,
@@ -280,10 +354,13 @@ static const std::vector<VenueDef> VENUES = {
     // ── SCORING STAGES ─────────────────────────────────────────────────────
 
     // Abbey Road — Studio One
-    // ~22 × 20 × 10 m (from ~450 m² floor area). Largest purpose-built recording studio.
-    // Parquet floor; adjustable acoustic panels; purpose-built for orchestral recording.
+    // 28 × 16 × 12 m (92 × 52 × 40 ft, published by Abbey Road / Mix magazine).
+    // Previous 22 × 20 × 10 figures were wrong — the room is a long shoebox, not
+    // square, and is 40 ft high. Floor area ~450 m² matches 28 × 16. Largest
+    // purpose-built recording studio. Parquet floor; adjustable acoustic panels;
+    // purpose-built for orchestral recording.
     { "Scoring Stages", "Abbey Road Studio One",
-      makeP("Rectangular", 22, 20, 10,
+      makeP("Rectangular", 28, 16, 12,
             "Hardwood floor", "Painted plaster", "Plywood panel",
             0.05, 0.20, 0.55,
             "None (flat)", 0.00, 0.00,
@@ -303,10 +380,11 @@ static const std::vector<VenueDef> VENUES = {
             0.35, 0.65,  0.65, 0.65) },
 
     // Capitol Studios Hollywood — Studio A
-    // ~14 × 10 × 7 m (from 139 m² floor area). Live concrete/plaster walls.
+    // 19 × 14 × 6 m (62 × 46 × 20 ft, published; ~57,000 cu ft ≈ 1,600 m³ volume).
+    // Previous 14 × 10 × 7 figures were undersized. Live concrete/plaster walls.
     // Famous echo chambers in the basement.
     { "Scoring Stages", "Capitol Studios Hollywood A",
-      makeP("Rectangular", 14, 10, 7,
+      makeP("Rectangular", 19, 14, 6,
             "Hardwood floor", "Painted plaster", "Hardwood floor",
             0.05, 0.31, 0.40,
             "None (flat)", 0.00, 0.00,
@@ -328,10 +406,11 @@ static const std::vector<VenueDef> VENUES = {
     // ── ROOMS ──────────────────────────────────────────────────────────────
 
     // Abbey Road — Studio Two
-    // 18.35 × 11.65 × 7.31 m. Exact published dimensions. RT60 ~1.2 s.
+    // 18.3 × 11.7 × 8.5 m (60 × 38 × 28 ft, published). Previous 7.31 m height
+    // was an underestimate — the room is 28 ft to the ceiling. RT60 ~1.2 s.
     // Where the Beatles recorded. Parquet floor, adjustable LEDE panels.
     { "Rooms", "Abbey Road Studio Two",
-      makeP("Rectangular", 18.35, 11.65, 7.31,
+      makeP("Rectangular", 18.3, 11.7, 8.5,
             "Hardwood floor", "Acoustic ceiling tile", "Plywood panel",
             0.05, 0.15, 0.55,
             "None (flat)", 0.00, 0.00,
@@ -362,9 +441,11 @@ static const std::vector<VenueDef> VENUES = {
             0.3707692307692308, 0.7143589743589743,  0.6169230769230769, 0.7181196581196581) },
 
     // Electric Lady Studios — Studio A, New York
-    // ~12 × 9 × 4.5 m. Jimi Hendrix's studio. Curved plaster walls, carpeted floor.
+    // ~11.6 × 10.7 × 4.5 m (Live Room listed as 35 × 38 ft). Previous 12 × 9 was
+    // slightly under on depth. Jimi Hendrix's studio. Curved plaster walls,
+    // carpeted floor.
     { "Rooms", "Electric Lady Studios New York",
-      makeP("Rectangular", 12, 9, 4.5,
+      makeP("Rectangular", 11.6, 10.7, 4.5,
             "Carpet (thin)", "Plywood panel", "Painted plaster",
             0.00, 0.20, 0.50,
             "None (flat)", 0.00, 0.00,
@@ -384,9 +465,11 @@ static const std::vector<VenueDef> VENUES = {
             "cardioid", 2.022697166595603, 0.8760579983331214) },
 
     // Metropolis Studios — Studio A, London
-    // ~14 × 10 × 5 m. One of Europe's largest studio complexes.
+    // ~10 × 8 × 6 m (Live Room published 80 m² floor, 6 m ceiling).
+    // Previous 14 × 10 × 5 didn't match the published floor area or the
+    // 6 m ceiling. One of Europe's largest studio complexes.
     { "Rooms", "Metropolis Studios London",
-      makeP("Rectangular", 14, 10, 5,
+      makeP("Rectangular", 10, 8, 6,
             "Hardwood floor", "Acoustic ceiling tile", "Plywood panel",
             0.05, 0.20, 0.55,
             "None (flat)", 0.00, 0.00,
@@ -531,6 +614,52 @@ static std::string makeSidecarXML(const IRSynthParams& p)
     x += " bakeERTail=\""  + std::string(b(p.bake_er_tail_balance)) + "\"";
     x += " bakedERGain=\"" + d(p.baked_er_gain)   + "\"";
     x += " bakedTailGain=\"" + d(p.baked_tail_gain) + "\"";
+
+    // Multi-mic path enables + experimental toggles
+    x += " directOn=\""       + std::string(b(p.direct_enabled))   + "\"";
+    x += " outrigOn=\""       + std::string(b(p.outrig_enabled))   + "\"";
+    x += " ambientOn=\""      + std::string(b(p.ambient_enabled))  + "\"";
+    x += " directMaxOrder=\"" + std::to_string(p.direct_max_order) + "\"";
+    x += " lambertScatter=\"" + std::string(b(p.lambert_scatter_enabled)) + "\"";
+    x += " spkDirFull=\""     + std::string(b(p.spk_directivity_full))    + "\"";
+
+    // Outrigger pair
+    x += " outrigLx=\""     + d(p.outrig_lx,12) + "\"";
+    x += " outrigLy=\""     + d(p.outrig_ly,12) + "\"";
+    x += " outrigRx=\""     + d(p.outrig_rx,12) + "\"";
+    x += " outrigRy=\""     + d(p.outrig_ry,12) + "\"";
+    x += " outrigLang=\""   + d(p.outrig_langle,12) + "\"";
+    x += " outrigRang=\""   + d(p.outrig_rangle,12) + "\"";
+    x += " outrigHeight=\"" + d(p.outrig_height) + "\"";
+    x += " outrigPat=\""    + p.outrig_pattern + "\"";
+    x += " outrigLtilt=\""  + d(p.outrig_ltilt,12) + "\"";
+    x += " outrigRtilt=\""  + d(p.outrig_rtilt,12) + "\"";
+
+    // Ambient pair
+    x += " ambientLx=\""     + d(p.ambient_lx,12) + "\"";
+    x += " ambientLy=\""     + d(p.ambient_ly,12) + "\"";
+    x += " ambientRx=\""     + d(p.ambient_rx,12) + "\"";
+    x += " ambientRy=\""     + d(p.ambient_ry,12) + "\"";
+    x += " ambientLang=\""   + d(p.ambient_langle,12) + "\"";
+    x += " ambientRang=\""   + d(p.ambient_rangle,12) + "\"";
+    x += " ambientHeight=\"" + d(p.ambient_height) + "\"";
+    x += " ambientPat=\""    + p.ambient_pattern + "\"";
+    x += " ambientLtilt=\""  + d(p.ambient_ltilt,12) + "\"";
+    x += " ambientRtilt=\""  + d(p.ambient_rtilt,12) + "\"";
+
+    // MAIN tilt (elevation component of mic-facing axis)
+    x += " miclTilt=\"" + d(p.micl_tilt,12) + "\"";
+    x += " micrTilt=\"" + d(p.micr_tilt,12) + "\"";
+
+    // Decca tree
+    x += " deccaOn=\""      + std::string(b(p.main_decca_enabled)) + "\"";
+    x += " deccaCx=\""      + d(p.decca_cx,12) + "\"";
+    x += " deccaCy=\""      + d(p.decca_cy,12) + "\"";
+    x += " deccaAng=\""     + d(p.decca_angle,12) + "\"";
+    x += " deccaCtrGain=\"" + d(p.decca_centre_gain,12) + "\"";
+    x += " deccaToeOut=\""  + d(p.decca_toe_out,12) + "\"";
+    x += " deccaTilt=\""    + d(p.decca_tilt,12) + "\"";
+
     x += "/>\n</PingIRSynth>\n";
     return x;
 }
@@ -586,6 +715,39 @@ static std::string makePresetXML(
     isp += " bakeERTail=\""    + std::string(b(irp.bake_er_tail_balance)) + "\"";
     isp += " bakedERGain=\""   + d6(irp.baked_er_gain)    + "\"";
     isp += " bakedTailGain=\"" + d6(irp.baked_tail_gain)  + "\"";
+
+    // Multi-mic path enables + experimental toggles
+    isp += " directOn=\""       + std::string(b(irp.direct_enabled))   + "\"";
+    isp += " outrigOn=\""       + std::string(b(irp.outrig_enabled))   + "\"";
+    isp += " ambientOn=\""      + std::string(b(irp.ambient_enabled))  + "\"";
+    isp += " directMaxOrder=\"" + std::to_string(irp.direct_max_order) + "\"";
+    isp += " lambertScatter=\"" + std::string(b(irp.lambert_scatter_enabled)) + "\"";
+    isp += " spkDirFull=\""     + std::string(b(irp.spk_directivity_full))    + "\"";
+
+    // Outrigger pair
+    isp += " outrigLx=\""     + d12(irp.outrig_lx)     + "\" outrigLy=\"" + d12(irp.outrig_ly) + "\"";
+    isp += " outrigRx=\""     + d12(irp.outrig_rx)     + "\" outrigRy=\"" + d12(irp.outrig_ry) + "\"";
+    isp += " outrigLang=\""   + d12(irp.outrig_langle) + "\" outrigRang=\"" + d12(irp.outrig_rangle) + "\"";
+    isp += " outrigHeight=\"" + d6(irp.outrig_height)  + "\"";
+    isp += " outrigPat=\""    + irp.outrig_pattern     + "\"";
+    isp += " outrigLtilt=\""  + d12(irp.outrig_ltilt)  + "\" outrigRtilt=\"" + d12(irp.outrig_rtilt) + "\"";
+
+    // Ambient pair
+    isp += " ambientLx=\""     + d12(irp.ambient_lx)     + "\" ambientLy=\"" + d12(irp.ambient_ly) + "\"";
+    isp += " ambientRx=\""     + d12(irp.ambient_rx)     + "\" ambientRy=\"" + d12(irp.ambient_ry) + "\"";
+    isp += " ambientLang=\""   + d12(irp.ambient_langle) + "\" ambientRang=\"" + d12(irp.ambient_rangle) + "\"";
+    isp += " ambientHeight=\"" + d6(irp.ambient_height)  + "\"";
+    isp += " ambientPat=\""    + irp.ambient_pattern     + "\"";
+    isp += " ambientLtilt=\""  + d12(irp.ambient_ltilt)  + "\" ambientRtilt=\"" + d12(irp.ambient_rtilt) + "\"";
+
+    // MAIN tilt + Decca tree
+    isp += " miclTilt=\""     + d12(irp.micl_tilt)        + "\" micrTilt=\""  + d12(irp.micr_tilt) + "\"";
+    isp += " deccaOn=\""      + std::string(b(irp.main_decca_enabled)) + "\"";
+    isp += " deccaCx=\""      + d12(irp.decca_cx)          + "\" deccaCy=\""   + d12(irp.decca_cy)    + "\"";
+    isp += " deccaAng=\""     + d12(irp.decca_angle)       + "\"";
+    isp += " deccaCtrGain=\"" + d12(irp.decca_centre_gain) + "\"";
+    isp += " deccaToeOut=\""  + d12(irp.decca_toe_out)     + "\"";
+    isp += " deccaTilt=\""    + d12(irp.decca_tilt)        + "\"";
 
     // Build parameter list — only non-default values are given a value= attribute.
     // Everything else gets an empty tag so JUCE uses the registered default.
@@ -660,6 +822,24 @@ static std::string makePresetXML(
     x += param("shimPitch","");     x += param("shimSize","");
     x += param("shimVolume","");
 
+    // Multi-mic mixer strips — only MAIN is audible by default; aux paths are
+    // calculated (so the user can switch them in from the mic mixer) but
+    // muted at the strip level.
+    x += param("mainOn",    "1");
+    x += param("directOn",  "0");
+    x += param("outrigOn",  "0");
+    x += param("ambientOn", "0");
+    x += param("mainGain",   "");  x += param("directGain",  "");
+    x += param("outrigGain", "");  x += param("ambientGain", "");
+    x += param("mainPan",    "");  x += param("directPan",   "");
+    x += param("outrigPan",  "");  x += param("ambientPan",  "");
+    x += param("mainMute",   "");  x += param("directMute",  "");
+    x += param("outrigMute", "");  x += param("ambientMute", "");
+    x += param("mainSolo",   "");  x += param("directSolo",  "");
+    x += param("outrigSolo", "");  x += param("ambientSolo", "");
+    x += param("mainHPOn",   "");  x += param("directHPOn",  "");
+    x += param("outrigHPOn", "");  x += param("ambientHPOn", "");
+
     // Embed IR synth params so the IR Synth panel loads correctly when this preset is used
     x += "<irSynthParams" + isp + "/>";
 
@@ -706,8 +886,13 @@ int main(int argc, char** argv)
               << "IR output:     " << irBase     << "\n"
               << "Preset output: " << presetBase << "\n\n";
 
-    for (const auto& venue : VENUES)
+    for (const auto& venueConst : VENUES)
     {
+        // Take a mutable copy so we can apply the standard multi-mic setup
+        // (Decca + outriggers + ambients) on top of the authored venue parameters.
+        VenueDef venue = venueConst;
+        applyStandardMicSetup (venue.params);
+
         std::cout << "[" << (done + failed + 1) << "/" << total << "] "
                   << venue.category << " / " << venue.name << "\n";
         std::cout.flush();
@@ -727,6 +912,9 @@ int main(int argc, char** argv)
         fs::path wavPath    = irDir    / (std::string(venue.name) + ".wav");
         fs::path sidecarPath= irDir    / (std::string(venue.name) + ".ping");
         fs::path presetPath = presetDir/ (std::string(venue.name) + ".xml");
+        fs::path directPath = irDir    / (std::string(venue.name) + "_direct.wav");
+        fs::path outrigPath = irDir    / (std::string(venue.name) + "_outrig.wav");
+        fs::path ambientPath= irDir    / (std::string(venue.name) + "_ambient.wav");
 
         // Generate IR
         auto t0 = std::chrono::steady_clock::now();
@@ -752,7 +940,7 @@ int main(int argc, char** argv)
             continue;
         }
 
-        // Write WAV
+        // Write MAIN WAV
         auto wavBytes = IRSynthEngine::makeWav(
             result.iLL, result.iRL, result.iLR, result.iRR, result.sampleRate);
         if (!writeBytes(wavPath, wavBytes.data(), wavBytes.size()))
@@ -763,6 +951,23 @@ int main(int argc, char** argv)
         }
         std::cout << "    WAV:     " << wavPath.filename() << " ("
                   << (wavBytes.size() / 1024) << " KB)\n";
+
+        // Write DIRECT / OUTRIG / AMBIENT sibling WAVs (auto-loaded by the
+        // plugin when the MAIN file is selected — see IRManager sibling rules).
+        auto writeAux = [&](const MicIRChannels& ch, const fs::path& p, const char* label) {
+            if (!ch.synthesised || ch.LL.empty()) return;
+            auto bytes = IRSynthEngine::makeWav (ch.LL, ch.RL, ch.LR, ch.RR, result.sampleRate);
+            if (!writeBytes (p, bytes.data(), bytes.size()))
+            {
+                std::cerr << "  ERROR writing " << label << ": " << p << "\n";
+                return;
+            }
+            std::cout << "    " << label << ":  " << p.filename() << " ("
+                      << (bytes.size() / 1024) << " KB)\n";
+        };
+        writeAux (result.direct,  directPath,  "Direct ");
+        writeAux (result.outrig,  outrigPath,  "Outrig ");
+        writeAux (result.ambient, ambientPath, "Ambient");
 
         // Write sidecar .ping XML
         auto sidecarXML = makeSidecarXML(venue.params);

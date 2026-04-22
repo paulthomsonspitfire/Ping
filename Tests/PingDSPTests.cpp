@@ -927,3 +927,130 @@ TEST_CASE("DSP_14: Cloud feedback stable at maximum setting (0.7)", "[dsp][cloud
         CHECK(rmsLate <= rmsEarly + 1e-6);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DSP_21 — directivityCos: 3D source-to-mic-axis cosine is correct
+// ─────────────────────────────────────────────────────────────────────────────
+// Verifies the spherical-law-of-cosines formula used by IRSynthEngine to
+// compute the dot product between a source arrival direction (az, el) and a
+// mic's facing axis (faceAz, faceEl). The formula is duplicated locally
+// (directivityCosLocal) per the project convention that DSP tests are
+// self-contained and do not pull IRSynthEngine.h. Whenever the production
+// directivityCos in IRSynthEngine.cpp changes, this local copy must be
+// updated in lockstep — see CLAUDE.md.
+//
+//   cos(theta) = sin(el)·sin(faceEl) + cos(el)·cos(faceEl)·cos(az - faceAz)
+//
+// Then the polar pattern gain at on-axis = (o + d·1) = 1 (since o + d = 1
+// for all patterns), at exactly perpendicular = (o + d·0) = o, and at
+// fully behind = (o - d) = 1 - 2d (clipped to ≥ 0).
+static double directivityCosLocal (double az, double el,
+                                   double faceAz, double faceEl)
+{
+    return std::sin(el) * std::sin(faceEl)
+         + std::cos(el) * std::cos(faceEl) * std::cos(az - faceAz);
+}
+
+TEST_CASE("DSP_21: directivityCos 3D spherical-law-of-cosines is correct",
+          "[dsp][mic][directivity]")
+{
+    constexpr double TOL = 1e-12;
+    constexpr double PI  = 3.141592653589793;
+
+    SECTION("on-axis: source straight in front, mic facing forward → cos = 1")
+    {
+        // Source at az = 0, el = 0; mic facing az = 0, el = 0.
+        CHECK(directivityCosLocal(0.0, 0.0, 0.0, 0.0)
+              == Catch::Approx(1.0).margin(TOL));
+    }
+
+    SECTION("90° off-axis horizontal → cos = 0")
+    {
+        // Mic facing forward (az=0, el=0); source 90° to the side at horizon.
+        CHECK(directivityCosLocal(PI / 2.0, 0.0, 0.0, 0.0)
+              == Catch::Approx(0.0).margin(TOL));
+        CHECK(directivityCosLocal(-PI / 2.0, 0.0, 0.0, 0.0)
+              == Catch::Approx(0.0).margin(TOL));
+    }
+
+    SECTION("180° behind → cos = -1 (cardioid would clip to 0)")
+    {
+        CHECK(directivityCosLocal(PI, 0.0, 0.0, 0.0)
+              == Catch::Approx(-1.0).margin(TOL));
+    }
+
+    SECTION("source directly above, mic horizontal → cos = 0 (perpendicular)")
+    {
+        // Mic facing horizontal forward, source straight overhead (el = +π/2).
+        // cos(theta) = sin(π/2)·sin(0) + cos(π/2)·cos(0)·... = 0 + 0 = 0.
+        CHECK(directivityCosLocal(0.0, PI / 2.0, 0.0, 0.0)
+              == Catch::Approx(0.0).margin(TOL));
+        // Source directly below.
+        CHECK(directivityCosLocal(0.0, -PI / 2.0, 0.0, 0.0)
+              == Catch::Approx(0.0).margin(TOL));
+    }
+
+    SECTION("mic tilted up 30°, source straight ahead at horizon → cos(30°)")
+    {
+        // Mic faceAz = 0, faceEl = +π/6 (30° up). Source at az = 0, el = 0.
+        // cos(theta) = sin(0)·sin(π/6) + cos(0)·cos(π/6)·cos(0) = cos(π/6) ≈ 0.8660.
+        CHECK(directivityCosLocal(0.0, 0.0, 0.0, PI / 6.0)
+              == Catch::Approx(std::cos(PI / 6.0)).margin(TOL));
+    }
+
+    SECTION("mic tilted up 30°, source 30° above horizon dead ahead → cos = 1")
+    {
+        // Source el = π/6 matches mic faceEl = π/6, both at az = 0 → on-axis.
+        CHECK(directivityCosLocal(0.0, PI / 6.0, 0.0, PI / 6.0)
+              == Catch::Approx(1.0).margin(TOL));
+    }
+
+    SECTION("mic tilted down -30°, source straight overhead → cos(-30° - 90°)")
+    {
+        // faceEl = -π/6, source el = +π/2.
+        // cos(theta) = sin(π/2)·sin(-π/6) + cos(π/2)·cos(-π/6)·cos(0)
+        //            = -sin(π/6) + 0 = -0.5
+        CHECK(directivityCosLocal(0.0, PI / 2.0, 0.0, -PI / 6.0)
+              == Catch::Approx(-0.5).margin(TOL));
+    }
+
+    SECTION("at faceEl = 0 the formula reduces to old 2D cos(az - faceAz) × cos(el)")
+    {
+        // At faceEl = 0, sin(faceEl) = 0 and cos(faceEl) = 1, so
+        //   cos(theta) = cos(el) · cos(az - faceAz).
+        // This is exactly the legacy 2D micG behaviour multiplied by an
+        // elevation factor — confirms the fall-back symmetry.
+        const double az = 0.4, el = 0.3, faceAz = -0.2;
+        const double expected = std::cos(el) * std::cos(az - faceAz);
+        CHECK(directivityCosLocal(az, el, faceAz, 0.0)
+              == Catch::Approx(expected).margin(TOL));
+    }
+
+    SECTION("symmetry: swapping (az,el) and (faceAz,faceEl) gives same cos")
+    {
+        // Spherical law of cosines is symmetric in the two unit vectors.
+        const double a1 = 0.7, e1 = -0.4, a2 = -1.1, e2 = 0.9;
+        CHECK(directivityCosLocal(a1, e1, a2, e2)
+              == Catch::Approx(directivityCosLocal(a2, e2, a1, e1)).margin(TOL));
+    }
+
+    SECTION("unit-vector bound: |cos(theta)| ≤ 1 over a random sweep")
+    {
+        // Sample a deterministic grid; result must always be in [-1, 1] to
+        // within fp-rounding (no overflow possible).
+        for (int i = 0; i < 17; ++i)
+        for (int j = 0; j < 11; ++j)
+        for (int k = 0; k < 7;  ++k)
+        for (int l = 0; l < 5;  ++l)
+        {
+            const double az  = -PI + 2.0 * PI * (double)i / 17.0;
+            const double el  = -PI / 2.0 + PI * (double)j / 11.0;
+            const double faceAz = -PI + 2.0 * PI * (double)k / 7.0;
+            const double faceEl = -PI / 2.0 + PI * (double)l / 5.0;
+            const double c = directivityCosLocal(az, el, faceAz, faceEl);
+            REQUIRE(c <= 1.0 + 1e-12);
+            REQUIRE(c >= -1.0 - 1e-12);
+        }
+    }
+}
+

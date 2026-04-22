@@ -84,6 +84,13 @@ public:
         Also saves IRSynthParams sidecar (.ping) for recall when loading from IR Synth list. */
     juce::File saveCurrentIRToFile (const juce::String& name);
 
+    /** Write the current synth IR set (MAIN from currentIRBuffer + any non-empty
+        rawSynth{Direct,Outrig,Ambient}Buffer) into destDir using <stem>.wav as the
+        MAIN and <stem>_direct.wav / _outrig.wav / _ambient.wav as aux siblings.
+        Also writes <stem>.ping alongside the MAIN. Creates destDir if missing.
+        Returns the MAIN File on success, or juce::File() on failure / no IR loaded. */
+    juce::File writeSynthIRSetToDirectory (const juce::File& destDir, const juce::String& stem);
+
     /** Load IRSynthParams from a .ping sidecar if it exists. Returns default params if not found. */
     static IRSynthParams loadIRSynthParamsFromSidecar (const juce::File& irFile);
 
@@ -387,6 +394,18 @@ private:
     std::atomic<bool> directIRLoaded  { false };
     std::atomic<bool> outrigIRLoaded  { false };
     std::atomic<bool> ambientIRLoaded { false };
+
+    // Per-path "convolvers fully ready last block" tracker. Used by processBlock to detect
+    // the transition not-ready → ready (when all convolvers in a path have published their
+    // real IR after loadImpulseResponse's background NUPC threads finish), so a fresh
+    // wet-bus fade can be armed at that moment. Without this, a path's convolvers can
+    // become ready after the irLoadFadeSamplesRemaining fade has already expired, producing
+    // an audible click when the wet path suddenly unmutes at full gain. Processed only on
+    // the audio thread; atomic<bool> is defensive — not strictly required.
+    std::atomic<bool> mainConvPrevReady    { false };
+    std::atomic<bool> directConvPrevReady  { false };
+    std::atomic<bool> outrigConvPrevReady  { false };
+    std::atomic<bool> ambientConvPrevReady { false };
     double rawSynthSampleRate = 48000.0;           // shared — all four paths share the same SR
     double currentSampleRate = 48000.0;
     juce::File selectedIRFile;   // empty = synth IR or nothing loaded

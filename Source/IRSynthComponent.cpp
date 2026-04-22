@@ -226,8 +226,21 @@ IRSynthComponent::IRSynthComponent()
     deccaToeOutSlider.setRange (0.0, 90.0, 1.0);
     deccaToeOutSlider.setValue (90.0, juce::dontSendNotification);
 
+    // Mic-tilt sliders (one per column). Range −90..+90° (1° step) with a
+    // default of −30° matching IRSynthParams::micl_tilt / micr_tilt /
+    // outrig_*tilt / ambient_*tilt / decca_tilt. Stored internally in
+    // radians; the slider exposes degrees for user-facing readability. The
+    // MAIN slider drives both mic L/R tilts (rigid pair) AND decca_tilt
+    // (rigid 3-mic array) so a single control covers both modes — see the
+    // 3D mic-tilt section in CLAUDE.md.
+    for (auto* s : { &mainTiltSlider, &outrigTiltSlider, &ambientTiltSlider })
+    {
+        s->setRange (-90.0, 90.0, 1.0);
+        s->setValue (-30.0, juce::dontSendNotification);
+    }
+
     for (auto* s : { &outrigHeightSlider, &ambientHeightSlider, &deccaCentreGainSlider,
-                     &deccaToeOutSlider })
+                     &deccaToeOutSlider, &mainTiltSlider, &outrigTiltSlider, &ambientTiltSlider })
     {
         s->setSliderStyle (juce::Slider::LinearHorizontal);
         s->setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
@@ -262,6 +275,19 @@ IRSynthComponent::IRSynthComponent()
         deccaToeOutReadout.setText (txt, juce::dontSendNotification);
     }
 
+    // Tilt labels + readouts. Common signed-degree formatter ("-30°", "+12°", "0°").
+    auto formatTilt = [] (double v) -> juce::String
+    {
+        const int deg = (int) std::round (v);
+        return juce::String (deg) + juce::String::fromUTF8 ("\xc2\xb0");
+    };
+    mainTiltLabel.setText    ("Tilt", juce::dontSendNotification);
+    outrigTiltLabel.setText  ("Tilt", juce::dontSendNotification);
+    ambientTiltLabel.setText ("Tilt", juce::dontSendNotification);
+    mainTiltReadout.setText    (formatTilt (mainTiltSlider.getValue()),    juce::dontSendNotification);
+    outrigTiltReadout.setText  (formatTilt (outrigTiltSlider.getValue()),  juce::dontSendNotification);
+    ambientTiltReadout.setText (formatTilt (ambientTiltSlider.getValue()), juce::dontSendNotification);
+
     // Add all controls directly (no tabs / viewports)
     addAndMakeVisible (floorPlanComponent);
     floorPlanComponent.setParamsGetter ([this] { return getParams(); });
@@ -273,6 +299,49 @@ IRSynthComponent::IRSynthComponent()
                      &outrigHeightSlider, &ambientHeightSlider, &deccaCentreGainSlider,
                      &deccaToeOutSlider })
         s->onValueChange = notifyParamChanged;
+
+    // Tilt slider callbacks: update readout text, write the tilt value (in
+    // radians) into FloorPlanComponent's TransducerState so it travels with
+    // the rest of the mic-layout state, then notify. MAIN drives both
+    // tilt[2/3] (regular L/R pair) and deccaTilt — one slider serves both
+    // modes. OUTRIG drives tilt[4/5]; AMBIENT drives tilt[6/7].
+    mainTiltSlider.onValueChange = [this]
+    {
+        const double deg = mainTiltSlider.getValue();
+        const double rad = deg * M_PI / 180.0;
+        mainTiltReadout.setText (juce::String ((int) std::round (deg)) + juce::String::fromUTF8 ("\xc2\xb0"),
+                                 juce::dontSendNotification);
+        auto t = floorPlanComponent.getTransducerState();
+        t.tilt[2] = rad;
+        t.tilt[3] = rad;
+        t.deccaTilt = rad;
+        floorPlanComponent.setTransducerState (t);
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    outrigTiltSlider.onValueChange = [this]
+    {
+        const double deg = outrigTiltSlider.getValue();
+        const double rad = deg * M_PI / 180.0;
+        outrigTiltReadout.setText (juce::String ((int) std::round (deg)) + juce::String::fromUTF8 ("\xc2\xb0"),
+                                   juce::dontSendNotification);
+        auto t = floorPlanComponent.getTransducerState();
+        t.tilt[4] = rad;
+        t.tilt[5] = rad;
+        floorPlanComponent.setTransducerState (t);
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    ambientTiltSlider.onValueChange = [this]
+    {
+        const double deg = ambientTiltSlider.getValue();
+        const double rad = deg * M_PI / 180.0;
+        ambientTiltReadout.setText (juce::String ((int) std::round (deg)) + juce::String::fromUTF8 ("\xc2\xb0"),
+                                    juce::dontSendNotification);
+        auto t = floorPlanComponent.getTransducerState();
+        t.tilt[6] = rad;
+        t.tilt[7] = rad;
+        floorPlanComponent.setTransducerState (t);
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
 
     // Update the dB readout live while the centre-fill slider is dragged.
     deccaCentreGainSlider.onValueChange = [this]
@@ -395,6 +464,15 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (ambientHeightLabel);
     addAndMakeVisible (outrigHeightReadout);
     addAndMakeVisible (ambientHeightReadout);
+    addAndMakeVisible (mainTiltSlider);
+    addAndMakeVisible (mainTiltLabel);
+    addAndMakeVisible (mainTiltReadout);
+    addAndMakeVisible (outrigTiltSlider);
+    addAndMakeVisible (outrigTiltLabel);
+    addAndMakeVisible (outrigTiltReadout);
+    addAndMakeVisible (ambientTiltSlider);
+    addAndMakeVisible (ambientTiltLabel);
+    addAndMakeVisible (ambientTiltReadout);
 
     // Info labels used in the MAIN / DIRECT columns of the Mic Paths strip.
     // Styled to match section headers: small, dim text.
@@ -586,7 +664,10 @@ void IRSynthComponent::resized()
     // Pattern + Centre fill + Toe-out rows) with a small margin so the
     // bottom-most Toe-out control sits just above the RT60 display in the
     // bar below (user request, v2.7.5).
-    const int stripH   = 130;
+    // stripH bumped to 154 to fit one extra Tilt row in MAIN (Decca + Pattern
+    // + Centre fill + Toe-out + Tilt). OUTRIG/AMBIENT also fit a Tilt row
+    // below their Height row; DIRECT remains short (just the enable toggle).
+    const int stripH   = 154;
     const int stripGap = 6;
     auto micStripArea = contentArea.removeFromBottom (stripH);
     contentArea.removeFromBottom (stripGap);  // visual separation
@@ -847,11 +928,7 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
             y += rowH + 2;
         }
 
-        // Decca Toe-out row — label + slider + degrees readout. This is the
-        // last row in the MAIN column; the old mainPathInfoLabel row below
-        // was removed in v2.7.5 (text was always empty) so Toe-out now sits
-        // directly above the bottom bar with only a small margin, per user
-        // request to bring Toe-out close to the RT60 readout.
+        // Decca Toe-out row — label + slider + degrees readout.
         {
             deccaToeOutLabel.setBounds   (x0, y, dLabelW, rowH);
             deccaToeOutSlider.setBounds  (x0 + dLabelW + gap, y, dSlW, rowH);
@@ -859,9 +936,17 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
             y += rowH + 2;
         }
 
+        // Tilt row — drives both micl_tilt/micr_tilt and decca_tilt; sits
+        // directly above the bottom RT60 bar.
+        {
+            mainTiltLabel.setBounds   (x0, y, dLabelW, rowH);
+            mainTiltSlider.setBounds  (x0 + dLabelW + gap, y, dSlW, rowH);
+            mainTiltReadout.setBounds (x0 + dLabelW + gap + dSlW + gap, y, dReadoutW, rowH);
+            y += rowH + 2;
+        }
+
         // mainPathInfoLabel kept visible but zero-sized — the empty string
-        // didn't render anything anyway, and removing the row lets Toe-out
-        // sit directly above the RT60 bar.
+        // didn't render anything anyway.
         mainPathInfoLabel.setBounds (x0, y, 0, 0);
     };
 
@@ -903,6 +988,12 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
         outrigHeightLabel.setBounds  (x0, y, labelW, rowH);
         outrigHeightSlider.setBounds (x0 + labelW + gap, y, slW, rowH);
         outrigHeightReadout.setBounds(x0 + labelW + gap + slW + gap, y, readoutW, rowH);
+        y += rowH + 2;
+
+        // Tilt row — drives outrig_ltilt and outrig_rtilt as a pair.
+        outrigTiltLabel.setBounds   (x0, y, labelW, rowH);
+        outrigTiltSlider.setBounds  (x0 + labelW + gap, y, slW, rowH);
+        outrigTiltReadout.setBounds (x0 + labelW + gap + slW + gap, y, readoutW, rowH);
     };
 
     auto layoutAmbientCol = [&] (int colX)
@@ -926,6 +1017,12 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
         ambientHeightLabel.setBounds  (x0, y, labelW, rowH);
         ambientHeightSlider.setBounds (x0 + labelW + gap, y, slW, rowH);
         ambientHeightReadout.setBounds(x0 + labelW + gap + slW + gap, y, readoutW, rowH);
+        y += rowH + 2;
+
+        // Tilt row — drives ambient_ltilt and ambient_rtilt as a pair.
+        ambientTiltLabel.setBounds   (x0, y, labelW, rowH);
+        ambientTiltSlider.setBounds  (x0 + labelW + gap, y, slW, rowH);
+        ambientTiltReadout.setBounds (x0 + labelW + gap + slW + gap, y, readoutW, rowH);
     };
 
     const int col0X = stripX;
@@ -960,6 +1057,8 @@ IRSynthParams IRSynthComponent::getParams() const
     p.source_rx = t.cx[1];   p.source_ry = t.cy[1];   p.spkr_angle = t.angle[1];
     p.receiver_lx = t.cx[2]; p.receiver_ly = t.cy[2]; p.micl_angle = t.angle[2];
     p.receiver_rx = t.cx[3]; p.receiver_ry = t.cy[3]; p.micr_angle = t.angle[3];
+    p.micl_tilt = t.tilt[2];
+    p.micr_tilt = t.tilt[3];
     p.mic_pattern = comboSelection (micPatternCombo, micOptions, 7).toStdString();
 
     // Decca Tree capture mode (see IRSynthEngine.h). The toggle is a UI-level
@@ -969,6 +1068,7 @@ IRSynthParams IRSynthComponent::getParams() const
     p.decca_cx    = t.deccaCx;
     p.decca_cy    = t.deccaCy;
     p.decca_angle = t.deccaAngle;
+    p.decca_tilt  = t.deccaTilt;
     p.decca_centre_gain = deccaCentreGainSlider.getValue();
     p.decca_toe_out     = deccaToeOutSlider.getValue() * M_PI / 180.0;
     p.er_only = erOnlyButton.getToggleState();
@@ -982,12 +1082,14 @@ IRSynthParams IRSynthComponent::getParams() const
     p.outrig_lx      = t.cx[4];    p.outrig_ly      = t.cy[4];
     p.outrig_rx      = t.cx[5];    p.outrig_ry      = t.cy[5];
     p.outrig_langle  = t.angle[4]; p.outrig_rangle  = t.angle[5];
+    p.outrig_ltilt   = t.tilt[4];  p.outrig_rtilt   = t.tilt[5];
     p.outrig_height  = outrigHeightSlider.getValue();
     p.outrig_pattern = comboSelection (outrigPatternCombo, micOptions, 7).toStdString();
 
     p.ambient_lx     = t.cx[6];    p.ambient_ly     = t.cy[6];
     p.ambient_rx     = t.cx[7];    p.ambient_ry     = t.cy[7];
     p.ambient_langle = t.angle[6]; p.ambient_rangle = t.angle[7];
+    p.ambient_ltilt  = t.tilt[6];  p.ambient_rtilt  = t.tilt[7];
     p.ambient_height = ambientHeightSlider.getValue();
     p.ambient_pattern = comboSelection (ambientPatternCombo, micOptions, 7).toStdString();
 
@@ -1025,13 +1127,17 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     t.cx[1] = p.source_rx;   t.cy[1] = p.source_ry;   t.angle[1] = p.spkr_angle;
     t.cx[2] = p.receiver_lx; t.cy[2] = p.receiver_ly; t.angle[2] = p.micl_angle;
     t.cx[3] = p.receiver_rx; t.cy[3] = p.receiver_ry; t.angle[3] = p.micr_angle;
+    t.tilt[2] = p.micl_tilt; t.tilt[3] = p.micr_tilt;
     t.cx[4] = p.outrig_lx;   t.cy[4] = p.outrig_ly;   t.angle[4] = p.outrig_langle;
     t.cx[5] = p.outrig_rx;   t.cy[5] = p.outrig_ry;   t.angle[5] = p.outrig_rangle;
+    t.tilt[4] = p.outrig_ltilt; t.tilt[5] = p.outrig_rtilt;
     t.cx[6] = p.ambient_lx;  t.cy[6] = p.ambient_ly;  t.angle[6] = p.ambient_langle;
     t.cx[7] = p.ambient_rx;  t.cy[7] = p.ambient_ry;  t.angle[7] = p.ambient_rangle;
+    t.tilt[6] = p.ambient_ltilt; t.tilt[7] = p.ambient_rtilt;
     t.deccaCx    = p.decca_cx;
     t.deccaCy    = p.decca_cy;
     t.deccaAngle = p.decca_angle;
+    t.deccaTilt  = p.decca_tilt;
     floorPlanComponent.setTransducerState (t);
     floorPlanComponent.outrigVisible  = p.outrig_enabled;
     floorPlanComponent.ambientVisible = p.ambient_enabled;
@@ -1071,6 +1177,24 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     }
     outrigHeightSlider.setValue  (p.outrig_height,  juce::dontSendNotification);
     ambientHeightSlider.setValue (p.ambient_height, juce::dontSendNotification);
+
+    // Tilt sliders — derived in degrees from the radian *_tilt fields.
+    // MAIN slider follows micl_tilt (paired with micr_tilt and decca_tilt by
+    // the slider's own onValueChange); OUTRIG/AMBIENT follow each pair's
+    // L tilt. Read-back uses jlimit so out-of-range legacy values clamp
+    // cleanly into the slider's −90..+90° range.
+    {
+        auto setTilt = [] (juce::Slider& s, juce::Label& r, double rad)
+        {
+            const double deg = juce::jlimit (-90.0, 90.0, rad * 180.0 / M_PI);
+            s.setValue (deg, juce::dontSendNotification);
+            r.setText (juce::String ((int) std::round (deg)) + juce::String::fromUTF8 ("\xc2\xb0"),
+                       juce::dontSendNotification);
+        };
+        setTilt (mainTiltSlider,    mainTiltReadout,    p.micl_tilt);
+        setTilt (outrigTiltSlider,  outrigTiltReadout,  p.outrig_ltilt);
+        setTilt (ambientTiltSlider, ambientTiltReadout, p.ambient_ltilt);
+    }
 
     // Experimental early-reflection A/B toggles.
     directMaxOrderCombo.setSelectedId (juce::jlimit (0, 2, p.direct_max_order) + 1,
@@ -1128,39 +1252,32 @@ void IRSynthComponent::buttonClicked (juce::Button* b)
         onDone();
     else if (b == &saveIRButton && onSaveIRFn)
     {
-        juce::String name = irCombo.getText().trim();
-        if (name.endsWith ("*"))
-            name = name.dropLastCharacters (1).trim();
-        if (name.isEmpty())
-            return;
+        juce::String current = irCombo.getText().trim();
+        if (current.endsWith ("*"))
+            current = current.dropLastCharacters (1).trim();
+        if (current.isEmpty())
+            current = "My IR";
 
-        if (dirty)
-        {
-            auto* aw = new juce::AlertWindow ("Save IR As", "Enter a name for the IR:",
-                                              juce::MessageBoxIconType::NoIcon, this);
-            aw->addTextEditor ("irName", name, "Name:");
-            aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
-            aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        auto* aw = new juce::AlertWindow ("Save IR As", "Enter a name for the IR:",
+                                          juce::MessageBoxIconType::NoIcon, this);
+        aw->addTextEditor ("irName", current, "Name:");
+        aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
-            aw->enterModalState (true, juce::ModalCallbackFunction::create (
-                [this, aw] (int result)
+        aw->enterModalState (true, juce::ModalCallbackFunction::create (
+            [this, aw] (int result)
+            {
+                if (result == 1)
                 {
-                    if (result == 1)
+                    juce::String saveName = aw->getTextEditorContents ("irName").trim();
+                    if (saveName.isNotEmpty() && onSaveIRFn)
                     {
-                        juce::String saveName = aw->getTextEditorContents ("irName").trim();
-                        if (saveName.isNotEmpty() && onSaveIRFn)
-                        {
-                            onSaveIRFn (saveName);
-                            dirty = false;
-                        }
+                        onSaveIRFn (saveName);
+                        dirty = false;
                     }
-                    delete aw;
-                }), true);
-        }
-        else
-        {
-            onSaveIRFn (name);
-        }
+                }
+                delete aw;
+            }), true);
     }
 }
 
@@ -1180,6 +1297,10 @@ void IRSynthComponent::comboBoxChanged (juce::ComboBox* combo)
 
 void IRSynthComponent::setIRList (const juce::Array<IRManager::IREntry>& entries)
 {
+    // Preserve the currently displayed text across list rebuilds. ComboBox::clear()
+    // with dontSendNotification clears items but not the text field; the caller
+    // decides what (if anything) to display afterwards via setSelectedIRDisplayName.
+    const juce::String previousText = irCombo.getText();
     irCombo.clear (juce::dontSendNotification);
 
     bool factoryHeaderAdded = false;
@@ -1225,7 +1346,7 @@ void IRSynthComponent::setIRList (const juce::Array<IRManager::IREntry>& entries
     }
 
     irCombo.setEditableText (true);
-    irCombo.setText ("", juce::dontSendNotification);
+    irCombo.setText (previousText, juce::dontSendNotification);
 }
 
 void IRSynthComponent::setSelectedIRDisplayName (const juce::String& name)
