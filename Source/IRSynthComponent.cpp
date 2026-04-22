@@ -576,6 +576,45 @@ IRSynthComponent::IRSynthComponent()
     directPathInfoLabel.setColour (juce::Label::textColourId, textDim);
     directPathInfoLabel.setFont (juce::FontOptions (10.0f));
 
+    // Per-path filename labels (one per MAIN/DIRECT/OUTRIG/AMBIENT column).
+    // Drawn directly under the Mic Paths strip so the user can see at a
+    // glance which file is loaded into each slot. Each label is tinted with
+    // the mic path's mixer accent colour (matches MicMixerComponent
+    // kAccent* — main page) so the row visually pairs with the mixer
+    // strips. Updated each tick by timerCallback() via pathDisplayNameSupplier.
+    //
+    // Mixer accents (kept in sync with MicMixerComponent.cpp):
+    //   MAIN    = 0xff8cd6ef icy blue (plugin-wide accent)
+    //   DIRECT  = 0xffe87a2d warm orange
+    //   OUTRIG  = 0xffc987e8 soft violet
+    //   AMBIENT = 0xff7bd67b fresh green
+    static const juce::Colour pathAccents[4] {
+        juce::Colour (0xff8cd6ef),
+        juce::Colour (0xffe87a2d),
+        juce::Colour (0xffc987e8),
+        juce::Colour (0xff7bd67b)
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        auto& l = pathNameLabels[i];
+        addAndMakeVisible (l);
+        l.setText ("<empty>", juce::dontSendNotification);
+        l.setJustificationType (juce::Justification::centred);
+        l.setColour (juce::Label::textColourId, pathAccents[i]);
+        l.setFont (juce::FontOptions (11.0f));
+        l.setInterceptsMouseClicks (false, false);
+    }
+
+    // "LOADED:" caption on the far-left of the path-name row — same font as
+    // the per-path labels, dim grey to match the section headers above so it
+    // reads as a row label rather than competing with the per-path filenames.
+    addAndMakeVisible (loadedRowLabel);
+    loadedRowLabel.setText ("LOADED:", juce::dontSendNotification);
+    loadedRowLabel.setJustificationType (juce::Justification::centredLeft);
+    loadedRowLabel.setColour (juce::Label::textColourId, textDim);
+    loadedRowLabel.setFont (juce::FontOptions (11.0f));
+    loadedRowLabel.setInterceptsMouseClicks (false, false);
+
     // Bottom bar: RT60 | IR combo + Save | Preview | Progress | Done
     const char* const rt60Freqs[] = { "125", "250", "500", "1k", "2k", "4k" };
     addAndMakeVisible (rt60Label);
@@ -755,9 +794,22 @@ void IRSynthComponent::resized()
     // + Centre fill + Toe-out + Tilt). OUTRIG/AMBIENT also fit a Tilt row
     // below their Height row; DIRECT remains short (just the enable toggle).
     const int stripH   = 154;
-    const int stripGap = 6;
     auto micStripArea = contentArea.removeFromBottom (stripH);
-    contentArea.removeFromBottom (stripGap);  // visual separation
+
+    // ── Per-path filename row ───────────────────────────────────────────────
+    // Sits *immediately under* the Mic Paths strip with no separating gap, so
+    // it visually attaches to the column headers above (MAIN / DIRECT /
+    // OUTRIG / AMBIENT) rather than to the bottom bar. We carve the row
+    // partly out of the strip-to-bar gap that used to be there (stripGap = 6)
+    // and partly out of the bottom bar's vertical slack (the existing bar
+    // contents are ~30 px in a 52 px area — there's ~22 px of unused space
+    // we can reclaim). Net effect: floor plan / left column / strip are all
+    // unchanged; the bar's controls shift down by ~14 px to fill its own
+    // bottom slack.
+    const int pathNameRowH = 16;
+    const int pathBarGap   = 4;   // breathing room between labels and bar
+    auto pathNameRow = barArea.removeFromTop (pathNameRowH);
+    barArea.removeFromTop (pathBarGap);
 
     // ── Left / right column split ───────────────────────────────────────────
     // Left column: all acoustic-character + room-geometry controls (~35% width).
@@ -769,6 +821,36 @@ void IRSynthComponent::resized()
     layoutControls (leftCol);
     floorPlanComponent.setBounds (rightCol.reduced (8));
     layoutMicPathsStrip (micStripArea);
+
+    // Lay out the four per-path filename labels directly under the Mic Paths
+    // strip's four columns so each label visually anchors to its section
+    // header above. We re-derive the column geometry from micStripArea
+    // exactly the way layoutMicPathsStrip does (4 equal columns, 10 px
+    // gap, 6 px inset) so the labels track the columns even if the column
+    // formula changes later — a single source of geometry is preferable to
+    // exposing the column rectangles as members.
+    //
+    // The "LOADED:" caption sits at the far-left edge of the row, anchored
+    // to the same X as the bar's left edge (= mic strip left edge) so it
+    // aligns with the RT60 label below.
+    {
+        const int colGap   = 10;
+        const int inset    = 6;
+        const int stripX   = micStripArea.getX();
+        const int stripW   = micStripArea.getWidth();
+        const int colW     = (stripW - colGap * 3) / 4;
+
+        const int loadedW = 56;  // wide enough for "LOADED:" at 11 pt + small margin
+        loadedRowLabel.setBounds (stripX, pathNameRow.getY(),
+                                  loadedW, pathNameRow.getHeight());
+
+        for (int i = 0; i < 4; ++i)
+        {
+            const int colX = stripX + (colW + colGap) * i;
+            pathNameLabels[i].setBounds (colX + inset, pathNameRow.getY(),
+                                         colW - inset * 2, pathNameRow.getHeight());
+        }
+    }
 
     // ── Bottom bar ──────────────────────────────────────────────────────────
     const int barY = barArea.getY();
@@ -1363,6 +1445,20 @@ void IRSynthComponent::timerCallback()
         else if (txt.endsWith (" *"))
         {
             irCombo.setText (txt.dropLastCharacters (2), juce::dontSendNotification);
+        }
+    }
+
+    // Refresh the per-path filename labels above the bottom bar from the
+    // processor's display-name supplier. Cheap string compare-and-set so
+    // setText with juce::dontSendNotification only triggers a repaint when
+    // the text actually changes.
+    if (pathDisplayNameSupplier)
+    {
+        for (int i = 0; i < 4; ++i)
+        {
+            const auto s = pathDisplayNameSupplier (i);
+            if (pathNameLabels[i].getText() != s)
+                pathNameLabels[i].setText (s, juce::dontSendNotification);
         }
     }
 }

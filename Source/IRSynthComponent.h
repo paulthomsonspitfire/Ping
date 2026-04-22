@@ -82,6 +82,13 @@ public:
     /** Update UI from params (e.g. when loading a preset). */
     void setParams (const IRSynthParams& p);
 
+    /** Supplier polled by the GUI timer to populate the per-path filename labels
+        beneath the Mic Paths strip. Called once per tick with the four MicPath
+        values (0 = Main, 1 = Direct, 2 = Outrig, 3 = Ambient). Returns the
+        display string for that path (e.g. "<empty>", "<unsaved>", "Venue_outrig").
+        The editor binds this to PingProcessor::getPathIRDisplayName. */
+    void setPathDisplayNameSupplier (std::function<juce::String (int)> fn) { pathDisplayNameSupplier = std::move (fn); }
+
 private:
     void timerCallback() override;
     void buttonClicked (juce::Button* b) override;
@@ -233,6 +240,17 @@ private:
     // MAIN has no per-column controls (it is always synthesised and configured
     // elsewhere); DIRECT has only an enable toggle (it inherits MAIN pair).
     juce::Label mainPathInfoLabel, directPathInfoLabel;
+
+    // Filename display labels — one per mic path, drawn in the row above the
+    // bottom bar. Populated by polling pathDisplayNameSupplier from
+    // timerCallback(); show "<empty>", "<unsaved>", or the loaded IR's stem
+    // (suffix preserved for aux paths so the user can verify the actual file
+    // backing each slot). Each label is tinted with its mic-path mixer accent
+    // colour (see MicMixerComponent kAccent*) so the row reads as one piece
+    // with the mixer on the main page.
+    juce::Label pathNameLabels[4];
+    juce::Label loadedRowLabel;  // "LOADED:" caption on the left of the row
+    std::function<juce::String (int)> pathDisplayNameSupplier;
 
     // Bottom bar
     juce::Label rt60Label;

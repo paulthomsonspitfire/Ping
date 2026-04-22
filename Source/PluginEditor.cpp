@@ -341,16 +341,21 @@ PingEditor::PingEditor (PingProcessor& p)
         {
             pingProcessor.setSelectedIRFile (file);
             pingProcessor.loadIRFromFile (file);
-            auto sidecar = file.getSiblingFile (file.getFileNameWithoutExtension() + ".ping");
-            if (sidecar.existsAsFile())
+            // Sidecar lookup transparently strips any aux suffix on file's stem,
+            // so an orphan `Venue_outrig.wav` correctly picks up `Venue.ping`.
+            if (PingProcessor::getSidecarFor (file).existsAsFile())
             {
                 auto params = PingProcessor::loadIRSynthParamsFromSidecar (file);
                 pingProcessor.setLastIRSynthParams (params);
                 irSynthComponent.setParams (params);
             }
             // Reproduce the mixer-strip configuration the IR was saved with — but
-            // only outside a preset restore (the preset's APVTS state already wins).
-            if (! pingProcessor.getIsRestoringState())
+            // only outside a preset restore (the preset's APVTS state already wins),
+            // and only when the user picked a MAIN file (full-set load). Orphan-aux
+            // loads auto-enable just their own strip in loadIRFromFile and leave the
+            // other strips untouched — applying the full-set gates here would turn
+            // strips on/off that have no IR loaded.
+            if (! pingProcessor.getIsRestoringState() && ! PingProcessor::hasAuxSuffix (file))
             {
                 PingProcessor::MixerGateState gates;
                 if (PingProcessor::tryLoadMixerGatesFromSidecar (file, gates))
@@ -375,6 +380,15 @@ PingEditor::PingEditor (PingProcessor& p)
         float erDb = erParam != nullptr ? erParam->load() : 0.0f;
         float tailDb = tailParam != nullptr ? tailParam->load() : 0.0f;
         return std::pair<float, float> { erDb, tailDb };
+    });
+    // Per-path filename labels: poll the processor each tick. The supplier
+    // returns "<empty>" / "<unsaved>" / "<stem>" depending on what is
+    // currently loaded into each MicPath slot. Aux paths show their literal
+    // suffix so the user can verify which file actually populates each slot.
+    irSynthComponent.setPathDisplayNameSupplier ([this] (int micPathIndex)
+    {
+        return pingProcessor.getPathIRDisplayName (
+            static_cast<PingProcessor::MicPath> (micPathIndex));
     });
     const bool savedIRSynthDirty = pingProcessor.isIRSynthDirty();
     irSynthComponent.setParams (pingProcessor.getLastIRSynthParams());
@@ -1617,16 +1631,19 @@ void PingEditor::comboBoxChanged (juce::ComboBox* combo)
                 if (file.existsAsFile())
                 {
                     pingProcessor.loadIRFromFile (file);
-                    auto sidecar = file.getSiblingFile (file.getFileNameWithoutExtension() + ".ping");
-                    if (sidecar.existsAsFile())
+                    // Sidecar lookup transparently strips any aux suffix on file's stem,
+                    // so an orphan `Venue_outrig.wav` correctly picks up `Venue.ping`.
+                    if (PingProcessor::getSidecarFor (file).existsAsFile())
                     {
                         auto params = PingProcessor::loadIRSynthParamsFromSidecar (file);
                         pingProcessor.setLastIRSynthParams (params);
                         irSynthComponent.setParams (params);
                     }
                     // Reproduce the mixer-strip configuration the IR was saved with — but
-                    // only outside a preset restore (the preset's APVTS state already wins).
-                    if (! pingProcessor.getIsRestoringState())
+                    // only outside a preset restore (the preset's APVTS state already wins),
+                    // and only when the user picked a MAIN file (full-set load). Orphan-aux
+                    // loads auto-enable just their own strip in loadIRFromFile.
+                    if (! pingProcessor.getIsRestoringState() && ! PingProcessor::hasAuxSuffix (file))
                     {
                         PingProcessor::MixerGateState gates;
                         if (PingProcessor::tryLoadMixerGatesFromSidecar (file, gates))
@@ -2224,11 +2241,16 @@ void PingEditor::importIR()
             if (! targetDir.exists())
                 targetDir.createDirectory();
 
-            // Aux-suffix redirect: if the user picked "Venue_outrig.wav" (or _direct /
-            // _ambient), try to re-anchor on the base sibling so the whole set is
-            // imported together. If no base sibling exists, drop the aux suffix so
-            // the orphan lands as a coherent MAIN file (and the next import/load
-            // treats it as such — no silently-orphaned aux on disk).
+            // Aux-suffix detection. If the user picked "Venue_outrig.wav" (or _direct /
+            // _ambient) we need to handle two sub-cases:
+            //   (a) base sibling "Venue.wav" exists in source dir → re-anchor on it
+            //       so the whole set is imported together.
+            //   (b) no base sibling (true orphan) → preserve the aux suffix on import.
+            //       The destination's base sidecar (`Venue.ping`) is copied if present
+            //       in the source dir so the IR Synth panel can still show pucks /
+            //       room geometry. loadIRFromFile() will then route the aux WAV into
+            //       its correct slot via Fix B's aux-routing branch.
+            const char* orphanAuxSuffix = nullptr; // non-null only in case (b)
             {
                 auto srcStemInit = src.getFileNameWithoutExtension();
                 struct AuxMap { const char* suffix; };
@@ -2249,31 +2271,20 @@ void PingEditor::importIR()
                     }
 
                     if (baseSibling != juce::File())
-                    {
-                        src = baseSibling;   // anchor on the base; siblings ride along
-                    }
+                        src = baseSibling;        // (a) anchor on the base; siblings ride along
                     else
-                    {
-                        // Orphan aux: rename on import by dropping the suffix on copy.
-                        // The collision-free logic below uses srcStem for the destination,
-                        // so we override that stem only — the source file itself is read
-                        // from the original location with its aux suffix intact.
-                    }
+                        orphanAuxSuffix = m.suffix; // (b) preserve as orphan aux import
                     break;
                 }
             }
 
-            // Resolve a collision-free stem. Check against the MAIN file AND any
+            // Resolve a collision-free *base* stem. Check against the MAIN file AND any
             // sibling suffixes so we don't clash with an existing set partially.
+            // For orphan aux imports srcStem is the suffix-stripped base (so the
+            // destination becomes `<destStem><suffix>.wav` not `<destStem>_outrig_outrig.wav`).
             auto srcStem = src.getFileNameWithoutExtension();
-            // Drop any aux suffix from the destination stem so orphan aux imports
-            // become coherent MAIN files on disk.
-            for (const char* sfx : { "_direct", "_outrig", "_ambient" })
-                if (srcStem.endsWithIgnoreCase (sfx))
-                {
-                    srcStem = srcStem.dropLastCharacters ((int) std::strlen (sfx));
-                    break;
-                }
+            if (orphanAuxSuffix != nullptr)
+                srcStem = srcStem.dropLastCharacters ((int) std::strlen (orphanAuxSuffix));
             auto srcExt  = src.getFileExtension();
             auto stemInUse = [&] (const juce::String& stem) -> bool
             {
@@ -2292,11 +2303,40 @@ void PingEditor::importIR()
                 ++suffix;
             }
 
-            // copyIRSetWithSiblings copies MAIN + .ping + any _direct/_outrig/_ambient
-            // siblings from srcDir, renamed under destStem. Siblings with missing
-            // base files are not present in the common case (the selected .wav IS
-            // the MAIN), so this mirrors Export IR precisely.
-            auto targetFile = copyIRSetWithSiblings (src, targetDir, destStem);
+            juce::File targetFile;
+            if (orphanAuxSuffix != nullptr)
+            {
+                // Orphan aux import: copy `<src>` → `<destStem><suffix><ext>` and
+                // (if present) `<srcDir>/<baseStem>.ping` → `<destStem>.ping`.
+                // We deliberately do NOT call copyIRSetWithSiblings — there is no
+                // MAIN file to copy and any sibling lookup off srcStem would be
+                // self-referential. After the copy, loadIRFromFile sees the aux
+                // suffix on `targetFile` and routes the buffer into the correct slot.
+                auto destAux = targetDir.getChildFile (destStem + orphanAuxSuffix + srcExt);
+                if (src.copyFileTo (destAux))
+                {
+                    PingProcessor::fixImportedFilePermissions (destAux);
+
+                    // Base sidecar (`Venue.ping` for orphan `Venue_outrig.wav`).
+                    auto srcBaseStem = src.getFileNameWithoutExtension()
+                                          .dropLastCharacters ((int) std::strlen (orphanAuxSuffix));
+                    auto srcBaseSidecar = src.getParentDirectory().getChildFile (srcBaseStem + ".ping");
+                    if (srcBaseSidecar.existsAsFile())
+                    {
+                        auto destSidecar = targetDir.getChildFile (destStem + ".ping");
+                        if (srcBaseSidecar.copyFileTo (destSidecar))
+                            PingProcessor::fixImportedFilePermissions (destSidecar);
+                    }
+
+                    targetFile = destAux;
+                }
+            }
+            else
+            {
+                // Normal (or re-anchored) import: copy MAIN + .ping + any aux siblings.
+                targetFile = copyIRSetWithSiblings (src, targetDir, destStem);
+            }
+
             if (targetFile != juce::File() && targetFile.existsAsFile())
             {
                 pingProcessor.getIRManager().refresh();
@@ -2305,9 +2345,23 @@ void PingEditor::importIR()
                 pingProcessor.setSelectedIRFile (targetFile);
                 pingProcessor.loadIRFromFile (targetFile);
 
+                // Apply the imported IR's sidecar params (room geometry, pucks, all
+                // four paths' settings) to the IR Synth panel so the user gets visual
+                // confirmation. getSidecarFor() transparently handles aux suffixes,
+                // so an orphan aux import correctly picks up `<baseStem>.ping`.
+                if (PingProcessor::getSidecarFor (targetFile).existsAsFile())
+                {
+                    auto params = PingProcessor::loadIRSynthParamsFromSidecar (targetFile);
+                    pingProcessor.setLastIRSynthParams (params);
+                    irSynthComponent.setParams (params);
+                }
+
                 // Honour any mixer-gate state baked into the imported IR's sidecar so
                 // imports of "outrig + ambient only" sets reproduce on the mixer too.
-                if (! pingProcessor.getIsRestoringState())
+                // Orphan-aux imports keep the existing MAIN/etc strips and auto-enable
+                // just the imported aux strip (handled in loadIRFromFile), so we only
+                // apply the full sidecar gates when the imported file is itself MAIN.
+                if (! pingProcessor.getIsRestoringState() && ! PingProcessor::hasAuxSuffix (targetFile))
                 {
                     PingProcessor::MixerGateState gates;
                     if (PingProcessor::tryLoadMixerGatesFromSidecar (targetFile, gates))
