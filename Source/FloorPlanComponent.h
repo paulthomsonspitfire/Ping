@@ -95,6 +95,14 @@ public:
     // toggles main_decca_enabled.
     bool deccaVisible   = false;
 
+    // Option-mirror axis preference. Vertical mirrors a partner puck across
+    // x = 0.5 (the historical default — useful for L/R pairs); Horizontal
+    // mirrors across y = 0.5 (useful for matching front/back placements).
+    // Selected from two icon buttons in IRSynthComponent and persisted in
+    // the .ping sidecar via IRSynthParams::mirror_axis.
+    enum class MirrorAxis { Vertical = 0, Horizontal = 1 };
+    MirrorAxis mirrorAxis = MirrorAxis::Vertical;
+
 private:
     std::function<IRSynthParams()> getParams;
     std::function<void()> onPlacementChanged;
@@ -109,10 +117,16 @@ private:
     // (index ^ 1) is snapped to the horizontal mirror position/angle.
     // Latched at mouseDown from e.mods.isAltDown(), cleared on mouseUp.
     bool mirrorDrag = false;
-    // Lazy-initialised custom cursor shown during an Option-mirror drag.
-    // Built once on first use in mouseDown; see makeMirrorCursor().
-    juce::MouseCursor mirrorCursor;
-    static juce::MouseCursor makeMirrorCursor();
+    // Latched at mouseDown alongside mirrorDrag — captures which axis was
+    // active so the cursor / paint guides / drag math all stay consistent
+    // even if the user changes the axis mid-drag.
+    MirrorAxis mirrorDragAxis = MirrorAxis::Vertical;
+    // Pre-built custom cursors shown during an Option-mirror drag. Two
+    // glyphs (vertical-axis arrows ←|→ and horizontal-axis arrows ↑—↓)
+    // are constructed once in the ctor; see makeMirrorCursor().
+    juce::MouseCursor mirrorCursorVertical;
+    juce::MouseCursor mirrorCursorHorizontal;
+    static juce::MouseCursor makeMirrorCursor (bool horizontal);
 
     struct HitResult { int index; bool rotate; };
     HitResult transducerHitTest (float mx, float my);

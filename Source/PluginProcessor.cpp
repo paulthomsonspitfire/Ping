@@ -2,7 +2,8 @@
 #include "PluginEditor.h"
 #include <sys/stat.h>
 
-static void writeIRSynthParamsSidecar (const juce::File& wavFile, const IRSynthParams& p);
+static void writeIRSynthParamsSidecar (const juce::File& wavFile, const IRSynthParams& p,
+                                       const PingProcessor::MixerGateState* gates = nullptr);
 
 namespace IDs
 {
@@ -500,6 +501,11 @@ void PingProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     directIRLoaded .store (false);
     outrigIRLoaded .store (false);
     ambientIRLoaded.store (false);
+
+    // Mirror the *IRLoaded reset above for the IR Synth panel display strings —
+    // the deferred callAsync at the end of prepareToPlay will repopulate them
+    // through the load path that re-arms the convolvers.
+    for (auto& s : pathDisplayName) s = "<empty>";
 
     // Reset the per-path convolver-ready trackers too. After reset() the convolvers
     // are back to unity pass-through with no real engine installed, so their next
@@ -2194,6 +2200,78 @@ void PingProcessor::applyWidth (juce::AudioBuffer<float>& wet, float width)
 void PingProcessor::loadIRFromFile (const juce::File& file)
 {
     if (! file.existsAsFile()) return;
+
+    // ── Multi-mic aux-suffix handling ────────────────────────────────────────
+    // The user may select an aux file (e.g. "Venue_outrig.wav") directly from
+    // the combo or via Import. Two cases:
+    //   (a) Base sibling exists → redirect to load the WHOLE set anchored at
+    //       the base file. The user gets MAIN + DIRECT + OUTRIG + AMBIENT in
+    //       the right slots, identical to having clicked the base file.
+    //   (b) Base sibling missing (orphan) → load just this aux file into its
+    //       matching slot. MAIN is left untouched so the user can keep
+    //       working with whatever MAIN content they already had.
+    {
+        const juce::String stem = file.getFileNameWithoutExtension();
+        struct AuxMap { const char* suffix; MicPath path; };
+        static const AuxMap kAuxMap[] = {
+            { "_direct",  MicPath::Direct  },
+            { "_outrig",  MicPath::Outrig  },
+            { "_ambient", MicPath::Ambient },
+        };
+        static const char* const kAudioExts[] = { ".wav", ".WAV", ".aiff", ".aif", ".AIFF", ".AIF" };
+
+        for (const auto& m : kAuxMap)
+        {
+            if (! stem.endsWithIgnoreCase (m.suffix)) continue;
+            const auto baseStem = stem.dropLastCharacters ((int) std::strlen (m.suffix));
+            const auto parent = file.getParentDirectory();
+
+            juce::File baseFile;
+            for (auto* ext : kAudioExts)
+            {
+                auto candidate = parent.getChildFile (baseStem + ext);
+                if (candidate.existsAsFile()) { baseFile = candidate; break; }
+            }
+
+            if (baseFile != juce::File())
+            {
+                // Whole-set redirect: load MAIN + auto-load all siblings.
+                loadIRFromFile (baseFile);
+                return;
+            }
+
+            // Orphan aux file: load only into its matching slot. Leave MAIN,
+            // DIRECT/OUTRIG/AMBIENT alone (whichever ones the user had before).
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
+            if (! reader) return;
+            juce::AudioBuffer<float> auxBuf ((int) reader->numChannels, (int) reader->lengthInSamples);
+            reader->read (&auxBuf, 0, (int) reader->lengthInSamples, 0, true, true);
+            loadIRFromBuffer (std::move (auxBuf), reader->sampleRate, /*fromSynth=*/false,
+                              /*deferConvolverLoad=*/false, m.path);
+
+            // Display name reflects the orphan filename verbatim (suffix preserved).
+            setPathDisplayName (m.path, file.getFileNameWithoutExtension());
+
+            // Auto-enable the corresponding mixer strip. Without this the orphan
+            // would load silently — the IR Synth panel would update visually but
+            // the user would hear nothing. Honours an in-flight preset restore
+            // by skipping (the preset's APVTS state already wins).
+            if (! isRestoringState.load())
+            {
+                const char* paramId = (m.path == MicPath::Direct  ? "directOn"
+                                    : (m.path == MicPath::Outrig  ? "outrigOn"
+                                    : (m.path == MicPath::Ambient ? "ambientOn"
+                                                                  : nullptr)));
+                if (paramId != nullptr)
+                    if (auto* p = apvts.getParameter (paramId))
+                        p->setValueNotifyingHost (1.0f);
+            }
+            return;
+        }
+    }
+
     irFromSynth = false;
     lastLoadedIRFile = file;
     currentIRSampleRate = 48000.0;  // set from reader below
@@ -2206,6 +2284,13 @@ void PingProcessor::loadIRFromFile (const juce::File& file)
     reader->read (&buf, 0, (int) reader->lengthInSamples, 0, true, true);
     currentIRSampleRate = reader->sampleRate;
     loadIRFromBuffer (std::move (buf), currentIRSampleRate, false, false, MicPath::Main);
+
+    // MAIN display = the file's stem (sans extension). Each loadMicPathFromFile call
+    // below will overwrite its own slot's display string when a sibling is found; if
+    // no sibling exists for a given aux path the previously-loaded display is left
+    // intact, matching the convolver's actual contents (sibling auto-load is a no-op
+    // when the file is absent — it does not clear the path).
+    setPathDisplayName (MicPath::Main, file.getFileNameWithoutExtension());
 
     // Load sibling multi-mic paths if they exist — old IRs without these files are skipped
     // silently, so this is fully backward-compatible.
@@ -2256,6 +2341,10 @@ void PingProcessor::loadMicPathFromFile (const juce::File& baseIRFile, MicPath p
     reader->read (&buf, 0, (int) reader->lengthInSamples, 0, true, true);
     loadIRFromBuffer (std::move (buf), reader->sampleRate, /*fromSynth=*/false,
                       /*deferConvolverLoad=*/false, path);
+
+    // Display the sibling's stem (e.g. "Venue_outrig"). Aux suffix is preserved so
+    // the user can read off which file actually populates the slot.
+    setPathDisplayName (path, sibling.getFileNameWithoutExtension());
 }
 
 juce::File PingProcessor::writeSynthIRSetToDirectory (const juce::File& destDir, const juce::String& stem)
@@ -2295,7 +2384,10 @@ juce::File PingProcessor::writeSynthIRSetToDirectory (const juce::File& destDir,
     auto file = destDir.getChildFile (safeName + ".wav");
     if (! writeBufferAsWav (file, currentIRBuffer, currentIRSampleRate))
         return {};
-    writeIRSynthParamsSidecar (file, lastIRSynthParams);
+    // Snapshot current mixer-strip gates so reloading the IR file reproduces
+    // the user's intended mix-bus configuration (e.g. "outrig + ambient only").
+    const auto gates = getCurrentMixerGates();
+    writeIRSynthParamsSidecar (file, lastIRSynthParams, &gates);
 
     // ── Auxiliary paths (DIRECT / OUTRIG / AMBIENT) ─────────────────────────
     // Each is written as a suffixed sibling WAV next to the MAIN IR. The
@@ -2337,6 +2429,10 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         {
             rawSynthDirectBuffer = buffer;
             rawSynthSampleRate   = bufferSampleRate;
+            // A freshly synthesised IR has no on-disk filename yet — show "<unsaved>"
+            // until finishSaveSynthIR() writes the file and the resulting load updates
+            // this slot to the saved stem.
+            setPathDisplayName (MicPath::Direct, "<unsaved>");
             if (deferConvolverLoad) return;
         }
 
@@ -2460,6 +2556,12 @@ void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bu
         else if (path == MicPath::Outrig)  rawSynthOutrigBuffer   = buffer;
         else if (path == MicPath::Ambient) rawSynthAmbientBuffer  = buffer;
         rawSynthSampleRate = bufferSampleRate;
+
+        // A freshly synthesised IR has no on-disk filename yet — show "<unsaved>"
+        // for the slot that just got synthesised. Once finishSaveSynthIR() writes the
+        // WAV and re-loads it through loadIRFromFile()/loadMicPathFromFile(), the
+        // matching display string is overwritten with the stem.
+        setPathDisplayName (path, "<unsaved>");
 
         // During initial session load (audioEnginePrepared = false), setStateInformation calls
         // us with deferConvolverLoad = true.  We've saved the raw buffer; prepareToPlay will
@@ -2825,6 +2927,12 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("deccaCtrGain", p.decca_centre_gain);
     ir->setAttribute ("deccaToeOut",  p.decca_toe_out);
     ir->setAttribute ("deccaTilt",    p.decca_tilt);
+
+    // Floor-plan Option-mirror axis preference (UI-only, not consumed by the
+    // engine). 0 = vertical (x = 0.5 mirror — L/R pairs), 1 = horizontal
+    // (y = 0.5 mirror — front/back pairs). Older sidecars without this
+    // attribute default to 0 (vertical) for backward compatibility.
+    ir->setAttribute ("mirrorAxis",   p.mirror_axis);
 }
 
 static void synthesizedIRToXml (const juce::AudioBuffer<float>& buf, double sampleRate, juce::XmlElement& elem)
@@ -2955,19 +3063,58 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.decca_toe_out      = ir->getDoubleAttribute ("deccaToeOut",  defaults.decca_toe_out);
     p.decca_tilt         = ir->getDoubleAttribute ("deccaTilt",    0.0);
 
+    // Option-mirror axis preference. Pre-v2.7.7 sidecars default to 0
+    // (vertical mirror — the historical behaviour).
+    p.mirror_axis        = ir->getIntAttribute    ("mirrorAxis",   defaults.mirror_axis);
+
     return p;
 }
 
-static void writeIRSynthParamsSidecar (const juce::File& wavFile, const IRSynthParams& p)
+static void writeIRSynthParamsSidecar (const juce::File& wavFile, const IRSynthParams& p,
+                                       const PingProcessor::MixerGateState* gates)
 {
     juce::XmlElement root ("PingIRSynth");
     irSynthParamsToXml (p, root);
+    if (gates != nullptr)
+    {
+        // <mixerGates> is an independent child element. Older sidecars (or any
+        // sidecar saved without a gate snapshot) simply omit it; readers
+        // default to the current APVTS state.
+        auto* mg = root.createNewChildElement ("mixerGates");
+        mg->setAttribute ("mainOn",    gates->mainOn);
+        mg->setAttribute ("directOn",  gates->directOn);
+        mg->setAttribute ("outrigOn",  gates->outrigOn);
+        mg->setAttribute ("ambientOn", gates->ambientOn);
+    }
     root.writeTo (wavFile.getSiblingFile (wavFile.getFileNameWithoutExtension() + ".ping"));
+}
+
+juce::File PingProcessor::getSidecarFor (const juce::File& irFile)
+{
+    juce::String stem = irFile.getFileNameWithoutExtension();
+    // Strip multi-mic aux suffix so sidecar lookup always points at the MAIN
+    // sidecar (which is the only place a .ping is ever written).
+    for (const char* sfx : { "_direct", "_outrig", "_ambient" })
+        if (stem.endsWithIgnoreCase (sfx))
+        {
+            stem = stem.dropLastCharacters ((int) std::strlen (sfx));
+            break;
+        }
+    return irFile.getSiblingFile (stem + ".ping");
+}
+
+bool PingProcessor::hasAuxSuffix (const juce::File& irFile)
+{
+    const auto stem = irFile.getFileNameWithoutExtension();
+    for (const char* sfx : { "_direct", "_outrig", "_ambient" })
+        if (stem.endsWithIgnoreCase (sfx))
+            return true;
+    return false;
 }
 
 IRSynthParams PingProcessor::loadIRSynthParamsFromSidecar (const juce::File& irFile)
 {
-    auto sidecar = irFile.getSiblingFile (irFile.getFileNameWithoutExtension() + ".ping");
+    auto sidecar = getSidecarFor (irFile);
     if (! sidecar.existsAsFile()) return IRSynthParams();
     if (auto xml = juce::parseXML (sidecar))
     {
@@ -2975,6 +3122,44 @@ IRSynthParams PingProcessor::loadIRSynthParamsFromSidecar (const juce::File& irF
             return irSynthParamsFromXml (ir);
     }
     return IRSynthParams();
+}
+
+bool PingProcessor::tryLoadMixerGatesFromSidecar (const juce::File& irFile, MixerGateState& out)
+{
+    auto sidecar = getSidecarFor (irFile);
+    if (! sidecar.existsAsFile()) return false;
+    auto xml = juce::parseXML (sidecar);
+    if (xml == nullptr) return false;
+    auto* mg = xml->getChildByName ("mixerGates");
+    if (mg == nullptr) return false;
+    out.mainOn    = mg->getBoolAttribute ("mainOn",    out.mainOn);
+    out.directOn  = mg->getBoolAttribute ("directOn",  out.directOn);
+    out.outrigOn  = mg->getBoolAttribute ("outrigOn",  out.outrigOn);
+    out.ambientOn = mg->getBoolAttribute ("ambientOn", out.ambientOn);
+    return true;
+}
+
+PingProcessor::MixerGateState PingProcessor::getCurrentMixerGates() const
+{
+    MixerGateState g;
+    if (auto* v = apvts.getRawParameterValue (IDs::mainOn))    g.mainOn    = v->load() > 0.5f;
+    if (auto* v = apvts.getRawParameterValue (IDs::directOn))  g.directOn  = v->load() > 0.5f;
+    if (auto* v = apvts.getRawParameterValue (IDs::outrigOn))  g.outrigOn  = v->load() > 0.5f;
+    if (auto* v = apvts.getRawParameterValue (IDs::ambientOn)) g.ambientOn = v->load() > 0.5f;
+    return g;
+}
+
+void PingProcessor::applyMixerGates (const MixerGateState& g)
+{
+    auto setBool = [this] (const juce::String& id, bool v)
+    {
+        if (auto* p = apvts.getParameter (id))
+            p->setValueNotifyingHost (v ? 1.0f : 0.0f);
+    };
+    setBool (IDs::mainOn,    g.mainOn);
+    setBool (IDs::directOn,  g.directOn);
+    setBool (IDs::outrigOn,  g.outrigOn);
+    setBool (IDs::ambientOn, g.ambientOn);
 }
 
 void PingProcessor::fixImportedFilePermissions (const juce::File& f)
@@ -2986,9 +3171,10 @@ void PingProcessor::fixImportedFilePermissions (const juce::File& f)
     cp.waitForProcessToFinish (2000);
 }
 
-void PingProcessor::writeIRSynthSidecar (const juce::File& wavFile, const IRSynthParams& p)
+void PingProcessor::writeIRSynthSidecar (const juce::File& wavFile, const IRSynthParams& p,
+                                         const MixerGateState* gates)
 {
-    writeIRSynthParamsSidecar (wavFile, p);
+    writeIRSynthParamsSidecar (wavFile, p, gates);
 }
 
 void PingProcessor::getStateInformation (juce::MemoryBlock& destData)

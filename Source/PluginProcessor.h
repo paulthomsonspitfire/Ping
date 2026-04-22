@@ -94,12 +94,50 @@ public:
     /** Load IRSynthParams from a .ping sidecar if it exists. Returns default params if not found. */
     static IRSynthParams loadIRSynthParamsFromSidecar (const juce::File& irFile);
 
+    /** Per-IR mixer-strip gate state stored in the .ping sidecar. Lets a saved
+        IR file remember which mixer strips were enabled when it was created so
+        that selecting it from the combo (outside a preset restore) reproduces
+        the original mix bus. */
+    struct MixerGateState
+    {
+        bool mainOn    = true;
+        bool directOn  = false;
+        bool outrigOn  = false;
+        bool ambientOn = false;
+    };
+
+    /** Snapshot of the four MAIN/DIRECT/OUTRIG/AMBIENT On parameters. */
+    MixerGateState getCurrentMixerGates() const;
+
+    /** Apply MixerGateState to the four On parameters via setValueNotifyingHost
+        so the host, undo manager, and audio thread all see the change. */
+    void applyMixerGates (const MixerGateState& g);
+
+    /** Read the <mixerGates> child from the sidecar next to irFile. Returns true
+        if the element existed (out is populated); false otherwise (out is unchanged). */
+    static bool tryLoadMixerGatesFromSidecar (const juce::File& irFile, MixerGateState& out);
+
+    /** Resolve the .ping sidecar file for a given IR file, transparently handling
+        multi-mic aux suffixes. If irFile's stem ends in `_direct`/`_outrig`/`_ambient`,
+        the lookup falls back to the base stem (`Venue.ping` for `Venue_outrig.wav`)
+        because sidecars are only ever written next to the MAIN file. The returned
+        File may not exist on disk — callers should check `existsAsFile()`. */
+    static juce::File getSidecarFor (const juce::File& irFile);
+
+    /** True if irFile's stem ends in `_direct`, `_outrig`, or `_ambient`. Callers
+        use this to distinguish "user picked a MAIN file" (full-set load) from
+        "user picked an aux file directly" (orphan / layered load). */
+    static bool hasAuxSuffix (const juce::File& irFile);
+
     /** Fix permissions (0644) and strip macOS quarantine on an imported file.
         Ensures the plugin can read files received via AirDrop, email, etc. */
     static void fixImportedFilePermissions (const juce::File& f);
 
-    /** Write a .ping sidecar file alongside a WAV, containing the IRSynthParams used to generate it. */
-    static void writeIRSynthSidecar (const juce::File& wavFile, const IRSynthParams& p);
+    /** Write a .ping sidecar file alongside a WAV, containing the IRSynthParams used to generate it.
+        If gates is non-null, also embeds the four mixer gate booleans so that loading the
+        IR file later (outside a preset restore) can reproduce the mix-bus configuration. */
+    static void writeIRSynthSidecar (const juce::File& wavFile, const IRSynthParams& p,
+                                     const MixerGateState* gates = nullptr);
 
     bool getReverse() const { return reverse; }
     void setReverse (bool v) { reverse = v; }
@@ -164,6 +202,19 @@ public:
             case MicPath::Ambient: return ambientIRLoaded.load();
         }
         return false;
+    }
+
+    /** Display name for the IR currently loaded into a given mic path. Returns one of:
+          - "<empty>"     — nothing loaded for this path
+          - "<unsaved>"   — synthesised IR present but not yet saved to a file
+          - <stem>        — file IR loaded; aux paths show their literal suffix
+                            (e.g. "Venue_outrig"). UI strips ".wav" automatically by
+                            virtue of returning the stem, never an extension.
+        Read from the message thread (GUI timer); never modify off the message thread. */
+    juce::String getPathIRDisplayName (MicPath path) const noexcept
+    {
+        const int i = static_cast<int> (path);
+        return (i >= 0 && i < 4) ? pathDisplayName[i] : juce::String ("<empty>");
     }
 
     /** Pull wet-spectrum samples for GUI (lock-free). Returns num samples copied, or 0 if not ready. */
@@ -394,6 +445,17 @@ private:
     std::atomic<bool> directIRLoaded  { false };
     std::atomic<bool> outrigIRLoaded  { false };
     std::atomic<bool> ambientIRLoaded { false };
+
+    // Display name for each mic-path slot — surfaced in the IR Synth panel labels.
+    // Indexed by static_cast<int>(MicPath). Mutated from message-thread load sites
+    // (loadIRFromFile / loadIRFromBuffer / loadMicPathFromFile / prepareToPlay reset)
+    // and read from the message-thread GUI timer, so plain juce::String is safe.
+    juce::String pathDisplayName[4] { "<empty>", "<empty>", "<empty>", "<empty>" };
+    void setPathDisplayName (MicPath path, const juce::String& name) noexcept
+    {
+        const int i = static_cast<int> (path);
+        if (i >= 0 && i < 4) pathDisplayName[i] = name;
+    }
 
     // Per-path "convolvers fully ready last block" tracker. Used by processBlock to detect
     // the transition not-ready → ready (when all convolvers in a path have published their

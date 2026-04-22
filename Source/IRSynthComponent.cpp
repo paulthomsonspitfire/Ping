@@ -1,6 +1,63 @@
 #include "IRSynthComponent.h"
 #include "PingBinaryData.h"
 
+// Small custom-paint button used for the Option-mirror axis selector.
+// Renders a rounded rectangle with a dashed line through the centre — vertical
+// or horizontal depending on the constructor flag. Highlights in the plugin
+// accent colour when toggled on. Lives at the file scope so layoutControls()
+// can layout it directly via the unique_ptr members declared in the header.
+class IRSynthComponent::MirrorAxisButton : public juce::Button
+{
+public:
+    explicit MirrorAxisButton (bool isHorizontal_)
+        : juce::Button (isHorizontal_ ? "MirrorH" : "MirrorV"),
+          isHorizontal (isHorizontal_)
+    {
+        setClickingTogglesState (true);
+        setRadioGroupId (8211);   // arbitrary unique id — pairs the two buttons
+        setTooltip (isHorizontal
+                        ? "Option-drag mirrors mics across the horizontal centre line (front / back)"
+                        : "Option-drag mirrors mics across the vertical centre line (left / right)");
+    }
+
+    void paintButton (juce::Graphics& g, bool /*isOver*/, bool /*isDown*/) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (1.5f);
+        const bool on = getToggleState();
+
+        const juce::Colour accent { 0xff8cd6ef };
+        const juce::Colour dim    { 0xff707070 };
+        const juce::Colour fg     = on ? accent : dim;
+
+        // Soft-rounded box outline
+        g.setColour (on ? accent.withAlpha (0.16f) : juce::Colour (0x18ffffff));
+        g.fillRoundedRectangle (r, 3.0f);
+        g.setColour (fg.withAlpha (on ? 0.95f : 0.55f));
+        g.drawRoundedRectangle (r, 3.0f, 1.2f);
+
+        // Dashed centre line, oriented per-axis. Slightly inset from the box.
+        g.setColour (fg);
+        const float dashes[] = { 2.5f, 2.0f };
+        if (isHorizontal)
+        {
+            const float yMid = r.getCentreY();
+            const float x0 = r.getX() + 3.0f;
+            const float x1 = r.getRight() - 3.0f;
+            g.drawDashedLine (juce::Line<float> (x0, yMid, x1, yMid), dashes, 2, 1.4f);
+        }
+        else
+        {
+            const float xMid = r.getCentreX();
+            const float y0 = r.getY() + 3.0f;
+            const float y1 = r.getBottom() - 3.0f;
+            g.drawDashedLine (juce::Line<float> (xMid, y0, xMid, y1), dashes, 2, 1.4f);
+        }
+    }
+
+private:
+    const bool isHorizontal;
+};
+
 namespace
 {
     const juce::Colour panelBg     { 0xff1e1e1e };
@@ -65,6 +122,10 @@ namespace
         return opts[0];
     }
 }
+
+// Out-of-line destructor so unique_ptr<MirrorAxisButton> sees the complete
+// type defined above in this translation unit.
+IRSynthComponent::~IRSynthComponent() = default;
 
 IRSynthComponent::IRSynthComponent()
 {
@@ -410,6 +471,32 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (depthValueLabel);
     addAndMakeVisible (heightValueLabel);
 
+    // Option-mirror axis selector. Two small radio buttons (shared radioGroupId
+    // inside the class) — tapping one sets FloorPlanComponent::mirrorAxis and
+    // fires the param-changed notification so the choice round-trips into the
+    // .ping sidecar via IRSynthParams::mirror_axis.
+    mirrorVerticalButton   = std::make_unique<MirrorAxisButton> (false);
+    mirrorHorizontalButton = std::make_unique<MirrorAxisButton> (true);
+    mirrorVerticalButton->setToggleState   (true,  juce::dontSendNotification);
+    mirrorHorizontalButton->setToggleState (false, juce::dontSendNotification);
+    mirrorVerticalButton->onClick = [this]
+    {
+        floorPlanComponent.mirrorAxis = FloorPlanComponent::MirrorAxis::Vertical;
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    mirrorHorizontalButton->onClick = [this]
+    {
+        floorPlanComponent.mirrorAxis = FloorPlanComponent::MirrorAxis::Horizontal;
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    mirrorAxisLabel.setText ("Option-mirror", juce::dontSendNotification);
+    mirrorAxisLabel.setColour (juce::Label::textColourId, textDim);
+    mirrorAxisLabel.setJustificationType (juce::Justification::centredLeft);
+    mirrorAxisLabel.setFont (juce::FontOptions (10.5f));
+    addAndMakeVisible (*mirrorVerticalButton);
+    addAndMakeVisible (*mirrorHorizontalButton);
+    addAndMakeVisible (mirrorAxisLabel);
+
     addAndMakeVisible (floorCombo);
     addAndMakeVisible (ceilingCombo);
     addAndMakeVisible (wallCombo);
@@ -488,6 +575,45 @@ IRSynthComponent::IRSynthComponent()
     directPathInfoLabel.setJustificationType (juce::Justification::topLeft);
     directPathInfoLabel.setColour (juce::Label::textColourId, textDim);
     directPathInfoLabel.setFont (juce::FontOptions (10.0f));
+
+    // Per-path filename labels (one per MAIN/DIRECT/OUTRIG/AMBIENT column).
+    // Drawn directly under the Mic Paths strip so the user can see at a
+    // glance which file is loaded into each slot. Each label is tinted with
+    // the mic path's mixer accent colour (matches MicMixerComponent
+    // kAccent* — main page) so the row visually pairs with the mixer
+    // strips. Updated each tick by timerCallback() via pathDisplayNameSupplier.
+    //
+    // Mixer accents (kept in sync with MicMixerComponent.cpp):
+    //   MAIN    = 0xff8cd6ef icy blue (plugin-wide accent)
+    //   DIRECT  = 0xffe87a2d warm orange
+    //   OUTRIG  = 0xffc987e8 soft violet
+    //   AMBIENT = 0xff7bd67b fresh green
+    static const juce::Colour pathAccents[4] {
+        juce::Colour (0xff8cd6ef),
+        juce::Colour (0xffe87a2d),
+        juce::Colour (0xffc987e8),
+        juce::Colour (0xff7bd67b)
+    };
+    for (int i = 0; i < 4; ++i)
+    {
+        auto& l = pathNameLabels[i];
+        addAndMakeVisible (l);
+        l.setText ("<empty>", juce::dontSendNotification);
+        l.setJustificationType (juce::Justification::centred);
+        l.setColour (juce::Label::textColourId, pathAccents[i]);
+        l.setFont (juce::FontOptions (11.0f));
+        l.setInterceptsMouseClicks (false, false);
+    }
+
+    // "LOADED:" caption on the far-left of the path-name row — same font as
+    // the per-path labels, dim grey to match the section headers above so it
+    // reads as a row label rather than competing with the per-path filenames.
+    addAndMakeVisible (loadedRowLabel);
+    loadedRowLabel.setText ("LOADED:", juce::dontSendNotification);
+    loadedRowLabel.setJustificationType (juce::Justification::centredLeft);
+    loadedRowLabel.setColour (juce::Label::textColourId, textDim);
+    loadedRowLabel.setFont (juce::FontOptions (11.0f));
+    loadedRowLabel.setInterceptsMouseClicks (false, false);
 
     // Bottom bar: RT60 | IR combo + Save | Preview | Progress | Done
     const char* const rt60Freqs[] = { "125", "250", "500", "1k", "2k", "4k" };
@@ -668,9 +794,22 @@ void IRSynthComponent::resized()
     // + Centre fill + Toe-out + Tilt). OUTRIG/AMBIENT also fit a Tilt row
     // below their Height row; DIRECT remains short (just the enable toggle).
     const int stripH   = 154;
-    const int stripGap = 6;
     auto micStripArea = contentArea.removeFromBottom (stripH);
-    contentArea.removeFromBottom (stripGap);  // visual separation
+
+    // ── Per-path filename row ───────────────────────────────────────────────
+    // Sits *immediately under* the Mic Paths strip with no separating gap, so
+    // it visually attaches to the column headers above (MAIN / DIRECT /
+    // OUTRIG / AMBIENT) rather than to the bottom bar. We carve the row
+    // partly out of the strip-to-bar gap that used to be there (stripGap = 6)
+    // and partly out of the bottom bar's vertical slack (the existing bar
+    // contents are ~30 px in a 52 px area — there's ~22 px of unused space
+    // we can reclaim). Net effect: floor plan / left column / strip are all
+    // unchanged; the bar's controls shift down by ~14 px to fill its own
+    // bottom slack.
+    const int pathNameRowH = 16;
+    const int pathBarGap   = 4;   // breathing room between labels and bar
+    auto pathNameRow = barArea.removeFromTop (pathNameRowH);
+    barArea.removeFromTop (pathBarGap);
 
     // ── Left / right column split ───────────────────────────────────────────
     // Left column: all acoustic-character + room-geometry controls (~35% width).
@@ -682,6 +821,36 @@ void IRSynthComponent::resized()
     layoutControls (leftCol);
     floorPlanComponent.setBounds (rightCol.reduced (8));
     layoutMicPathsStrip (micStripArea);
+
+    // Lay out the four per-path filename labels directly under the Mic Paths
+    // strip's four columns so each label visually anchors to its section
+    // header above. We re-derive the column geometry from micStripArea
+    // exactly the way layoutMicPathsStrip does (4 equal columns, 10 px
+    // gap, 6 px inset) so the labels track the columns even if the column
+    // formula changes later — a single source of geometry is preferable to
+    // exposing the column rectangles as members.
+    //
+    // The "LOADED:" caption sits at the far-left edge of the row, anchored
+    // to the same X as the bar's left edge (= mic strip left edge) so it
+    // aligns with the RT60 label below.
+    {
+        const int colGap   = 10;
+        const int inset    = 6;
+        const int stripX   = micStripArea.getX();
+        const int stripW   = micStripArea.getWidth();
+        const int colW     = (stripW - colGap * 3) / 4;
+
+        const int loadedW = 56;  // wide enough for "LOADED:" at 11 pt + small margin
+        loadedRowLabel.setBounds (stripX, pathNameRow.getY(),
+                                  loadedW, pathNameRow.getHeight());
+
+        for (int i = 0; i < 4; ++i)
+        {
+            const int colX = stripX + (colW + colGap) * i;
+            pathNameLabels[i].setBounds (colX + inset, pathNameRow.getY(),
+                                         colW - inset * 2, pathNameRow.getHeight());
+        }
+    }
 
     // ── Bottom bar ──────────────────────────────────────────────────────────
     const int barY = barArea.getY();
@@ -864,6 +1033,25 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
     dimRow (widthLabel,  widthValueLabel,  widthSlider);
     dimRow (depthLabel,  depthValueLabel,  depthSlider);
     dimRow (heightLabel, heightValueLabel, heightSlider);
+
+    // Option-mirror axis selector — two small icon buttons under the
+    // dimension rows. Label on the left, V then H buttons on the right.
+    {
+        y += 2;
+        const int btnSize = 18;
+        const int btnGap  = 6;
+        const int lblW    = 100;
+        mirrorAxisLabel.setBounds (x0, y + (rowH - btnSize) / 2, lblW, btnSize);
+        if (mirrorHorizontalButton)
+            mirrorHorizontalButton->setBounds (x0 + ctrlW - btnSize,
+                                               y + (rowH - btnSize) / 2,
+                                               btnSize, btnSize);
+        if (mirrorVerticalButton)
+            mirrorVerticalButton->setBounds   (x0 + ctrlW - btnSize - btnGap - btnSize,
+                                               y + (rowH - btnSize) / 2,
+                                               btnSize, btnSize);
+        y += rowH;
+    }
 
     // Mic paths have moved out of the left column into a horizontal strip
     // along the bottom of the content area — see layoutMicPathsStrip().
@@ -1098,6 +1286,11 @@ IRSynthParams IRSynthComponent::getParams() const
     p.lambert_scatter_enabled  = lambertScatterButton.getToggleState();
     p.spk_directivity_full     = spkDirFullButton    .getToggleState();
 
+    // Floor-plan Option-mirror axis (UI-only; not consumed by the synthesis
+    // engine, persisted so the preference round-trips with the rest of the
+    // floor-plan UI state).
+    p.mirror_axis = (floorPlanComponent.mirrorAxis == FloorPlanComponent::MirrorAxis::Horizontal) ? 1 : 0;
+
     return p;
 }
 
@@ -1206,6 +1399,20 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     outrigHeightReadout.setText  (juce::String (p.outrig_height,  1) + " m", juce::dontSendNotification);
     ambientHeightReadout.setText (juce::String (p.ambient_height, 1) + " m", juce::dontSendNotification);
 
+    // Option-mirror axis: restore the preference onto both the floor plan
+    // (used immediately by the next drag) and the two toggle buttons (so the
+    // UI reflects the stored value). Guarded like all other setParams() writes
+    // by the suppressingParamNotifications flag that wraps this method.
+    {
+        const bool horiz = (p.mirror_axis == 1);
+        floorPlanComponent.mirrorAxis = horiz ? FloorPlanComponent::MirrorAxis::Horizontal
+                                              : FloorPlanComponent::MirrorAxis::Vertical;
+        if (mirrorVerticalButton)
+            mirrorVerticalButton->setToggleState   (! horiz, juce::dontSendNotification);
+        if (mirrorHorizontalButton)
+            mirrorHorizontalButton->setToggleState (  horiz, juce::dontSendNotification);
+    }
+
     suppressingParamNotifications = false;
 }
 
@@ -1238,6 +1445,20 @@ void IRSynthComponent::timerCallback()
         else if (txt.endsWith (" *"))
         {
             irCombo.setText (txt.dropLastCharacters (2), juce::dontSendNotification);
+        }
+    }
+
+    // Refresh the per-path filename labels above the bottom bar from the
+    // processor's display-name supplier. Cheap string compare-and-set so
+    // setText with juce::dontSendNotification only triggers a repaint when
+    // the text actually changes.
+    if (pathDisplayNameSupplier)
+    {
+        for (int i = 0; i < 4; ++i)
+        {
+            const auto s = pathDisplayNameSupplier (i);
+            if (pathNameLabels[i].getText() != s)
+                pathNameLabels[i].setText (s, juce::dontSendNotification);
         }
     }
 }
