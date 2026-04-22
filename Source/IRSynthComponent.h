@@ -139,6 +139,22 @@ private:
     juce::Label widthLabel, depthLabel, heightLabel;
     juce::Label widthValueLabel, depthValueLabel, heightValueLabel;  // Editable number only
 
+    // ── Shape proportion sliders (v2.8.0 polygon geometry) ──────────────────
+    // Visible only when the selected shape uses the corresponding parameter:
+    //   Cathedral       → navePctSlider + trptPctSlider
+    //   Fan / Shoebox   → taperSlider
+    //   Octagonal       → cornerCutSlider (0..1 chamfer depth)
+    //   Circular Hall   → cornerCutSlider (0 = rectangle, 1 = ellipse)
+    // The readout labels are right-justified unlabelled slots (no editable
+    // number) — unlike Width/Depth/Height these are dimensionless fractions.
+    juce::Slider navePctSlider, trptPctSlider, taperSlider, cornerCutSlider;
+    juce::Label  navePctLabel, trptPctLabel, taperLabel, cornerCutLabel;
+    juce::Label  navePctReadout, trptPctReadout, taperReadout, cornerCutReadout;
+
+    // Helper called from comboBoxChanged + setParams to toggle slider
+    // visibility based on the current shape combo selection.
+    void updateShapeProportionVisibility();
+
     // Option-mirror axis selector (two small icon buttons sitting under the
     // Room Geometry section). Vertical = mirror across x = 0.5 (default,
     // L/R pairs); Horizontal = mirror across y = 0.5 (front/back pairs).

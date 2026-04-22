@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.7.8 (see `CMakeLists.txt`)
+**Current version:** 2.8.0 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -1545,6 +1545,129 @@ Both `irSynthParamsToXml` and `irSynthParamsFromXml` (in `PluginProcessor.cpp`) 
 - **MAIN slider drives Decca tilt too** — when Decca is engaged the array replaces the MAIN L/R pair, so binding the MAIN slider to both keeps the user's mental model simple ("the MAIN tilt knob aims whatever MAIN actually is").
 - **No DIRECT-specific tilt parameter** — DIRECT inherits MAIN's mic pattern and angles by design; tilt extends the same rule. Adding `direct_tilt` would require an extra UI slot and break the "DIRECT = a near-field tap of the MAIN pickup" mental model.
 - **Coordinate convention is right-handed and matches the existing 2D `micFaceAngle`** — `az = atan2(dy, dx)` (azimuth measured the same way as the existing mic angle), `el = atan2(dz, horizDist)` (positive = source above mic). Negative tilt = mic pointing down. Do not introduce a separate sign convention for tilt vs source elevation; both use the same atan2 arrangement so `directivityCos` is symmetric in its arguments.
+
+---
+
+## Polygon room geometry (v2.8.0)
+
+### What it does
+
+Replaces the single-shape scalar room model (W × D × H with a string `shape` used only as a label) with a full 2D polygon image-source method (ISM) for non-rectangular rooms. Four polygon shapes are user-selectable from the Room Geometry combo: **Rectangular** (unchanged — bit-identical to pre-2.8.0 output), **Cathedral** (cruciform plan with configurable nave width + transept depth), **Fan / Shoebox** (stage-end taper), **Circular Hall** (16-gon inscribed in either the bounding rectangle or an ellipse, tunable by corner-cut), and **Octagonal** (8 walls with user-controlled corner chamfer depth). Vertical (floor/ceiling) reflections still use the analytic `nz` loop unchanged; only the horizontal image tree was replaced.
+
+### Shape proportion parameters
+
+Four proportion parameters in `IRSynthParams` control the polygon geometry. Each is conditionally visible in the UI depending on the selected shape.
+
+| Field | Range | Default | Shapes that use it | Effect |
+|---|---|---|---|---|
+| `shapeNavePct` | 0.15–0.50 | 0.30 | Cathedral | Nave width as a fraction of total width |
+| `shapeTrptPct` | 0.20–0.45 | 0.35 | Cathedral | Transept arm depth as a fraction of total depth |
+| `shapeTaper` | 0.00–0.70 | 0.30 | Fan / Shoebox | Stage-end narrowing. 0 = rectangle, 0.70 = strong fan |
+| `shapeCornerCut` | 0.00–1.00 | 0.414 | Circular Hall, Octagonal | Corner chamfer depth. For Octagonal, 0.414 = regular octagon (1 − √2/2 rounded). For Circular Hall, 0 = 16-gon inscribed in bounding rectangle, 1 = 16-gon inscribed in ellipse |
+
+All four are persisted in the `.ping` sidecar and the APVTS state XML. `IRSynthComponent::setComboTo` migrates legacy `"L-shaped"` → `"Rectangular"` and `"Cylindrical"` → `"Circular Hall"` on load so old user content opens without warnings (the L-shaped polygon was dropped because the concave geometry required full chain validation that would dominate synth CPU on the default 60-order RT60-based cap).
+
+### Engine architecture
+
+**Geometry utilities** live as `public static` methods on `IRSynthEngine` (declared in `IRSynthEngine.h`, implemented in `IRSynthEngine.cpp`) so the test build can call them directly:
+
+- `reflect2D(px, py, nx, ny, dx, dy)` — reflects point `(px, py)` through the line passing through `(dx, dy)` with inward normal `(nx, ny)`.
+- `rayIntersectsSegment(ox, oy, dx, dy, ax, ay, bx, by, tOut)` — ray–segment intersection with optional `t` output; used for the shadow test in chain validation.
+- `polygonArea(walls)` — signed area via the shoelace formula on the wall start points.
+- `polygonPerimeter(walls)` — sum of segment lengths, used in the mean-free-path / Eyring calculation.
+- `makeWalls2D(p)` — builds the `std::vector<Wall2D>` for the current shape. For each shape it generates the vertex list (CCW where possible), walks edges, computes the inward-pointing normal via the centroid-offset trick, and packs the per-wall 8-band absorption coefficients (`std::array<double, 8> rAbs`) from the floor/ceiling/wall material data. **Rectangular returns an empty vector** — the rectangular code path never touches this struct and keeps its pre-2.8.0 analytic image-source loop verbatim.
+
+`Wall2D` fields: `double ax, ay, bx, by` (segment endpoints), `double nx, ny` (unit inward normal), `std::array<double, 8> rAbs` (per-band reflection coefficient = `1 − absorption`). `rAbs` uses the wall-material table for every non-floor/ceiling wall (the floor and ceiling still use their own materials applied inside the vertical `nz` loop).
+
+### `calcRefsPolygon` — the Borish 2D tree
+
+`calcRefsPolygon` mirrors `calcRefs`'s signature parameter-for-parameter so the dispatch lambda can call either one at every reflection site without any other code change. The dispatch lambda lives in `synthMainPath`, `synthExtraPath`, `synthDirectPath`, and also the Decca centre-mic paths in `synthMainPath`:
+
+```cpp
+auto refsDispatch = [&] (double rxL, double ryL, double rzL,
+                         double sxL, double syL, double szL,
+                         uint32_t seed, const std::string& pat,
+                         double spkAng, double micAng, double micTilt)
+{
+    if (p.shape == "Rectangular")
+        return calcRefs        (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, ...);
+    else
+        return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, ...);
+};
+```
+
+Inside `calcRefsPolygon`, an internal `ImageSource2D` struct carries:
+
+- `double x, y` — accumulated 2D image position
+- `int wallPath[k]` — ordered list of wall indices the tree took to reach this image (for debugging + chain validation)
+- `std::array<double, 8> accAbs` — per-band product of reflection coefficients (initialised to 1.0)
+- `int order` — current reflection order
+- `std::vector<std::pair<double,double>> imgPositions` — all intermediate image positions used by `validateChain2D`
+
+`generateIS2D` is a recursive Borish tree: at each node, for every wall whose inward normal has a negative dot with the source→receiver direction (the `dot < -1e-9` test — **not `> -1e-9`** as a stale version of the plan claimed), reflect the current image position through that wall to produce a child image. Before accepting the child, `validateChain2D` walks the full chain from the receiver back through the original source: for each segment in the path, the ray from the current point to the intermediate image must actually hit the corresponding wall (not a different wall first) with `t ∈ [1e-9, 1)`. Single-step visibility is **not enough** for concave shapes like Cathedral — the transept arms can shadow otherwise valid images if only the first wall is checked.
+
+Accepted images yield a `Ref { int t; std::array<double,8> amps; double az; }`. Vertical `nz` reflections are combined multiplicatively with the horizontal amps just as `calcRefs` does.
+
+### Order caps
+
+`orderLimitForShape(shape, mo)` applies a hard ceiling on top of the RT60-based `mo = min(60, floor(RT60_MF × 343 / minDim / 2))` so concave / complex shapes don't explode combinatorially:
+
+| Shape | Hard cap |
+|---|---|
+| Rectangular | 60 (effectively no cap — matches pre-2.8.0) |
+| Cathedral | 16 |
+| Fan / Shoebox | 20 |
+| Circular Hall | 12 |
+| Octagonal | 14 |
+
+### Shape-aware gates in the late-reverb path
+
+- **`applyModalBank`** early-returns unchanged for any `shape != "Rectangular"`. Axial-mode resonators are only physically meaningful for a rectangular room, and for non-rectangular plans the modes don't correspond to real standing waves.
+- **`renderFDNTail`** computes mean free path from `4V / S`, where for non-rectangular shapes `V = polygonArea(walls) × height` and `S = polygonPerimeter(walls) × height + 2 × polygonArea(walls)`. Rectangular keeps its original `V = W×D×H`, `S = 2(WD + WH + DH)`. `fdnMaxMs` is recomputed with the polygon-aware MFP so the delay-line cycle time tracks the real room.
+- **`calcRT60`** similarly uses `polygonArea`/`polygonPerimeter` in place of the rectangular-only `W×D + W×H + D×H` surface totals, then feeds the polygon surface-and-volume into the Eyring + air-absorption formula at all 8 bands.
+
+All three call sites take a `const IRSynthParams*` (or the shape string alone where only the gate is needed). Passing `nullptr` / defaulting to `"Rectangular"` keeps every existing non-polygon unit test bit-identical.
+
+### Backward compatibility
+
+- **Legacy shape strings** — `"L-shaped"` and `"Cylindrical"` are migrated to `"Rectangular"` and `"Circular Hall"` respectively in both `IRSynthComponent::setComboTo` (user-facing combo) and `PingProcessor::irSynthParamsFromXml` (XML state / sidecar). A user who never changes the shape on an old preset gets their IR back in the correct (new) shape family without any warning.
+- **Missing proportion attributes** — `irSynthParamsFromXml` defaults `shapeNavePct=0.30`, `shapeTrptPct=0.35`, `shapeTaper=0.30`, `shapeCornerCut=0.414`. Preset and sidecar round-trip is lossless for anything saved by v2.8.0, and pre-v2.8.0 presets reload with these sensible defaults.
+- **Rectangular is bit-identical** — `IRSynthEngine::applyModalBank`, `renderFDNTail`, and `calcRT60` all gate the polygon math behind `shape != "Rectangular"`. `calcRefs` (the existing analytic image-source loop) runs unchanged for every rectangular preset. IR_11 and IR_14 golden regression locks still pass without update.
+
+### UI
+
+`IRSynthComponent` renders a small block of proportion sliders directly below the Width/Depth/Height column. The block is conditionally visible via `updateShapeProportionVisibility()`:
+
+- **Rectangular**: all proportion sliders hidden; only Opt-Mirror V/H symbols are drawn in the strip to the right of the geometry readout.
+- **Cathedral**: `Nave` (shapeNavePct) and `Transept` (shapeTrptPct) sliders shown side-by-side.
+- **Fan / Shoebox**: `Taper` slider shown (alone).
+- **Circular Hall**, **Octagonal**: `Roundness` slider (shapeCornerCut) shown (alone).
+
+The label for the Opt-Mirror axis buttons was removed — the V/H symbols are self-explanatory and the extra text crowded the row. The symbols sit tightly packed on the right side of the geometry readout row. Label colours for new controls use `textDim` to match the rest of the IR Synth panel.
+
+### Tests (`Tests/PingPolygonTests.cpp`)
+
+| ID | Description |
+|----|-------------|
+| DSP_22 | Geometry utilities — reflect2D is an involution + preserves distance-to-line; rayIntersectsSegment hit/miss/parallel/endpoint cases; polygonArea signed; polygonPerimeter sum-of-sides; makeWalls2D inward normals for all 4 polygon shapes |
+| IR_27 | Rectangular shape synthesis is bit-identical to calcRefs output (golden lock guarding the dispatch lambda's Rectangular branch) |
+| IR_28 | Cathedral vs Rectangular at identical W/D/H produces measurably different IR (l2 > 0) |
+| IR_29 | Fan / Shoebox with taper=0 is near-identical to Rectangular; taper=0.5 is measurably different |
+| IR_30 | Circular Hall cornerCut=0 (16-gon in bounding rect) has area > 0.9 × W×D < W×D and all vertices inside bounding box; cornerCut=1 (ellipse inscribed) produces measurably different IR (l2 > 0) |
+| IR_31 | Octagonal cornerCut=1 with W=D produces a regular octagon — all 8 sides equal length within 1e-2 tolerance (the engine uses rounded constants; strict 1e-3 is too tight) |
+
+### Key design decisions — polygon room geometry
+
+- **Rectangular is bit-identical because the dispatch is a string compare, not a refactor** — `calcRefs` (the old analytic loop) is kept verbatim. `calcRefsPolygon` is a new sibling. Every call site was changed to a lambda that picks between them on `p.shape`. No geometric math is shared between the two paths. This is what lets IR_11 and IR_14 continue to pass without recapture: the rectangular code path is literally the same instructions as pre-2.8.0.
+- **Full chain validation is mandatory for concave shapes — single-step is not enough** — Cathedral's transept arms create visibility shadows where a reflected image can pass the first-wall test but be occluded by a later wall in the chain. `validateChain2D` walks every segment from receiver back to the original source and checks `rayIntersectsSegment` against the expected wall on each step. Do not "optimise" by short-circuiting after the first wall; the plan's earlier draft suggested this and it was rejected before implementation.
+- **`dot < -1e-9`, not `> -1e-9`** — a stale version of the plan inverted the sign. The test is: the wall's inward normal must point away from the current image (negative dot with the source→receiver direction) for the reflection to produce a real image in front of the listener. Getting the sign wrong generates phantom images behind every wall.
+- **Vertical reflections still use the analytic `nz` loop** — only horizontal image tracing changed. Floor and ceiling bounces are multiplied in per-band with the horizontal polygon amps just as they were in the rectangular loop. This keeps the vertical cost identical to pre-2.8.0 regardless of plan shape.
+- **Order caps are per-shape, not global** — `orderLimitForShape` trumps the RT60-based `mo` when the shape is non-rectangular. Cathedral's concave geometry is the worst case: a chain validation call runs on every accepted image and the branching factor is 4–6 per node, so capping at 16 is necessary to keep synth time under a few seconds. Rectangular's cap of 60 is intentionally high — it never hits because the RT60-based bound always wins first.
+- **`shapeCornerCut` semantics are shape-specific** — for Octagonal, `0.414 ≈ 1 − √2/2` produces a regular octagon (all 8 sides equal). For Circular Hall, `cornerCut=0` gives a 16-gon inscribed in the bounding rectangle (area ≈ 91% of W×D) and `cornerCut=1` gives the same vertex count inscribed in an inscribed ellipse. The parameter name is shared because the UI slot is shared ("Roundness" slider appears for both shapes); do not split this into two separate APVTS params without also splitting the UI control.
+- **L-shaped was dropped, not hidden** — the concave geometry required full chain validation with a higher branching factor than Cathedral and would have pushed typical synth times past 10 s on a `minDim < 10 m` L-room. The value add over Cathedral (which also supports cruciform concavity) wasn't enough to justify the CPU cost. Old presets that had `shape="L-shaped"` migrate silently to `"Rectangular"` — the user can re-select Cathedral if they want a non-convex plan.
+- **`Wall2D::rAbs` is 8 bands, not 6** — matches the engine-wide `N_BANDS = 8` (125 Hz–16 kHz). Every polygon wall pulls the per-band reflection coefficients from the user-selected wall material; floor and ceiling bands are not touched here (they're multiplied in during the vertical `nz` pass).
+- **Inward normal calculation uses the centroid trick** — `makeWalls2D` computes the polygon centroid once, then for each edge constructs a candidate normal (rotate edge 90° CCW), tests whether the centroid-to-edge-midpoint vector has a positive dot with the candidate, and flips if not. This is robust against CW/CCW vertex ordering mistakes in the shape constructors and handles any simple polygon regardless of winding. Do not assume CCW winding — the Cathedral cruciform vertex list is fiddly and getting it wrong produces all-outward-pointing normals which silently disables every image.
+- **`makeWalls2D` is called per-IR, not per-reflection** — the wall list is built once per `synthMainPath` / `synthExtraPath` / `synthDirectPath` call and reused for every receiver position. Calling it per reflection would be catastrophic (the cruciform has 12 walls; per-reflection rebuilds at mo=16 would add O(10⁵) allocations per IR).
 
 ---
 

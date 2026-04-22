@@ -121,6 +121,21 @@ static IRSynthParams makeP(
     return p;
 }
 
+// Override polygon-shape proportion params (sentinel -1 = leave at struct default).
+// Used to author per-venue Cathedral / Fan / Octagonal / Circular Hall geometry.
+static IRSynthParams shapeProp(IRSynthParams p,
+                               double nave = -1.0,
+                               double trpt = -1.0,
+                               double taper = -1.0,
+                               double cornerCut = -1.0)
+{
+    if (nave      >= 0.0) p.shapeNavePct   = nave;
+    if (trpt      >= 0.0) p.shapeTrptPct   = trpt;
+    if (taper     >= 0.0) p.shapeTaper     = taper;
+    if (cornerCut >= 0.0) p.shapeCornerCut = cornerCut;
+    return p;
+}
+
 // Warm-hall EQ: gentle low-frequency warmth, slight high-frequency softening
 static EQPreset warmHallEQ()
 {
@@ -249,13 +264,14 @@ static const std::vector<VenueDef> VENUES = {
     // 37 × 15 × 12 m. Edwin Lutyens design. Barrel-vaulted/domed ceiling.
     // Stone walls, painted plaster barrel vault; stained glass windows.
     { "Halls", "St Jude-on-the-Hill Hampstead",
-      makeP("Cathedral", 37, 15, 12,
+      shapeProp(makeP("Cathedral", 37, 15, 12,
             "Rough stone / rock", "Painted plaster", "Rough stone / rock",
             0.15, 0.10, 0.35,
             "Shallow barrel vault", 0.50, 0.10,
             0.4335384615384615, 0.2304123076923077,  0.5723692307692307, 0.219483076923077,
             0.4586461538461539, 0.7768738461538461,  0.539876923076923, 0.7768738461538461,
-            "cardioid", 2.255505160484458, 0.7654008428193579) },
+            "cardioid", 2.255505160484458, 0.7654008428193579),
+            /*nave*/ 0.45, /*trpt*/ 0.30) },
 
     // King's College Chapel, Cambridge
     // 88.4 × 12.2 × 24.4 m (289 ft × 40 ft × 80 ft interior height). Famous fan vault.
@@ -263,14 +279,15 @@ static const std::vector<VenueDef> VENUES = {
     // crown of the fan vault is 80 ft ≈ 24 m. Stone floor and walls; stained-glass
     // windows in lower bays only (~15% wall area). Target RT60: 4-6 s with partial audience.
     { "Halls", "King's College Chapel Cambridge",
-      makeP("Cathedral", 88, 12, 24,
+      shapeProp(makeP("Cathedral", 88, 12, 24,
             "Rough stone / rock", "Rough stone / rock", "Rough stone / rock",
             0.15, 0.10, 0.25,
             "Fan vault  (King's College)", 0.60, 0.05,
             0.2149538461538461, 0.58,  0.2105230769230769, 0.4076923076923077,
             0.4054769230769231, 0.6538461538461539,  0.4054769230769231, 0.4015384615384615,
             "cardioid", 0.4237575093842993, -0.3923401077650537,
-            2.5425772726579, -2.530494608480618) },
+            2.5425772726579, -2.530494608480618),
+            /*nave*/ 0.50, /*trpt*/ 0.20) },
 
     // Sage Gateshead — Hall One
     // ~26 × 20 × 12 m (adjustable ceiling 10–21 m; mid position).
@@ -292,13 +309,14 @@ static const std::vector<VenueDef> VENUES = {
     // (modelled as Acoustic ceiling tile); velvet box draping (Heavy curtains for
     // walls); Proms audience ~ maximum absorption. Target RT60: ~2.5-3.0 s.
     { "Large Spaces", "Royal Albert Hall London",
-      makeP("Cylindrical", 67, 56, 41,
+      shapeProp(makeP("Circular Hall", 67, 56, 41,
             "Carpet (thin)", "Painted plaster", "Painted plaster",
             0.00, 0.67, 0.55,
             "Coffered dome  (circular hall)", 0.56, 0.50,
             0.3995692307692307, 0.2666461538461538,  0.6063384615384616, 0.2696,
             0.4424, 0.6432615384615384,  0.5738461538461539, 0.6417846153846154,
             "cardioid", 2.056057171020652, 1.110441760215903),
+            /*nave*/ -1, /*trpt*/ -1, /*taper*/ -1, /*cornerCut*/ 1.00),
       warmHallEQ() },
 
     // Elbphilharmonie Hamburg — Großer Saal
@@ -317,12 +335,13 @@ static const std::vector<VenueDef> VENUES = {
     // ~35 × 24 × 14 m, fan-shaped. Australian brush box timber throughout.
     // Suspended acrylic acoustic rings; brush box veneer ceiling panels.
     { "Large Spaces", "Sydney Opera House Concert Hall",
-      makeP("Fan / Shoebox", 35, 24, 14,
+      shapeProp(makeP("Fan / Shoebox", 35, 24, 14,
             "Hardwood floor", "Plywood panel", "Plywood panel",
             0.00, 0.55, 0.50,
             "Shallow barrel vault", 0.00, 0.45,
             0.25, 0.20,  0.75, 0.20,
             0.35, 0.72,  0.65, 0.72),
+            /*nave*/ -1, /*trpt*/ -1, /*taper*/ 0.45),
       warmHallEQ() },
 
     // Hansa Tonstudio — Meistersaal (Großer Saal), Berlin
@@ -506,13 +525,14 @@ static const std::vector<VenueDef> VENUES = {
     // ~8 × 6 × 4 m. Modelled on Oxford college chapels and small vaulted stone rooms.
     // Stone walls and floor, barrel-vaulted plaster ceiling, stained glass.
     { "Tight Spaces", "Stone Recital Room",
-      makeP("Cathedral", 8, 6, 4,
+      shapeProp(makeP("Cathedral", 8, 6, 4,
             "Rough stone / rock", "Painted plaster", "Rough stone / rock",
             0.15, 0.10, 0.35,
             "Shallow barrel vault", 0.20, 0.00,
             0.4187692307692308, 0.2853538461538462,  0.5812307692307692, 0.2833846153846154,
             0.4187692307692308, 0.7540307692307693,  0.5856615384615385, 0.7500923076923077,
             "cardioid", 2.186781481895591, 0.8884797851182471),
+            /*nave*/ 0.50, /*trpt*/ 0.20),
       {}, 0.35, -20.0 },
 
     // Concrete Stairwell
@@ -585,6 +605,10 @@ static std::string makeSidecarXML(const IRSynthParams& p)
     x += " width=\""  + d(p.width)  + "\"";
     x += " depth=\""  + d(p.depth)  + "\"";
     x += " height=\"" + d(p.height) + "\"";
+    x += " shapeNavePct=\""   + d(p.shapeNavePct)   + "\"";
+    x += " shapeTrptPct=\""   + d(p.shapeTrptPct)   + "\"";
+    x += " shapeTaper=\""     + d(p.shapeTaper)     + "\"";
+    x += " shapeCornerCut=\"" + d(p.shapeCornerCut) + "\"";
     x += " floor=\""    + p.floor_material   + "\"";
     x += " ceiling=\""  + p.ceiling_material + "\"";
     x += " wall=\""     + p.wall_material    + "\"";
@@ -660,6 +684,9 @@ static std::string makeSidecarXML(const IRSynthParams& p)
     x += " deccaToeOut=\""  + d(p.decca_toe_out,12) + "\"";
     x += " deccaTilt=\""    + d(p.decca_tilt,12) + "\"";
 
+    // Floor-plan Option-mirror axis (UI-only; 0 = vertical, 1 = horizontal)
+    x += " mirrorAxis=\""   + std::to_string(p.mirror_axis) + "\"";
+
     x += "/>\n</PingIRSynth>\n";
     return x;
 }
@@ -692,6 +719,10 @@ static std::string makePresetXML(
     isp += " width=\""  + d6(irp.width)  + "\"";
     isp += " depth=\""  + d6(irp.depth)  + "\"";
     isp += " height=\"" + d6(irp.height) + "\"";
+    isp += " shapeNavePct=\""   + d6(irp.shapeNavePct)   + "\"";
+    isp += " shapeTrptPct=\""   + d6(irp.shapeTrptPct)   + "\"";
+    isp += " shapeTaper=\""     + d6(irp.shapeTaper)     + "\"";
+    isp += " shapeCornerCut=\"" + d6(irp.shapeCornerCut) + "\"";
     isp += " floor=\""    + irp.floor_material   + "\"";
     isp += " ceiling=\""  + irp.ceiling_material + "\"";
     isp += " wall=\""     + irp.wall_material    + "\"";
@@ -748,6 +779,9 @@ static std::string makePresetXML(
     isp += " deccaCtrGain=\"" + d12(irp.decca_centre_gain) + "\"";
     isp += " deccaToeOut=\""  + d12(irp.decca_toe_out)     + "\"";
     isp += " deccaTilt=\""    + d12(irp.decca_tilt)        + "\"";
+
+    // Floor-plan Option-mirror axis (UI-only; 0 = vertical, 1 = horizontal)
+    isp += " mirrorAxis=\""   + std::to_string(irp.mirror_axis) + "\"";
 
     // Build parameter list — only non-default values are given a value= attribute.
     // Everything else gets an empty tag so JUCE uses the registered default.

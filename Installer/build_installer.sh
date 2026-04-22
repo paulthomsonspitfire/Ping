@@ -9,7 +9,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 STAGING_DIR=""
 OUTPUT_DIR="$PROJECT_ROOT/Installer/output"
-VERSION="2.7.9"
+VERSION="2.8.0"
 PKG_ID="com.ping.audio.ping"
 PKG_NAME="P!NG-Installer"
 

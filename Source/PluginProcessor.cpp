@@ -2845,6 +2845,15 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("width", p.width);
     ir->setAttribute ("depth", p.depth);
     ir->setAttribute ("height", p.height);
+
+    // Shape proportion parameters (v2.8.0 polygon geometry). Older sidecars
+    // that predate this feature fall back to IRSynthParams struct defaults on
+    // read — this is safe for "Rectangular" (values are unused by calcRefs)
+    // and produces a sensible default footprint for non-rectangular shapes.
+    ir->setAttribute ("shapeNavePct",   p.shapeNavePct);
+    ir->setAttribute ("shapeTrptPct",   p.shapeTrptPct);
+    ir->setAttribute ("shapeTaper",     p.shapeTaper);
+    ir->setAttribute ("shapeCornerCut", p.shapeCornerCut);
     ir->setAttribute ("floor", juce::String (p.floor_material));
     ir->setAttribute ("ceiling", juce::String (p.ceiling_material));
     ir->setAttribute ("wall", juce::String (p.wall_material));
@@ -2981,9 +2990,29 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     IRSynthParams p;
     if (! ir) return p;
     p.shape          = ir->getStringAttribute ("shape", "Rectangular").toStdString();
+    // v2.8.0 shape-string migration. Old presets / sidecars referenced shapes
+    // that the polygon engine no longer supports:
+    //   "L-shaped"   → "Rectangular"      (L-shape had no acoustic model in
+    //                                     the rectangular scalar engine either
+    //                                     — it was floor-plan-only; the nearest
+    //                                     acoustic equivalent is a plain box.)
+    //   "Cylindrical" → "Circular Hall"   (1:1 rename — same intent.)
+    if (p.shape == "L-shaped")   p.shape = "Rectangular";
+    if (p.shape == "Cylindrical") p.shape = "Circular Hall";
+
     p.width          = ir->getDoubleAttribute ("width", 28.0);
     p.depth          = ir->getDoubleAttribute ("depth", 16.0);
     p.height         = ir->getDoubleAttribute ("height", 12.0);
+
+    // Shape proportion parameters (v2.8.0). Fall back to IRSynthParams struct
+    // defaults when absent (older sidecars / presets).
+    {
+        IRSynthParams sd;
+        p.shapeNavePct   = ir->getDoubleAttribute ("shapeNavePct",   sd.shapeNavePct);
+        p.shapeTrptPct   = ir->getDoubleAttribute ("shapeTrptPct",   sd.shapeTrptPct);
+        p.shapeTaper     = ir->getDoubleAttribute ("shapeTaper",     sd.shapeTaper);
+        p.shapeCornerCut = ir->getDoubleAttribute ("shapeCornerCut", sd.shapeCornerCut);
+    }
     p.floor_material = ir->getStringAttribute ("floor", "Hardwood floor").toStdString();
     p.ceiling_material = ir->getStringAttribute ("ceiling", "Painted plaster").toStdString();
     p.wall_material  = ir->getStringAttribute ("wall", "Concrete / bare brick").toStdString();
