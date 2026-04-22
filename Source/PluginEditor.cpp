@@ -348,6 +348,14 @@ PingEditor::PingEditor (PingProcessor& p)
                 pingProcessor.setLastIRSynthParams (params);
                 irSynthComponent.setParams (params);
             }
+            // Reproduce the mixer-strip configuration the IR was saved with — but
+            // only outside a preset restore (the preset's APVTS state already wins).
+            if (! pingProcessor.getIsRestoringState())
+            {
+                PingProcessor::MixerGateState gates;
+                if (PingProcessor::tryLoadMixerGatesFromSidecar (file, gates))
+                    pingProcessor.applyMixerGates (gates);
+            }
             irSynthComponent.setSelectedIRDisplayName (file.getFileNameWithoutExtension());
             irSynthComponent.setDirty (false);
             pingProcessor.setIRSynthDirty (false);
@@ -1616,6 +1624,14 @@ void PingEditor::comboBoxChanged (juce::ComboBox* combo)
                         pingProcessor.setLastIRSynthParams (params);
                         irSynthComponent.setParams (params);
                     }
+                    // Reproduce the mixer-strip configuration the IR was saved with — but
+                    // only outside a preset restore (the preset's APVTS state already wins).
+                    if (! pingProcessor.getIsRestoringState())
+                    {
+                        PingProcessor::MixerGateState gates;
+                        if (PingProcessor::tryLoadMixerGatesFromSidecar (file, gates))
+                            pingProcessor.applyMixerGates (gates);
+                    }
                     irSynthComponent.setSelectedIRDisplayName (file.getFileNameWithoutExtension());
                     updateWaveform();
                 }
@@ -2208,9 +2224,56 @@ void PingEditor::importIR()
             if (! targetDir.exists())
                 targetDir.createDirectory();
 
+            // Aux-suffix redirect: if the user picked "Venue_outrig.wav" (or _direct /
+            // _ambient), try to re-anchor on the base sibling so the whole set is
+            // imported together. If no base sibling exists, drop the aux suffix so
+            // the orphan lands as a coherent MAIN file (and the next import/load
+            // treats it as such — no silently-orphaned aux on disk).
+            {
+                auto srcStemInit = src.getFileNameWithoutExtension();
+                struct AuxMap { const char* suffix; };
+                static const AuxMap kAuxMap[] = { { "_direct" }, { "_outrig" }, { "_ambient" } };
+                static const char* const kAudioExts[] = { ".wav", ".WAV", ".aiff", ".aif", ".AIFF", ".AIF" };
+
+                for (const auto& m : kAuxMap)
+                {
+                    if (! srcStemInit.endsWithIgnoreCase (m.suffix)) continue;
+                    const auto baseStem = srcStemInit.dropLastCharacters ((int) std::strlen (m.suffix));
+                    const auto parent = src.getParentDirectory();
+
+                    juce::File baseSibling;
+                    for (auto* ext : kAudioExts)
+                    {
+                        auto candidate = parent.getChildFile (baseStem + ext);
+                        if (candidate.existsAsFile()) { baseSibling = candidate; break; }
+                    }
+
+                    if (baseSibling != juce::File())
+                    {
+                        src = baseSibling;   // anchor on the base; siblings ride along
+                    }
+                    else
+                    {
+                        // Orphan aux: rename on import by dropping the suffix on copy.
+                        // The collision-free logic below uses srcStem for the destination,
+                        // so we override that stem only — the source file itself is read
+                        // from the original location with its aux suffix intact.
+                    }
+                    break;
+                }
+            }
+
             // Resolve a collision-free stem. Check against the MAIN file AND any
             // sibling suffixes so we don't clash with an existing set partially.
             auto srcStem = src.getFileNameWithoutExtension();
+            // Drop any aux suffix from the destination stem so orphan aux imports
+            // become coherent MAIN files on disk.
+            for (const char* sfx : { "_direct", "_outrig", "_ambient" })
+                if (srcStem.endsWithIgnoreCase (sfx))
+                {
+                    srcStem = srcStem.dropLastCharacters ((int) std::strlen (sfx));
+                    break;
+                }
             auto srcExt  = src.getFileExtension();
             auto stemInUse = [&] (const juce::String& stem) -> bool
             {
@@ -2241,6 +2304,16 @@ void PingEditor::importIR()
 
                 pingProcessor.setSelectedIRFile (targetFile);
                 pingProcessor.loadIRFromFile (targetFile);
+
+                // Honour any mixer-gate state baked into the imported IR's sidecar so
+                // imports of "outrig + ambient only" sets reproduce on the mixer too.
+                if (! pingProcessor.getIsRestoringState())
+                {
+                    PingProcessor::MixerGateState gates;
+                    if (PingProcessor::tryLoadMixerGatesFromSidecar (targetFile, gates))
+                        pingProcessor.applyMixerGates (gates);
+                }
+
                 updateIRComboSelection();
                 updateWaveform();
             }

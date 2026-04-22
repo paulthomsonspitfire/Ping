@@ -1,6 +1,63 @@
 #include "IRSynthComponent.h"
 #include "PingBinaryData.h"
 
+// Small custom-paint button used for the Option-mirror axis selector.
+// Renders a rounded rectangle with a dashed line through the centre — vertical
+// or horizontal depending on the constructor flag. Highlights in the plugin
+// accent colour when toggled on. Lives at the file scope so layoutControls()
+// can layout it directly via the unique_ptr members declared in the header.
+class IRSynthComponent::MirrorAxisButton : public juce::Button
+{
+public:
+    explicit MirrorAxisButton (bool isHorizontal_)
+        : juce::Button (isHorizontal_ ? "MirrorH" : "MirrorV"),
+          isHorizontal (isHorizontal_)
+    {
+        setClickingTogglesState (true);
+        setRadioGroupId (8211);   // arbitrary unique id — pairs the two buttons
+        setTooltip (isHorizontal
+                        ? "Option-drag mirrors mics across the horizontal centre line (front / back)"
+                        : "Option-drag mirrors mics across the vertical centre line (left / right)");
+    }
+
+    void paintButton (juce::Graphics& g, bool /*isOver*/, bool /*isDown*/) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (1.5f);
+        const bool on = getToggleState();
+
+        const juce::Colour accent { 0xff8cd6ef };
+        const juce::Colour dim    { 0xff707070 };
+        const juce::Colour fg     = on ? accent : dim;
+
+        // Soft-rounded box outline
+        g.setColour (on ? accent.withAlpha (0.16f) : juce::Colour (0x18ffffff));
+        g.fillRoundedRectangle (r, 3.0f);
+        g.setColour (fg.withAlpha (on ? 0.95f : 0.55f));
+        g.drawRoundedRectangle (r, 3.0f, 1.2f);
+
+        // Dashed centre line, oriented per-axis. Slightly inset from the box.
+        g.setColour (fg);
+        const float dashes[] = { 2.5f, 2.0f };
+        if (isHorizontal)
+        {
+            const float yMid = r.getCentreY();
+            const float x0 = r.getX() + 3.0f;
+            const float x1 = r.getRight() - 3.0f;
+            g.drawDashedLine (juce::Line<float> (x0, yMid, x1, yMid), dashes, 2, 1.4f);
+        }
+        else
+        {
+            const float xMid = r.getCentreX();
+            const float y0 = r.getY() + 3.0f;
+            const float y1 = r.getBottom() - 3.0f;
+            g.drawDashedLine (juce::Line<float> (xMid, y0, xMid, y1), dashes, 2, 1.4f);
+        }
+    }
+
+private:
+    const bool isHorizontal;
+};
+
 namespace
 {
     const juce::Colour panelBg     { 0xff1e1e1e };
@@ -65,6 +122,10 @@ namespace
         return opts[0];
     }
 }
+
+// Out-of-line destructor so unique_ptr<MirrorAxisButton> sees the complete
+// type defined above in this translation unit.
+IRSynthComponent::~IRSynthComponent() = default;
 
 IRSynthComponent::IRSynthComponent()
 {
@@ -409,6 +470,32 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (widthValueLabel);
     addAndMakeVisible (depthValueLabel);
     addAndMakeVisible (heightValueLabel);
+
+    // Option-mirror axis selector. Two small radio buttons (shared radioGroupId
+    // inside the class) — tapping one sets FloorPlanComponent::mirrorAxis and
+    // fires the param-changed notification so the choice round-trips into the
+    // .ping sidecar via IRSynthParams::mirror_axis.
+    mirrorVerticalButton   = std::make_unique<MirrorAxisButton> (false);
+    mirrorHorizontalButton = std::make_unique<MirrorAxisButton> (true);
+    mirrorVerticalButton->setToggleState   (true,  juce::dontSendNotification);
+    mirrorHorizontalButton->setToggleState (false, juce::dontSendNotification);
+    mirrorVerticalButton->onClick = [this]
+    {
+        floorPlanComponent.mirrorAxis = FloorPlanComponent::MirrorAxis::Vertical;
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    mirrorHorizontalButton->onClick = [this]
+    {
+        floorPlanComponent.mirrorAxis = FloorPlanComponent::MirrorAxis::Horizontal;
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    mirrorAxisLabel.setText ("Option-mirror", juce::dontSendNotification);
+    mirrorAxisLabel.setColour (juce::Label::textColourId, textDim);
+    mirrorAxisLabel.setJustificationType (juce::Justification::centredLeft);
+    mirrorAxisLabel.setFont (juce::FontOptions (10.5f));
+    addAndMakeVisible (*mirrorVerticalButton);
+    addAndMakeVisible (*mirrorHorizontalButton);
+    addAndMakeVisible (mirrorAxisLabel);
 
     addAndMakeVisible (floorCombo);
     addAndMakeVisible (ceilingCombo);
@@ -865,6 +952,25 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
     dimRow (depthLabel,  depthValueLabel,  depthSlider);
     dimRow (heightLabel, heightValueLabel, heightSlider);
 
+    // Option-mirror axis selector — two small icon buttons under the
+    // dimension rows. Label on the left, V then H buttons on the right.
+    {
+        y += 2;
+        const int btnSize = 18;
+        const int btnGap  = 6;
+        const int lblW    = 100;
+        mirrorAxisLabel.setBounds (x0, y + (rowH - btnSize) / 2, lblW, btnSize);
+        if (mirrorHorizontalButton)
+            mirrorHorizontalButton->setBounds (x0 + ctrlW - btnSize,
+                                               y + (rowH - btnSize) / 2,
+                                               btnSize, btnSize);
+        if (mirrorVerticalButton)
+            mirrorVerticalButton->setBounds   (x0 + ctrlW - btnSize - btnGap - btnSize,
+                                               y + (rowH - btnSize) / 2,
+                                               btnSize, btnSize);
+        y += rowH;
+    }
+
     // Mic paths have moved out of the left column into a horizontal strip
     // along the bottom of the content area — see layoutMicPathsStrip().
 }
@@ -1098,6 +1204,11 @@ IRSynthParams IRSynthComponent::getParams() const
     p.lambert_scatter_enabled  = lambertScatterButton.getToggleState();
     p.spk_directivity_full     = spkDirFullButton    .getToggleState();
 
+    // Floor-plan Option-mirror axis (UI-only; not consumed by the synthesis
+    // engine, persisted so the preference round-trips with the rest of the
+    // floor-plan UI state).
+    p.mirror_axis = (floorPlanComponent.mirrorAxis == FloorPlanComponent::MirrorAxis::Horizontal) ? 1 : 0;
+
     return p;
 }
 
@@ -1205,6 +1316,20 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
                                          juce::dontSendNotification);
     outrigHeightReadout.setText  (juce::String (p.outrig_height,  1) + " m", juce::dontSendNotification);
     ambientHeightReadout.setText (juce::String (p.ambient_height, 1) + " m", juce::dontSendNotification);
+
+    // Option-mirror axis: restore the preference onto both the floor plan
+    // (used immediately by the next drag) and the two toggle buttons (so the
+    // UI reflects the stored value). Guarded like all other setParams() writes
+    // by the suppressingParamNotifications flag that wraps this method.
+    {
+        const bool horiz = (p.mirror_axis == 1);
+        floorPlanComponent.mirrorAxis = horiz ? FloorPlanComponent::MirrorAxis::Horizontal
+                                              : FloorPlanComponent::MirrorAxis::Vertical;
+        if (mirrorVerticalButton)
+            mirrorVerticalButton->setToggleState   (! horiz, juce::dontSendNotification);
+        if (mirrorHorizontalButton)
+            mirrorHorizontalButton->setToggleState (  horiz, juce::dontSendNotification);
+    }
 
     suppressingParamNotifications = false;
 }

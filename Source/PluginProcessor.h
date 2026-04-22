@@ -94,12 +94,38 @@ public:
     /** Load IRSynthParams from a .ping sidecar if it exists. Returns default params if not found. */
     static IRSynthParams loadIRSynthParamsFromSidecar (const juce::File& irFile);
 
+    /** Per-IR mixer-strip gate state stored in the .ping sidecar. Lets a saved
+        IR file remember which mixer strips were enabled when it was created so
+        that selecting it from the combo (outside a preset restore) reproduces
+        the original mix bus. */
+    struct MixerGateState
+    {
+        bool mainOn    = true;
+        bool directOn  = false;
+        bool outrigOn  = false;
+        bool ambientOn = false;
+    };
+
+    /** Snapshot of the four MAIN/DIRECT/OUTRIG/AMBIENT On parameters. */
+    MixerGateState getCurrentMixerGates() const;
+
+    /** Apply MixerGateState to the four On parameters via setValueNotifyingHost
+        so the host, undo manager, and audio thread all see the change. */
+    void applyMixerGates (const MixerGateState& g);
+
+    /** Read the <mixerGates> child from the sidecar next to irFile. Returns true
+        if the element existed (out is populated); false otherwise (out is unchanged). */
+    static bool tryLoadMixerGatesFromSidecar (const juce::File& irFile, MixerGateState& out);
+
     /** Fix permissions (0644) and strip macOS quarantine on an imported file.
         Ensures the plugin can read files received via AirDrop, email, etc. */
     static void fixImportedFilePermissions (const juce::File& f);
 
-    /** Write a .ping sidecar file alongside a WAV, containing the IRSynthParams used to generate it. */
-    static void writeIRSynthSidecar (const juce::File& wavFile, const IRSynthParams& p);
+    /** Write a .ping sidecar file alongside a WAV, containing the IRSynthParams used to generate it.
+        If gates is non-null, also embeds the four mixer gate booleans so that loading the
+        IR file later (outside a preset restore) can reproduce the mix-bus configuration. */
+    static void writeIRSynthSidecar (const juce::File& wavFile, const IRSynthParams& p,
+                                     const MixerGateState* gates = nullptr);
 
     bool getReverse() const { return reverse; }
     void setReverse (bool v) { reverse = v; }

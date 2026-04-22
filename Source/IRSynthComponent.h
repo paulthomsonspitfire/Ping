@@ -26,6 +26,7 @@ public:
     using OnCompleteFn = std::function<void (const IRSynthResult&)>;
 
     explicit IRSynthComponent();
+    ~IRSynthComponent() override;   // out-of-line so unique_ptr<MirrorAxisButton> can see the full type
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -130,6 +131,17 @@ private:
     juce::Slider widthSlider, depthSlider, heightSlider;
     juce::Label widthLabel, depthLabel, heightLabel;
     juce::Label widthValueLabel, depthValueLabel, heightValueLabel;  // Editable number only
+
+    // Option-mirror axis selector (two small icon buttons sitting under the
+    // Room Geometry section). Vertical = mirror across x = 0.5 (default,
+    // L/R pairs); Horizontal = mirror across y = 0.5 (front/back pairs).
+    // The selected axis drives FloorPlanComponent::mirrorAxis directly and
+    // is round-tripped via IRSynthParams::mirror_axis (UI-only, not used
+    // by the synthesis engine).
+    class MirrorAxisButton; // defined in .cpp — small custom-paint icon button
+    std::unique_ptr<MirrorAxisButton> mirrorVerticalButton;
+    std::unique_ptr<MirrorAxisButton> mirrorHorizontalButton;
+    juce::Label mirrorAxisLabel;
 
     // Surfaces (previously "Character" tab)
     juce::ComboBox floorCombo, ceilingCombo, wallCombo;

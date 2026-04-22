@@ -95,15 +95,18 @@ namespace
 FloorPlanComponent::FloorPlanComponent()
 {
     setOpaque (false);
-    mirrorCursor = makeMirrorCursor();
+    mirrorCursorVertical   = makeMirrorCursor (false);
+    mirrorCursorHorizontal = makeMirrorCursor (true);
 }
 
-juce::MouseCursor FloorPlanComponent::makeMirrorCursor()
+juce::MouseCursor FloorPlanComponent::makeMirrorCursor (bool horizontal)
 {
-    // Procedurally build a 32×32 cursor glyph: a vertical axis line with
-    // two triangular arrows pointing outward (mirror-across-axis icon).
-    // Drawn at 2× resolution for Retina, then handed to MouseCursor with
-    // scaleFactor = 2.0 so macOS picks the right physical size.
+    // Procedurally build a 32×32 cursor glyph: an axis line with two
+    // triangular arrows pointing outward (mirror-across-axis icon). For
+    // the vertical-axis variant the line is vertical and arrows point L/R;
+    // for the horizontal-axis variant the line is horizontal and arrows
+    // point up/down. Drawn at 2× resolution for Retina, then handed to
+    // MouseCursor with the hotspot at the glyph centre.
     const int sz = 32;
     juce::Image img (juce::Image::ARGB, sz, sz, true);
     juce::Graphics g (img);
@@ -121,10 +124,17 @@ juce::MouseCursor FloorPlanComponent::makeMirrorCursor()
         g.fillPath (p);
     };
 
-    // Central vertical axis (the "mirror line").
     juce::Path axis;
-    axis.startNewSubPath (cx, cy - 9.0f);
-    axis.lineTo          (cx, cy + 9.0f);
+    if (! horizontal)
+    {
+        axis.startNewSubPath (cx, cy - 9.0f);
+        axis.lineTo          (cx, cy + 9.0f);
+    }
+    else
+    {
+        axis.startNewSubPath (cx - 9.0f, cy);
+        axis.lineTo          (cx + 9.0f, cy);
+    }
     g.setColour (juce::Colours::black.withAlpha (0.85f));
     g.strokePath (axis, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved,
                                               juce::PathStrokeType::rounded));
@@ -132,21 +142,42 @@ juce::MouseCursor FloorPlanComponent::makeMirrorCursor()
     g.strokePath (axis, juce::PathStrokeType (1.4f, juce::PathStrokeType::curved,
                                               juce::PathStrokeType::rounded));
 
-    // Left arrow: points left, tail toward axis.
-    juce::Path leftArrow;
-    leftArrow.startNewSubPath (cx - 3.5f,  cy);
-    leftArrow.lineTo          (cx - 10.5f, cy - 4.5f);
-    leftArrow.lineTo          (cx - 10.5f, cy + 4.5f);
-    leftArrow.closeSubPath();
-    drawWithOutline (leftArrow);
+    if (! horizontal)
+    {
+        // Left arrow: points left, tail toward axis.
+        juce::Path leftArrow;
+        leftArrow.startNewSubPath (cx - 3.5f,  cy);
+        leftArrow.lineTo          (cx - 10.5f, cy - 4.5f);
+        leftArrow.lineTo          (cx - 10.5f, cy + 4.5f);
+        leftArrow.closeSubPath();
+        drawWithOutline (leftArrow);
 
-    // Right arrow: mirror of the left.
-    juce::Path rightArrow;
-    rightArrow.startNewSubPath (cx + 3.5f,  cy);
-    rightArrow.lineTo          (cx + 10.5f, cy - 4.5f);
-    rightArrow.lineTo          (cx + 10.5f, cy + 4.5f);
-    rightArrow.closeSubPath();
-    drawWithOutline (rightArrow);
+        // Right arrow: mirror of the left.
+        juce::Path rightArrow;
+        rightArrow.startNewSubPath (cx + 3.5f,  cy);
+        rightArrow.lineTo          (cx + 10.5f, cy - 4.5f);
+        rightArrow.lineTo          (cx + 10.5f, cy + 4.5f);
+        rightArrow.closeSubPath();
+        drawWithOutline (rightArrow);
+    }
+    else
+    {
+        // Up arrow: points up, tail toward axis.
+        juce::Path upArrow;
+        upArrow.startNewSubPath (cx,        cy - 3.5f);
+        upArrow.lineTo          (cx - 4.5f, cy - 10.5f);
+        upArrow.lineTo          (cx + 4.5f, cy - 10.5f);
+        upArrow.closeSubPath();
+        drawWithOutline (upArrow);
+
+        // Down arrow: mirror of the up.
+        juce::Path downArrow;
+        downArrow.startNewSubPath (cx,        cy + 3.5f);
+        downArrow.lineTo          (cx - 4.5f, cy + 10.5f);
+        downArrow.lineTo          (cx + 4.5f, cy + 10.5f);
+        downArrow.closeSubPath();
+        drawWithOutline (downArrow);
+    }
 
     // Hotspot at the glyph centre (sits on top of the puck being dragged).
     return juce::MouseCursor (img, sz / 2, sz / 2);
@@ -375,7 +406,13 @@ void FloorPlanComponent::mouseDown (const juce::MouseEvent& e)
         }
         if (mirrorDrag)
         {
-            setMouseCursor (mirrorCursor);
+            // Latch the axis chosen at mousedown so the drag stays consistent
+            // even if the user reaches over and changes the axis selector
+            // mid-drag (matches the existing latched-Option behaviour).
+            mirrorDragAxis = mirrorAxis;
+            setMouseCursor (mirrorDragAxis == MirrorAxis::Horizontal
+                                ? mirrorCursorHorizontal
+                                : mirrorCursorVertical);
             repaint(); // redraw to show the centre guide line
         }
     }
@@ -433,10 +470,16 @@ void FloorPlanComponent::mouseDrag (const juce::MouseEvent& e)
         transducers.angle[dragIndex] = std::atan2 (e.y - pt.y, e.x - pt.x) - dragStartAngle;
         if (mirrorDrag)
         {
-            // Horizontal mirror of an angle around the vertical axis: a' = π - a.
-            // Verified against the default pair (Mic L = -2.356, Mic R = -0.785):
-            //   π - (-2.356) = -0.785  ✓
-            transducers.angle[partner] = kPi - transducers.angle[dragIndex];
+            // Mirror an angle across the chosen axis:
+            //   Vertical axis (x = 0.5):   a' = π - a
+            //     verified against the default pair (Mic L = -2.356,
+            //     Mic R = -0.785): π - (-2.356) = -0.785 ✓
+            //   Horizontal axis (y = 0.5): a' = -a
+            //     a vector (cos a, sin a) reflected across y=const yields
+            //     (cos a, -sin a) = (cos(-a), sin(-a)).
+            transducers.angle[partner] = (mirrorDragAxis == MirrorAxis::Horizontal)
+                                            ? -transducers.angle[dragIndex]
+                                            :  kPi - transducers.angle[dragIndex];
         }
     }
     else
@@ -450,12 +493,21 @@ void FloorPlanComponent::mouseDrag (const juce::MouseEvent& e)
 
             if (mirrorDrag)
             {
-                // Mirror across the vertical centre line (x = 0.5), same y.
-                // Skip if the mirrored point is outside the room (relevant
-                // for L-shaped rooms) — dragged puck keeps moving, partner
-                // holds its last valid position until symmetry is restorable.
-                const double mx = 1.0 - transducers.cx[dragIndex];
-                const double my = transducers.cy[dragIndex];
+                // Mirror across the chosen centre line. Skip if the mirrored
+                // point is outside the room (relevant for L-shaped rooms) —
+                // dragged puck keeps moving, partner holds its last valid
+                // position until symmetry is restorable.
+                double mx, my;
+                if (mirrorDragAxis == MirrorAxis::Horizontal)
+                {
+                    mx = transducers.cx[dragIndex];
+                    my = 1.0 - transducers.cy[dragIndex];
+                }
+                else
+                {
+                    mx = 1.0 - transducers.cx[dragIndex];
+                    my = transducers.cy[dragIndex];
+                }
                 if (isInsideRoom (mx, my))
                 {
                     transducers.cx[partner] = juce::jlimit (0.0, 1.0, mx);
@@ -581,16 +633,27 @@ void FloorPlanComponent::paint (juce::Graphics& g)
     for (float gy = 0; gy < (float) H; gy += gridStep)
         g.drawLine (0, gy, (float) W, gy, 0.5f);
 
-    // Option-mirror: draw a faint dashed vertical guide at x = 0.5 while the
-    // user is Option-dragging a puck, visualising the horizontal mirror axis.
+    // Option-mirror: draw a faint dashed guide at the chosen mirror axis
+    // (vertical x = 0.5, or horizontal y = 0.5) while the user is
+    // Option-dragging a puck.
     if (mirrorDrag)
     {
-        auto guideTop    = toCanvas (0.5, 0.0);
-        auto guideBottom = toCanvas (0.5, 1.0);
         g.setColour (juce::Colour (0xff8cd6ef).withAlpha (0.45f)); // accentIce, 45%
         const float dashes[] = { 6.0f, 4.0f };
-        g.drawDashedLine (juce::Line<float> (guideTop.x, guideTop.y, guideBottom.x, guideBottom.y),
-                          dashes, 2, 1.0f);
+        if (mirrorDragAxis == MirrorAxis::Horizontal)
+        {
+            auto guideLeft  = toCanvas (0.0, 0.5);
+            auto guideRight = toCanvas (1.0, 0.5);
+            g.drawDashedLine (juce::Line<float> (guideLeft.x, guideLeft.y, guideRight.x, guideRight.y),
+                              dashes, 2, 1.0f);
+        }
+        else
+        {
+            auto guideTop    = toCanvas (0.5, 0.0);
+            auto guideBottom = toCanvas (0.5, 1.0);
+            g.drawDashedLine (juce::Line<float> (guideTop.x, guideTop.y, guideBottom.x, guideBottom.y),
+                              dashes, 2, 1.0f);
+        }
     }
     g.restoreState();
 

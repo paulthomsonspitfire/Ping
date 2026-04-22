@@ -191,6 +191,13 @@ struct IRSynthParams
     // (L, C, R move rigidly together). 0 = horizontal, -π/6 = -30° down.
     // Legacy 0° fallback on load.
     double      decca_tilt        = -0.5235987755982988;  // -π/6 (-30°)
+
+    // Floor-plan Option-mirror axis preference (UI-only — not consumed by
+    // the synthesis engine). 0 = vertical (mirror across x = 0.5, the
+    // historical default), 1 = horizontal (mirror across y = 0.5). Stored
+    // here so it round-trips through the .ping sidecar with the rest of the
+    // floor-plan UI state.
+    int         mirror_axis       = 0;
 };
 
 /** Per-path 4-channel IR (LL/RL/LR/RR) used for DIRECT/OUTRIG/AMBIENT results. */
