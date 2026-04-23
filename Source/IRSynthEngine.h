@@ -438,12 +438,23 @@ private:
 
     // Modal resonance boost: parallel IIR resonators tuned to axial modes below ~250 Hz.
     // Axial modes (f_n = c·n/(2L)) are physically meaningful only for rectangular rooms.
-    // When `shape` is anything other than "Rectangular" the function returns the input
-    // buffer unchanged. The default keeps existing call sites bit-identical.
+    //
+    // For non-rectangular shapes the function behaviour depends on the build:
+    //   - PING_POLYGON_MODAL_BANK undefined (v2.8.0 behaviour): early-returns unchanged.
+    //   - PING_POLYGON_MODAL_BANK defined (default v2.9.0): computes an
+    //     equivalent-box approximation — a rectangle with dimensions
+    //     Wₑ = √polygonAreaM2, Dₑ = polygonAreaM2 / Wₑ, Hₑ = He — and runs the
+    //     same axial-mode formula on those equivalent dimensions. The exact
+    //     frequencies are not physical but the psychoacoustic LF solidity is.
+    //     Caller must supply polygonAreaM2 > 0 to activate the branch.
+    //
+    // Default `polygonAreaM2 = 0.0` preserves the v2.8.0 skip-for-polygon
+    // behaviour for any caller that hasn't updated.
     static std::vector<double> applyModalBank (const std::vector<double>& buf,
                                                double W, double D, double He,
                                                double rt60_125, double gain, int sr,
-                                               const std::string& shape = "Rectangular");
+                                               const std::string& shape = "Rectangular",
+                                               double polygonAreaM2 = 0.0);
 
     // Allpass diffuser (matches JS makeAllpassDiffuser + inline processing)
     struct AllpassDiffuser

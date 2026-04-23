@@ -5,6 +5,9 @@
 #include <future>
 #include <atomic>
 #include <mutex>
+#ifdef PING_POLYGON_DEBUG
+ #include <cstdio>
+#endif
 
 // ── constants ──────────────────────────────────────────────────────────────
 const double IRSynthEngine::SPEED   = 343.0;
@@ -183,7 +186,13 @@ bool IRSynthEngine::rayIntersectsSegment (double ax, double ay,
     const double s = ((w.x1 - ax) * dy - (w.y1 - ay) * dx) / denom;
     t_out = t;
     s_out = s;
-    constexpr double EPS = 1e-9;
+    // WI-4 (v2.9.0): raised from 1e-9 to 1e-6 (µm scale). Room geometry is
+    // user-specified to 1-decimal-metre, so 1e-6 is well inside the noise
+    // floor. Tightens the low-t filter (drops numerical-noise self-intersects
+    // with t ∈ [1e-9, 1e-6]) while widening the high-t and s tolerances,
+    // recovering grazing-corner image sources that were culled by 1e-9
+    // rounding error. On typical rooms the high-end widening dominates.
+    constexpr double EPS = 1e-6;
     return (t > EPS && t < 1.0 + EPS && s >= -EPS && s <= 1.0 + EPS);
 }
 
@@ -734,8 +743,17 @@ namespace
                        const std::array<double, 8>& cumAbs,
                        double rcvX, double rcvY,
                        double maxDist2D, int maxOrder,
+                       size_t acceptedBudget,
                        std::vector<ImageSource2D>& out)
     {
+        // Image-count budget early-out (WI-1). Once we've accepted
+        // `acceptedBudget` image sources the tree stops descending entirely.
+        // The budget is a soft total cap that complements the per-shape order
+        // ceiling: convex shapes (Fan, Octagonal) naturally produce deeper
+        // trees than concave ones (Cathedral) without per-shape hand tuning.
+        if (out.size() >= acceptedBudget)
+            return;
+
         // Path-length early termination.
         const double dx = imgX - rcvX, dy = imgY - rcvY;
         if (std::sqrt (dx * dx + dy * dy) > maxDist2D)
@@ -770,18 +788,32 @@ namespace
 
             const Wall2D& w = walls[(size_t) wi];
 
-            // Image source must be on the OUTWARD side of the candidate wall
-            // (relative to the room interior). The inward normal points INTO
-            // the room, so the dot product (image - point on wall) · n must be
-            // <= 0 (image lies in the outward half-space, which is the side
-            // the room can "see" through the wall). The −1e−9 tolerance handles
-            // sources sitting almost on the wall plane.
+            // Standard Borish ISM parent-visibility test: to reflect the
+            // current image across wall `w`, the image must lie on the INWARD
+            // side of `w` (i.e. the room-interior side). Reflecting an inward
+            // image produces a new image on the OUTWARD side, which is the
+            // side the receiver must "see through" the wall to hear this
+            // reflection. If the image is already outward of `w`, reflecting
+            // produces an inward image that can't geometrically be reached.
             //
-            // NOTE: this is the corrected sign convention — the plan's
-            // pseudocode had it inverted (see CLAUDE.md / agent transcript
-            // discussion of the "dot" test direction).
+            // With inward normal `w.n`, inward ⇔ (image - w.x1) · w.n ≥ 0.
+            // So we skip when `dot < -eps` (strictly outward beyond tolerance).
+            //
+            // WI-4 (v2.9.0): tolerance raised to 1e-6 (µm scale). Room
+            // dimensions are user-specified to 1-decimal-metre, so µm
+            // tolerance is well inside the noise floor and admits
+            // near-coplanar borderline images that 1e-9 rounded out.
+            //
+            // Historical note: v2.8.0 shipped this test with the sign
+            // inverted (`dot > -1e-9` → skip inward images). The result was
+            // that the top-level call — where `imgX,imgY` is the real source,
+            // which is inward of every wall — skipped every wall, so the
+            // polygon image-source tree never descended below order 0.
+            // Horizontal reflections were effectively absent from polygon
+            // IRs (only vertical + scatter survived). v2.9.0 fixes the sign;
+            // this is the single largest contributor to polygon density.
             const double dot = (imgX - w.x1) * w.nx + (imgY - w.y1) * w.ny;
-            if (dot > -1e-9)
+            if (dot < -1e-6)
                 continue;
 
             const auto refl = IRSynthEngine::reflect2D (imgX, imgY, w);
@@ -796,7 +828,8 @@ namespace
                 newAbs[(size_t) b] = cumAbs[(size_t) b] * w.rAbs[(size_t) b];
 
             generateIS2D (walls, refl.first, refl.second, newPath, newPositions,
-                          newAbs, rcvX, rcvY, maxDist2D, maxOrder, out);
+                          newAbs, rcvX, rcvY, maxDist2D, maxOrder,
+                          acceptedBudget, out);
         }
     }
 
@@ -809,15 +842,29 @@ namespace
     // The RT60-based formula `mo` from synthMainPath is an over-estimate for
     // polygon shapes (it uses the rectangular minDim) so we just take the min
     // of `mo` and the per-shape cap.
+    //
+    // WI-1 (v2.9.0): caps raised from the original 2.8.0 values
+    // (Fan=20, Octagonal=8, Circular Hall=6, Cathedral=6) toward the
+    // CLAUDE.md design-intent values. Chain validation in generateIS2D prunes
+    // so aggressively that the worst-case (W-1)^N branching rarely
+    // materialises; the new soft total-image budget (kPolygonAcceptedBudget)
+    // bounds work even when the order ceiling is generous.
     int orderLimitForShape (const std::string& shape, int rt60BasedMO) noexcept
     {
         int hardCap = 60;  // permissive default — this branch never runs for "Rectangular"
-        if      (shape == "Fan / Shoebox") hardCap = 20;
-        else if (shape == "Octagonal")     hardCap = 8;
-        else if (shape == "Circular Hall") hardCap = 6;
-        else if (shape == "Cathedral")     hardCap = 6;
+        if      (shape == "Fan / Shoebox") hardCap = 24;
+        else if (shape == "Octagonal")     hardCap = 14;
+        else if (shape == "Circular Hall") hardCap = 12;
+        else if (shape == "Cathedral")     hardCap = 16;
         return std::min (std::max (rt60BasedMO, 1), hardCap);
     }
+
+    // WI-1 (v2.9.0): soft cap on accepted image-source count per
+    // calcRefsPolygon call. Once generateIS2D has accumulated this many
+    // accepted images the tree stops descending. Sized to leave headroom for
+    // each of the 4 main-path channel-direction calls (4 * 20_000 = 80_000
+    // horizontal images total) which is well within background-thread budget.
+    constexpr size_t kPolygonAcceptedBudget = 20000;
 }
 
 // ── calcRefsPolygon ─────────────────────────────────────────────────────────
@@ -898,8 +945,19 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
         // mo-bounded full-reverb pass this is 1e9 (no gate), so the pruning
         // happens via maxOrder alone.
         generateIS2D (walls, sx, sy, emptyPath, startPositions, initAbs,
-                      rx, ry, maxRefDist, moHoriz, images);
+                      rx, ry, maxRefDist, moHoriz,
+                      kPolygonAcceptedBudget, images);
     }
+
+#ifdef PING_POLYGON_DEBUG
+    // Calibration log (WI-1). Off in normal builds; enable by defining
+    // PING_POLYGON_DEBUG to verify per-shape image-count behaviour.
+    std::fprintf (stderr,
+                  "[PING polygon] shape=%s moHoriz=%d acceptedImages=%zu (budget=%zu, hitBudget=%d)\n",
+                  p.shape.c_str(), moHoriz, images.size(),
+                  kPolygonAcceptedBudget,
+                  images.size() >= kPolygonAcceptedBudget ? 1 : 0);
+#endif
 
     // Vertical order cap: keep the original rectangular formula (image-source
     // count grows ~ moHoriz * (2*moVert+1) which is bounded by mo * 2 even
@@ -986,15 +1044,20 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
             }
             refs.push_back ({ t, amps, az });
 
-            // Feature A — Lambert diffuse scatter (matches calcRefs behaviour).
-            // Spawns N_SCATTER=2 secondary refs per accepted bounce at orders
-            // 1–3, scaled by ts and 0.6^(order-1).
-            const int N_SCATTER = 2;
+            // Feature A — Lambert diffuse scatter.
+            // WI-2/WI-3 (v2.9.0): polygon gets denser scatter than rectangular.
+            // N_SCATTER raised 2 -> 4 and order range widened [1,3] -> [1,5] to
+            // plug the wider gaps between polygon's sparser specular images;
+            // decay base raised 0.6 -> 0.75 to preserve scatter energy at the
+            // truncated polygon order range (per-scatter-ray amplitude is
+            // normalised by N_SCATTER so total diffuse energy roughly doubles
+            // vs the rectangular 2-ray version, which is the intent).
+            const int N_SCATTER = 4;
             if (p.lambert_scatter_enabled && ts > 0.05
-                && totalBounces >= 1 && totalBounces <= 3)
+                && totalBounces >= 1 && totalBounces <= 5)
             {
                 const double scatterWeight =
-                    (ts * 0.08) / (double) N_SCATTER * std::pow (0.6, totalBounces - 1);
+                    (ts * 0.08) / (double) N_SCATTER * std::pow (0.75, totalBounces - 1);
                 for (int s = 0; s < N_SCATTER; ++s)
                 {
                     const double scatterAz = rU (rng, -3.141592653589793, 3.141592653589793);
@@ -1105,22 +1168,47 @@ std::vector<double> IRSynthEngine::applyModalBank (
     const std::vector<double>& buf,
     double W, double D, double He,
     double rt60_125, double gain, int sr,
-    const std::string& shape)
+    const std::string& shape,
+    double polygonAreaM2)
 {
-    // Axial-mode formula f_n = c·n/(2L) only models a rectangular enclosure.
-    // For polygon shapes (Fan / Shoebox, Cathedral, Octagonal, Circular Hall)
-    // the standing-wave structure is qualitatively different and these axial
-    // resonators would inject the wrong frequencies. Skip the bank entirely.
+    // Effective dimensions for the axial-mode formula. For rectangular rooms
+    // these are just (W, D, He). For polygon rooms, the equivalent-box
+    // approximation derives Wₑ, Dₑ from the polygon area so the modes sit at
+    // frequencies a box of the same horizontal area would produce.
+    double Leff = W, Weff = D, Heff = He;
+
     if (shape != "Rectangular")
+    {
+#ifdef PING_POLYGON_MODAL_BANK
+        // WI-5 (v2.9.0): equivalent-box modal bank for polygon shapes.
+        // Axial modes aren't geometrically exact for non-rectangular plans,
+        // but the low-frequency tonal solidity the bank contributes is a
+        // psychoacoustic asset independent of the exact standing-wave math.
+        // The equivalent box is area-preserving, so modes sit in the right
+        // general frequency range for the room's actual size.
+        //
+        // Caller must pass the polygon's actual horizontal area. If it's
+        // missing or zero we fall back to the v2.8.0 early-return.
+        if (polygonAreaM2 <= 1e-6)
+            return buf;
+
+        Leff = std::sqrt (polygonAreaM2);          // Wₑ = side of the area-equal square
+        Weff = polygonAreaM2 / Leff;               // Dₑ = polygonArea / Wₑ  (= Leff for square)
+        Heff = He;
+#else
+        // v2.8.0 behaviour: axial modes not meaningful for polygon plans.
+        (void) polygonAreaM2;
         return buf;
+#endif
+    }
 
     // Axial mode frequencies: f_n = c*n / (2*L), n = 1..4 per dimension
     std::vector<double> modes;
     for (int n = 1; n <= 4; ++n)
     {
-        double fx = SPEED * n / (2.0 * W);
-        double fy = SPEED * n / (2.0 * D);
-        double fz = SPEED * n / (2.0 * He);
+        double fx = SPEED * n / (2.0 * Leff);
+        double fy = SPEED * n / (2.0 * Weff);
+        double fz = SPEED * n / (2.0 * Heff);
         if (fx > 10.0 && fx < 250.0) modes.push_back(fx);
         if (fy > 10.0 && fy < 250.0) modes.push_back(fy);
         if (fz > 10.0 && fz < 250.0) modes.push_back(fz);
@@ -2108,8 +2196,14 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         //                        =  (eLL+eRL)·bakedErGain
         //     ∴  fdnGainL = RMS(eLL+eRL, ref)·bakedErGain·(1−erFloor) / (RMS(tL, fdn)·bakedTailGain)
         const double erFloor  = 0.05;   // 5 % ER residual amplitude — fully diffuse past ecFdn
-        const double kMaxGain = 16.0;           // hard cap: +24 dB
-        const double kMinGain = 1.0 / kMaxGain; // floor: −24 dB — allows tail attenuation to match ER at distance
+        // WI-6 (v2.9.0): polygon rooms get +30 dB more FDN headroom. Polygon ER
+        // density is lower than rectangular even after the v2.9.0 fixes, so the
+        // windowed-RMS level-match at ecFdn binds against the 16 clamp more
+        // often, leaving the tail audibly thin vs the ER onset. Doubling the
+        // ceiling to 32 (+30 dB) gives the level-match more headroom without
+        // changing the formula. Rectangular is untouched (bit-identity lock).
+        const double kMaxGain = (p.shape != "Rectangular") ? 32.0 : 16.0;
+        const double kMinGain = 1.0 / kMaxGain; // floor: −24/−30 dB — allows tail attenuation to match ER at distance
         const double kMinRms  = 1e-7;           // silence guard
 
         auto wRMS = [&](const std::vector<double>& v, int a, int b) -> double {
@@ -2219,14 +2313,23 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         }
     }
 
-    // Feature B — modal resonance boost (axial room modes 10–250 Hz)
-    // Skipped for non-rectangular shapes (the axial-mode formula models a box).
+    // Feature B — modal resonance boost (axial room modes 10–250 Hz).
+    // For polygon shapes the v2.9.0 equivalent-box branch (WI-5) uses the
+    // polygon's horizontal area to derive (Wₑ, Dₑ) so the bank runs on an
+    // area-preserving box approximation — see applyModalBank header comment.
     {
         const double modalGain = 0.18;
-        iLL = applyModalBank(iLL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape);
-        iRL = applyModalBank(iRL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape);
-        iLR = applyModalBank(iLR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape);
-        iRR = applyModalBank(iRR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape);
+        double polyArea = 0.0;
+        if (p.shape != "Rectangular")
+        {
+            std::array<double, 8> zeroR; zeroR.fill (0.0);
+            const auto wallsForArea = makeWalls2D (p, p.width, p.depth, zeroR);
+            polyArea = polygonArea (wallsForArea);
+        }
+        iLL = applyModalBank(iLL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iRL = applyModalBank(iRL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iLR = applyModalBank(iLR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iRR = applyModalBank(iRR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
     }
 
     report(0.85, "Finishing…");
@@ -2503,7 +2606,8 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
         int xfade = (int)std::floor(0.020 * sr);
 
         const double erFloor  = 0.05;
-        const double kMaxGain = 16.0;
+        // WI-6 (v2.9.0): polygon rooms get the same +30 dB headroom as synthMainPath.
+        const double kMaxGain = (p.shape != "Rectangular") ? 32.0 : 16.0;
         const double kMinGain = 1.0 / kMaxGain;
         const double kMinRms  = 1e-7;
 
@@ -2584,10 +2688,17 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
     // Modal bank — skipped for non-rectangular shapes (axial-mode formula models a box).
     {
         const double modalGain = 0.18;
-        iLL = applyModalBank(iLL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape);
-        iRL = applyModalBank(iRL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape);
-        iLR = applyModalBank(iLR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape);
-        iRR = applyModalBank(iRR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape);
+        double polyArea = 0.0;
+        if (p.shape != "Rectangular")
+        {
+            std::array<double, 8> zeroR; zeroR.fill (0.0);
+            const auto wallsForArea = makeWalls2D (p, p.width, p.depth, zeroR);
+            polyArea = polygonArea (wallsForArea);
+        }
+        iLL = applyModalBank(iLL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iRL = applyModalBank(iRL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iLR = applyModalBank(iLR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iRR = applyModalBank(iRR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
     }
 
     report(0.85, "Finishing…");

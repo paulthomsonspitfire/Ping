@@ -1608,7 +1608,7 @@ Inside `calcRefsPolygon`, an internal `ImageSource2D` struct carries:
 
 Accepted images yield a `Ref { int t; std::array<double,8> amps; double az; }`. Vertical `nz` reflections are combined multiplicatively with the horizontal amps just as `calcRefs` does.
 
-### Order caps
+### Order caps (updated v2.9.0)
 
 `orderLimitForShape(shape, mo)` applies a hard ceiling on top of the RT60-based `mo = min(60, floor(RT60_MF × 343 / minDim / 2))` so concave / complex shapes don't explode combinatorially:
 
@@ -1616,9 +1616,13 @@ Accepted images yield a `Ref { int t; std::array<double,8> amps; double az; }`. 
 |---|---|
 | Rectangular | 60 (effectively no cap — matches pre-2.8.0) |
 | Cathedral | 16 |
-| Fan / Shoebox | 20 |
+| Fan / Shoebox | 24 |
 | Circular Hall | 12 |
 | Octagonal | 14 |
+
+A soft `kPolygonAcceptedBudget = 20000` total-image cap is also enforced inside `generateIS2D`. It is the last line of defence in case chain validation ever fails to prune aggressively enough; in practice it never binds (measured max ~150 images on default factory rooms at Fan/Shoebox mo=23). Enable the calibration log by building with `-DPING_POLYGON_DEBUG=1`.
+
+**v2.8.0 note:** the shipped hard caps were tighter (Cathedral=6, Fan=20, Circular=6, Octagonal=8), but a sign bug in the Borish parent-visibility test meant the polygon image-source tree never descended past order 0 regardless of the cap. See `Docs/Polygon-Quality-Work-Plan.md` and the v2.9.0 polygon-quality section below.
 
 ### Shape-aware gates in the late-reverb path
 
@@ -1627,6 +1631,31 @@ Accepted images yield a `Ref { int t; std::array<double,8> amps; double az; }`. 
 - **`calcRT60`** similarly uses `polygonArea`/`polygonPerimeter` in place of the rectangular-only `W×D + W×H + D×H` surface totals, then feeds the polygon surface-and-volume into the Eyring + air-absorption formula at all 8 bands.
 
 All three call sites take a `const IRSynthParams*` (or the shape string alone where only the gate is needed). Passing `nullptr` / defaulting to `"Rectangular"` keeps every existing non-polygon unit test bit-identical.
+
+### Polygon quality improvements (v2.9.0)
+
+v2.8.0's polygon IRs sounded markedly thinner and more phasey than rectangular at comparable room parameters. A post-release audit traced this to two mechanical gaps: tight per-shape order caps plus a latent sign bug in `generateIS2D`'s Borish parent-visibility test. The work plan is archived at `Docs/Polygon-Quality-Work-Plan.md`; the shipped changes for v2.9.0 are:
+
+- **Sign fix in `generateIS2D`.** Inverted polarity of the dot-product test — see the "dot" bullet under "Key design decisions" below. This is the single largest change and the root cause of the subjective gap. Horizontal image-source trees for all four polygon shapes now actually descend past order 0.
+- **Per-shape order caps raised** to the v2.8.0-documented design-intent values, plus Fan/Shoebox bumped further: Fan 20→24, Octagonal 8→14, Circular Hall 6→12, Cathedral 6→16. Rectangular remains at 60.
+- **Soft total-image budget** (`kPolygonAcceptedBudget = 20000`) threaded through `generateIS2D` as a last-ditch cost cap. Never binds in practice on any factory preset; exists to keep worst-case pathological geometry bounded.
+- **Polygon-only Lambert scatter tuning.** `N_SCATTER` raised 2→4, scatter order range widened [1,3]→[1,5], per-order decay base raised 0.6→0.75. Rectangular's scatter block is untouched (guarded by the calcRefs/calcRefsPolygon split).
+- **Chain-validation tolerances** widened µm-scale (`rayIntersectsSegment` EPS 1e-9 → 1e-6 and `generateIS2D` planar cutoff tolerance 1e-9 → 1e-6). This admits borderline grazing-corner images that nanounit rounding previously rejected.
+- **Equivalent-box modal bank for polygon** *(WI-5, behind `PING_POLYGON_MODAL_BANK=1`, default on)*. Non-rectangular shapes now derive an area-preserving box `(Wₑ = √polygonArea, Dₑ = polygonArea/Wₑ, Hₑ = He)` and run the standard axial-mode formula on those equivalent dimensions. The exact frequencies aren't physical but the psychoacoustic LF solidity is. Rectangular path is unchanged. `polygonAreaM2` is computed once at each call site from `polygonArea(makeWalls2D(p, W, D, zeroR))`. Undefine the macro (or `#define PING_POLYGON_MODAL_BANK 0`) to restore the v2.8.0 skip-for-polygon behaviour.
+- **Polygon FDN `kMaxGain` raised 16 → 32** *(WI-6)* in both `synthMainPath` and `synthExtraPath` when `p.shape != "Rectangular"`. Gives the windowed-RMS ER↔FDN level-match another +30 dB of headroom — needed because polygon ER density is still lower than rectangular even after the sign fix, so the old 16 clamp was binding more often and leaving tails audibly thin. Rectangular retains the original 16 / −24 dB range (bit-identity preserved).
+- **Calibration log** behind `-DPING_POLYGON_DEBUG=1`. Prints accepted image count, effective `moHoriz`, and whether the budget bound per `calcRefsPolygon` call. Off in normal builds.
+
+Rectangular is bit-identical to 2.8.0 — `calcRefs` is unchanged, and IR_11 / IR_14 golden locks still pass without update. Polygon comparison tests (IR_27..IR_30) still pass with their coarse l2 thresholds.
+
+Calibration numbers on default factory rooms (post-fix):
+
+| Shape | moHoriz | Accepted images / call |
+|---|---|---|
+| Cathedral | 16 | 35–72 |
+| Circular Hall | 12 | 45–86 |
+| Fan / Shoebox | 23 | 103–153 |
+
+Budget never bound on any factory venue. None of the shapes hit their per-shape order cap either — chain validation is the dominant limiter.
 
 ### Backward compatibility
 
@@ -1650,17 +1679,19 @@ The label for the Opt-Mirror axis buttons was removed — the V/H symbols are se
 | ID | Description |
 |----|-------------|
 | DSP_22 | Geometry utilities — reflect2D is an involution + preserves distance-to-line; rayIntersectsSegment hit/miss/parallel/endpoint cases; polygonArea signed; polygonPerimeter sum-of-sides; makeWalls2D inward normals for all 4 polygon shapes |
-| IR_27 | Rectangular shape synthesis is bit-identical to calcRefs output (golden lock guarding the dispatch lambda's Rectangular branch) |
-| IR_28 | Cathedral vs Rectangular at identical W/D/H produces measurably different IR (l2 > 0) |
-| IR_29 | Fan / Shoebox with taper=0 is near-identical to Rectangular; taper=0.5 is measurably different |
-| IR_30 | Circular Hall cornerCut=0 (16-gon in bounding rect) has area > 0.9 × W×D < W×D and all vertices inside bounding box; cornerCut=1 (ellipse inscribed) produces measurably different IR (l2 > 0) |
-| IR_31 | Octagonal cornerCut=1 with W=D produces a regular octagon — all 8 sides equal length within 1e-2 tolerance (the engine uses rounded constants; strict 1e-3 is too tight) |
+| IR_27 | Fan / Shoebox: taper>0 produces a measurably different early reflection field from taper=0 (l2 > 0) |
+| IR_28 | Octagonal: cornerCut>0 produces a measurably different IR from cornerCut=0 (l2 > 0); cornerCut=0 is a degenerate rectangle |
+| IR_29 | Cathedral: cruciform footprint produces a measurably different IR from a rectangular bounding box (l2 > 0) |
+| IR_30 | Circular Hall: full 16-gon (cornerCut=1, inscribed-in-ellipse) produces a measurably different IR from the 16-gon-in-bounding-rect limit (cornerCut=0) |
+| IR_31 | `makeWalls2D` area/perimeter match hand-calculable values for known dimensions across all polygon shapes |
+
+Rectangular bit-identity (the v2.8.0 dispatch-branch invariant) is guarded indirectly via IR_11 and IR_14 in `PingEngineTests.cpp`, which exercise the full main-path synthesis including the dispatch lambda. No dedicated "polygon dispatch for rectangular" test exists — the rectangular path of the dispatch returns the unchanged `calcRefs` output, which the full-main-path regression tests already lock.
 
 ### Key design decisions — polygon room geometry
 
 - **Rectangular is bit-identical because the dispatch is a string compare, not a refactor** — `calcRefs` (the old analytic loop) is kept verbatim. `calcRefsPolygon` is a new sibling. Every call site was changed to a lambda that picks between them on `p.shape`. No geometric math is shared between the two paths. This is what lets IR_11 and IR_14 continue to pass without recapture: the rectangular code path is literally the same instructions as pre-2.8.0.
 - **Full chain validation is mandatory for concave shapes — single-step is not enough** — Cathedral's transept arms create visibility shadows where a reflected image can pass the first-wall test but be occluded by a later wall in the chain. `validateChain2D` walks every segment from receiver back to the original source and checks `rayIntersectsSegment` against the expected wall on each step. Do not "optimise" by short-circuiting after the first wall; the plan's earlier draft suggested this and it was rejected before implementation.
-- **`dot < -1e-9`, not `> -1e-9`** — a stale version of the plan inverted the sign. The test is: the wall's inward normal must point away from the current image (negative dot with the source→receiver direction) for the reflection to produce a real image in front of the listener. Getting the sign wrong generates phantom images behind every wall.
+- **`dot < -1e-6`, not `> -1e-9`** *(corrected v2.9.0)* — the Borish parent-visibility test at the top of `generateIS2D` asks: for the current image `I_k` to be a valid reflector off candidate wall `w`, `I_k` must lie on the **inward** side of `w`. Reflecting an inward image produces a new image on the outward side, which is the side the receiver must see through to hear the reflection. With inward normals `w.n`, inward ⇔ `(I_k − w.x1) · w.n ≥ 0`, so we skip when `dot < -eps`. **v2.8.0 shipped this test with the sign flipped** (`dot > -1e-9` → skip inward images), which at the top level rejected every wall because the real source is inward of all walls. The polygon image-source tree never generated order ≥ 1 images in v2.8.0 — every polygon IR the plugin shipped was dominated by vertical floor/ceiling bounces, Lambert scatter, and the FDN tail, with zero horizontal specular reflection content. v2.9.0 restores the correct sign and widens the tolerance to µm scale (room geometry is user-specified to 0.1 m resolution, so µm is well inside the noise floor).
 - **Vertical reflections still use the analytic `nz` loop** — only horizontal image tracing changed. Floor and ceiling bounces are multiplied in per-band with the horizontal polygon amps just as they were in the rectangular loop. This keeps the vertical cost identical to pre-2.8.0 regardless of plan shape.
 - **Order caps are per-shape, not global** — `orderLimitForShape` trumps the RT60-based `mo` when the shape is non-rectangular. Cathedral's concave geometry is the worst case: a chain validation call runs on every accepted image and the branching factor is 4–6 per node, so capping at 16 is necessary to keep synth time under a few seconds. Rectangular's cap of 60 is intentionally high — it never hits because the RT60-based bound always wins first.
 - **`shapeCornerCut` semantics are shape-specific** — for Octagonal, `0.414 ≈ 1 − √2/2` produces a regular octagon (all 8 sides equal). For Circular Hall, `cornerCut=0` gives a 16-gon inscribed in the bounding rectangle (area ≈ 91% of W×D) and `cornerCut=1` gives the same vertex count inscribed in an inscribed ellipse. The parameter name is shared because the UI slot is shared ("Roundness" slider appears for both shapes); do not split this into two separate APVTS params without also splitting the UI control.
