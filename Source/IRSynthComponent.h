@@ -184,10 +184,10 @@ private:
     juce::Label organReadout, balconiesReadout;
 
     // Options
-    juce::ComboBox micPatternCombo, sampleRateCombo;
+    juce::ComboBox micPatternCombo;
     juce::ToggleButton erOnlyButton { "ER only" };
     juce::TextButton bakeBalanceButton { "Bake ER/Tail Bal" };
-    juce::Label micPatternLabel, sampleRateLabel;
+    juce::Label micPatternLabel;
 
     // ── Experimental early-reflection A/B toggles ────────────────────────────
     // directMaxOrderCombo drives IRSynthParams::direct_max_order (0 / 1 / 2).

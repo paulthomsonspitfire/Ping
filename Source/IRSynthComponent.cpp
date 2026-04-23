@@ -252,15 +252,11 @@ IRSynthComponent::IRSynthComponent()
     // Options
     addOptions (micPatternCombo, micOptions, 7);
     micPatternCombo.setSelectedId (5, juce::dontSendNotification); // cardioid (LDC) — 5th item after adding omni (MK2H) + wide cardioid (MK21)
-    sampleRateCombo.addItem ("44100", 1);
-    sampleRateCombo.addItem ("48000", 2);
-    sampleRateCombo.setSelectedId (2, juce::dontSendNotification);
     erOnlyButton.setToggleState (false, juce::dontSendNotification);
     bakeBalanceButton.addListener (this);
     bakeBalanceButton.setColour (juce::TextButton::buttonColourId, panelBg);
     bakeBalanceButton.setColour (juce::TextButton::textColourOffId, textDim);
     micPatternLabel.setText ("Pattern", juce::dontSendNotification);
-    sampleRateLabel.setText ("Sample Rate", juce::dontSendNotification);
 
     // Experimental early-reflection A/B toggles.
     directMaxOrderCombo.addItem ("0 (direct only)",     1);
@@ -479,7 +475,7 @@ IRSynthComponent::IRSynthComponent()
     lambertScatterButton.onClick = notifyParamChanged;
     spkDirFullButton.onClick     = notifyParamChanged;
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
-                      &vaultCombo, &micPatternCombo, &sampleRateCombo,
+                      &vaultCombo, &micPatternCombo,
                       &outrigPatternCombo, &ambientPatternCombo, &directMaxOrderCombo })
         cb->addListener (this);
 
@@ -598,11 +594,9 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (organReadout);
     addAndMakeVisible (balconiesReadout);
     addAndMakeVisible (micPatternCombo);
-    addAndMakeVisible (sampleRateCombo);
     addAndMakeVisible (erOnlyButton);
     addAndMakeVisible (bakeBalanceButton);
     addAndMakeVisible (micPatternLabel);
-    addAndMakeVisible (sampleRateLabel);
     addAndMakeVisible (directMaxOrderCombo);
     addAndMakeVisible (directMaxOrderLabel);
     addAndMakeVisible (lambertScatterButton);
@@ -720,7 +714,7 @@ IRSynthComponent::IRSynthComponent()
     // Apply the same glassy transparent fill to all other combos on this page so they
     // visually match the main-page preset combo (0x30ffffff = 19 % opaque white).
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
-                      &vaultCombo, &micPatternCombo, &sampleRateCombo,
+                      &vaultCombo, &micPatternCombo,
                       &outrigPatternCombo, &ambientPatternCombo })
     {
         cb->setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x1effffff));
@@ -773,7 +767,7 @@ IRSynthComponent::IRSynthComponent()
     for (auto* l : { &widthLabel, &depthLabel, &heightLabel, &widthValueLabel, &depthValueLabel, &heightValueLabel,
                      &floorLabel, &ceilingLabel, &wallLabel, &windowsLabel,
                      &audienceLabel, &diffusionLabel, &vaultLabel, &organLabel, &balconiesLabel,
-                     &micPatternLabel, &sampleRateLabel,
+                     &micPatternLabel,
                      &outrigPatternLabel, &ambientPatternLabel,
                      &outrigHeightLabel,  &ambientHeightLabel,
                      &outrigHeightReadout, &ambientHeightReadout,
@@ -1041,36 +1035,35 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
 
     // ── OPTIONS ─────────────────────────────────────────────────────────────
     // MAIN mic pattern has moved into the MAIN column of the Mic Paths strip
-    // (alongside Outrig/Ambient patterns), so Options here only holds Sample
-    // Rate, ER-only toggle, and the bake-balance action.
+    // (alongside Outrig/Ambient patterns), so Options here only holds the
+    // ER-only toggle and the bake-balance action.
     //
-    // Layout (compacted in v2.7.5 to free vertical space for Room Geometry
-    // and the wider MAIN column in the Mic Paths strip):
-    //   Row 1: "Sample Rate" label across the row
-    //   Row 2: [SR combo]  [ER only]  [Bake ER/Tail Bal]          (one row)
-    //   Row 3: DIRECT reach label + half-width combo
-    //   Row 4: [Lambert Scatter]      [Full Spkr Dir]             (one row)
+    // Layout:
+    //   Row 1: [ER only]  [Bake ER/Tail Bal]                       (one row)
+    //   Row 2: DIRECT reach label + half-width combo
+    //   Row 3: [Lambert Scatter]      [Full Spkr Dir]              (one row)
+    //
+    // v2.8.x: the Sample Rate picker was removed. It was a holdover from the
+    // pre-plugin web-app era where the user downloaded a WAV of the IR at a
+    // chosen rate. Inside the plugin the IR is synthesised at 48 kHz and
+    // juce::dsp::Convolution::loadImpulseResponse automatically resamples it
+    // to whatever rate prepareToPlay received from the host, so the picker
+    // had no effect on playback — only on the native rate of exported WAVs.
+    // Presets still round-trip the "sr" XML attribute (default 48000) so old
+    // content loads unchanged; IRSynthParams::sample_rate is now effectively
+    // pinned to 48000 by the UI.
     optionsHeaderBounds = { x0, y, ctrlW, headerH };
     y += headerH + 2;
 
-    // Sample Rate label sits above the combo row, same style as before.
-    sampleRateLabel.setBounds (x0, y, ctrlW, rowH - 4);
-    y += rowH - 2;
-
-    // Row 2: SR combo + ER only + Bake button, all side-by-side. The combo
-    // gets a fixed 72 px (wide enough for "48000"), then gap, then an equal
-    // split of the remaining width between the ER-only toggle and the Bake
-    // button, minus small inter-item gaps.
+    // Row 1: ER only + Bake button side-by-side. The Bake button's text
+    // ("Bake ER/Tail Bal") is longer than the ER-only label, so give it ~60%
+    // of the width and the toggle ~40%, minus one small inter-item gap.
     {
-        const int srW      = 72;
         const int rowGap   = 6;
-        const int remaining = ctrlW - srW - rowGap - rowGap;
-        const int erW      = juce::jmax (60,  remaining / 2);
-        const int bakeW    = juce::jmax (110, remaining - erW);
-        sampleRateCombo.setBounds  (x0,                            y, srW,   rowH);
-        erOnlyButton.setBounds     (x0 + srW + rowGap,             y, erW,   rowH);
-        bakeBalanceButton.setBounds(x0 + srW + rowGap + erW + rowGap,
-                                    y, bakeW, rowH + 2);
+        const int erW      = juce::jmax (60,  (ctrlW - rowGap) * 2 / 5);
+        const int bakeW    = juce::jmax (110, ctrlW - rowGap - erW);
+        erOnlyButton.setBounds     (x0,                  y, erW,   rowH);
+        bakeBalanceButton.setBounds(x0 + erW + rowGap,   y, bakeW, rowH + 2);
         y += rowH + secGap;
     }
 
@@ -1400,7 +1393,14 @@ IRSynthParams IRSynthComponent::getParams() const
     p.decca_centre_gain = deccaCentreGainSlider.getValue();
     p.decca_toe_out     = deccaToeOutSlider.getValue() * M_PI / 180.0;
     p.er_only = erOnlyButton.getToggleState();
-    p.sample_rate = sampleRateCombo.getSelectedId() == 1 ? 44100 : 48000;
+    // sample_rate is pinned to 48 kHz — the native rate of all factory IRs.
+    // The picker that used to drive this was removed in v2.8.x (see layout
+    // comment in resized() for full rationale); JUCE's Convolution resamples
+    // the IR to the host rate regardless. Any old preset that saved
+    // sr="44100" will synthesise at 48 kHz on the next Calculate IR, but the
+    // previously-rendered raw synth buffer stored in the preset still plays
+    // back at its original rate until re-rendered.
+    p.sample_rate = 48000;
 
     // Mic paths (DIRECT / OUTRIG / AMBIENT).
     p.direct_enabled  = directEnableButton.getToggleState();
@@ -1504,7 +1504,9 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     setComboTo (outrigPatternCombo,  migratePattern (p.outrig_pattern),  micOptions, 7);
     setComboTo (ambientPatternCombo, migratePattern (p.ambient_pattern), micOptions, 7);
     erOnlyButton.setToggleState (p.er_only, juce::dontSendNotification);
-    sampleRateCombo.setSelectedId (p.sample_rate == 44100 ? 1 : 2, juce::dontSendNotification);
+    // p.sample_rate is no longer surfaced in the UI (v2.8.x removal of the
+    // Sample Rate picker). Value is preserved on the params struct for XML
+    // round-trip but has no UI control to populate.
 
     directEnableButton.setToggleState  (p.direct_enabled,  juce::dontSendNotification);
     outrigEnableButton.setToggleState  (p.outrig_enabled,  juce::dontSendNotification);
