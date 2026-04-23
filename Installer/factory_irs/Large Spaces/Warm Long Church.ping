@@ -1,13 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <PingIRSynth>
-  <irSynthParams shape="Octagonal" width="31.5" depth="23.5" height="19.5" floor="Hardwood floor"
-                 ceiling="Painted plaster" wall="Rough stone / rock" windows="0.18"
-                 audience="0.26" diffusion="0.26" vault="Fan vault  (King's College)"
-                 organ="0.0" balconies="0.0" temp="20.0" humidity="50.0" slx="0.4200456949483869"
-                 sly="0.3361911798942563" srx="0.5553529804203473" sry="0.3361911798942563"
-                 rlx="0.3646927145280395" rly="0.7574138601661687" rrx="0.6168562919985112"
-                 rry="0.7574138601661687" spkl="2.695111409816886" spkr="0.4376997659541615"
-                 micl="-2.380681747193784" micr="-0.9156339546033598" micPat="cardioid"
-                 erOnly="0" sr="48000" bakeERTail="0" bakedERGain="1.0" bakedTailGain="1.0"/>
+  <irSynthParams shape="Cathedral" width="26.0" depth="20.5" height="16.5" shapeNavePct="0.3"
+                 shapeTrptPct="0.35" shapeTaper="0.3" shapeCornerCut="0.41" floor="Hardwood floor"
+                 ceiling="Plywood panel" wall="Concrete / bare brick" windows="0.36"
+                 audience="0.13" diffusion="0.67" vault="Shallow barrel vault"
+                 organ="0.36" balconies="0.32" temp="20.0" humidity="50.0" slx="0.2176556776556777"
+                 sly="0.6123809523809524" srx="0.2176556776556777" sry="0.3876190476190476"
+                 rlx="0.4624542124542125" rly="0.5838095238095238" rrx="0.4624542124542125"
+                 rry="0.4161904761904762" spkl="0.4138617078401099" spkr="-0.4138617078401099"
+                 micl="2.576143985991031" micr="-2.576143985991031" micPat="wide cardioid (MK21)"
+                 erOnly="0" sr="48000" bakeERTail="0" bakedERGain="1.0" bakedTailGain="1.0"
+                 directOn="1" outrigOn="1" ambientOn="1" directMaxOrder="1" lambertScatter="1"
+                 spkDirFull="0" outrigLx="0.4564468864468865" outrigLy="0.8257142857142857"
+                 outrigRx="0.4564468864468865" outrigRy="0.1742857142857143" outrigLang="-2.915479654069395"
+                 outrigRang="2.915479654069395" outrigHeight="3.0" outrigPat="subcardioid"
+                 outrigLtilt="0.0" outrigRtilt="0.0" ambientLx="0.8439194139194138"
+                 ambientLy="0.7666666666666667" ambientRx="0.8439194139194138"
+                 ambientRy="0.2333333333333333" ambientLang="3.13514114022687"
+                 ambientRang="-3.13514114022687" ambientHeight="6.0" ambientPat="omni"
+                 ambientLtilt="0.0" ambientRtilt="0.0" miclTilt="0.0" micrTilt="0.0"
+                 deccaOn="0" deccaCx="0.5" deccaCy="0.65" deccaAng="-1.570796326794897"
+                 deccaCtrGain="0.5" deccaToeOut="1.570796326794897" deccaTilt="0.0"
+                 mirrorAxis="1"/>
+  <mixerGates mainOn="1" directOn="0" outrigOn="0" ambientOn="0"/>
 </PingIRSynth>
