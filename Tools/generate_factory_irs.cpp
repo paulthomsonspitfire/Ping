@@ -903,7 +903,20 @@ int main(int argc, char** argv)
 
     if (argc < 3)
     {
-        std::cerr << "Usage: generate_factory_irs <ir_outdir> <preset_outdir>\n"
+        std::cerr << "Usage: generate_factory_irs <ir_outdir> <preset_outdir> [options]\n"
+                  << "\n"
+                  << "  Venue-driven regenerator: iterates over the hardcoded VENUES[]\n"
+                  << "  list and writes the full (.wav + aux .wavs + .ping + preset .xml)\n"
+                  << "  set for each venue. Use Tools/rebake_factory_irs for the\n"
+                  << "  sidecar-driven counterpart that preserves hand-authored .pings.\n"
+                  << "\n"
+                  << "Options:\n"
+                  << "  --overwrite-sidecars   Allow overwriting existing .ping files.\n"
+                  << "                         Without this flag, any venue whose .ping\n"
+                  << "                         already exists is skipped entirely (both\n"
+                  << "                         the .wav and the .ping are left alone)\n"
+                  << "                         to protect hand-authored parameter edits.\n"
+                  << "\n"
                   << "  e.g. generate_factory_irs Installer/factory_irs Installer/factory_presets\n";
         return 1;
     }
@@ -911,14 +924,29 @@ int main(int argc, char** argv)
     fs::path irBase     = argv[1];
     fs::path presetBase = argv[2];
 
+    bool overwriteSidecars = false;
+    for (int i = 3; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--overwrite-sidecars") overwriteSidecars = true;
+        else
+        {
+            std::cerr << "Unknown option: " << arg << "\n";
+            return 1;
+        }
+    }
+
     int total   = (int)VENUES.size();
     int done    = 0;
     int failed  = 0;
+    int skipped = 0;
 
     std::cout << "=== P!NG Factory IR Generator ===\n"
               << "Venues: " << total << "\n"
               << "IR output:     " << irBase     << "\n"
-              << "Preset output: " << presetBase << "\n\n";
+              << "Preset output: " << presetBase << "\n"
+              << "Overwrite sidecars: " << (overwriteSidecars ? "YES (destructive)" : "no (safe default)") << "\n"
+              << "\n";
 
     for (const auto& venueConst : VENUES)
     {
@@ -927,7 +955,7 @@ int main(int argc, char** argv)
         VenueDef venue = venueConst;
         applyStandardMicSetup (venue.params);
 
-        std::cout << "[" << (done + failed + 1) << "/" << total << "] "
+        std::cout << "[" << (done + failed + skipped + 1) << "/" << total << "] "
                   << venue.category << " / " << venue.name << "\n";
         std::cout.flush();
 
@@ -949,6 +977,23 @@ int main(int argc, char** argv)
         fs::path directPath = irDir    / (std::string(venue.name) + "_direct.wav");
         fs::path outrigPath = irDir    / (std::string(venue.name) + "_outrig.wav");
         fs::path ambientPath= irDir    / (std::string(venue.name) + "_ambient.wav");
+
+        // Safety: skip the whole venue if a hand-authored sidecar already
+        // exists, unless the user explicitly opted in with --overwrite-sidecars.
+        // Skipping the entire venue (not just the sidecar) prevents the .wav
+        // and .ping from drifting out of sync — which would happen if we
+        // wrote a new .wav from VENUES[] while leaving the author's .ping
+        // with different parameters in place. The sidecar-driven rebake
+        // tool (Tools/rebake_factory_irs) is the right answer for
+        // re-synthesising .wavs from hand-authored sidecars.
+        if (!overwriteSidecars && fs::exists (sidecarPath))
+        {
+            std::cout << "    SKIP: sidecar already exists ("
+                      << sidecarPath.filename() << ")\n"
+                      << "          pass --overwrite-sidecars to replace.\n";
+            ++skipped;
+            continue;
+        }
 
         // Generate IR
         auto t0 = std::chrono::steady_clock::now();
@@ -1028,6 +1073,13 @@ int main(int argc, char** argv)
         ++done;
     }
 
-    std::cout << "\n=== Complete: " << done << " succeeded, " << failed << " failed ===\n";
+    std::cout << "\n=== Complete: " << done << " succeeded"
+              << (skipped ? ", " + std::to_string(skipped) + " skipped (sidecar exists)" : "")
+              << (failed  ? ", " + std::to_string(failed)  + " failed"                     : "")
+              << " ===\n";
+    if (skipped > 0 && !overwriteSidecars)
+        std::cout << "Note: pass --overwrite-sidecars to replace the skipped venues' .ping files.\n"
+                  << "      To regenerate .wavs while preserving sidecar edits, use\n"
+                  << "      Tools/rebake_factory_irs (sidecar-driven) instead.\n";
     return (failed > 0) ? 1 : 0;
 }

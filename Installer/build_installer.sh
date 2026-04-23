@@ -34,6 +34,77 @@ if [[ ! -d "$VST3_PLUGIN" ]]; then
     exit 1
 fi
 
+# ── Pre-flight factory-IR inventory (v2.9.0) ──────────────────────────────
+# Prints a summary of what will be packaged and flags any factory IRs whose
+# .wav is older than its .ping sidecar (likely-stale after a sidecar edit
+# without a rebake). Purely informational — warnings are non-blocking. The
+# TTY gate at the end of this block lets you abort before any work is done;
+# when run non-interactively (CI) the script auto-continues.
+#
+# This script NEVER regenerates .wav or .ping files. To rebake .wavs from
+# sidecars, run Tools/rebake_factory_irs explicitly beforehand.
+if [[ -d "$SCRIPT_DIR/factory_irs" ]]; then
+    echo ""
+    echo "=== Factory IR inventory ==="
+    ping_count=0
+    wav_count=0
+    stale_count=0
+    missing_wav=0
+    stale_list=()
+    missing_list=()
+
+    while IFS= read -r -d '' ping; do
+        ping_count=$((ping_count + 1))
+        wav="${ping%.ping}.wav"
+        rel="${wav#$PROJECT_ROOT/}"
+        if [[ -f "$wav" ]]; then
+            wav_count=$((wav_count + 1))
+            # "$wav" -ot "$ping" → wav is older than ping
+            if [[ "$wav" -ot "$ping" ]]; then
+                stale_count=$((stale_count + 1))
+                stale_list+=("$rel")
+            fi
+        else
+            missing_wav=$((missing_wav + 1))
+            missing_list+=("$rel")
+        fi
+    done < <(find "$SCRIPT_DIR/factory_irs" -name '*.ping' -print0)
+
+    echo "  Sidecars (.ping): $ping_count"
+    echo "  MAIN .wavs:       $wav_count"
+
+    if [[ $stale_count -gt 0 ]]; then
+        echo ""
+        echo "  ${stale_count} stale .wav(s) — older than their .ping sidecar:"
+        for p in "${stale_list[@]}"; do echo "    $p"; done
+    fi
+    if [[ $missing_wav -gt 0 ]]; then
+        echo ""
+        echo "  ${missing_wav} missing .wav(s) — sidecar present, no MAIN .wav:"
+        for p in "${missing_list[@]}"; do echo "    $p"; done
+    fi
+    if [[ $stale_count -gt 0 || $missing_wav -gt 0 ]]; then
+        echo ""
+        echo "  To regenerate .wavs from sidecars without touching the .pings, run:"
+        echo "    ./build/rebake_factory_irs Installer/factory_irs"
+        echo ""
+    fi
+
+    # Interactive confirmation. Reads directly from /dev/tty (not stdin),
+    # so the prompt still works when this script is invoked via
+    # `cmake --build build --target installer` — cmake pipes the child's
+    # stdin, but /dev/tty remains attached to the controlling terminal.
+    # CI / no-TTY environments (where /dev/tty is unreadable) auto-continue
+    # so pipelines aren't blocked.
+    if [[ -r /dev/tty ]]; then
+        read -r -p "Continue with installer build? [y/N] " reply </dev/tty
+        case "$reply" in
+            [Yy]*) ;;
+            *) echo "Aborted."; exit 1 ;;
+        esac
+    fi
+fi
+
 echo "Building P!NG installer..."
 STAGING_DIR=$(mktemp -d)
 PAYLOAD="$STAGING_DIR/payload"

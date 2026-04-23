@@ -8,9 +8,35 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.8.0 (see `CMakeLists.txt`)
+**Current version:** 2.9.0 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
+
+---
+
+## Agent guardrails (read this before running anything)
+
+Rules that any AI session working on this repo MUST follow. These are not suggestions.
+
+### Never regenerate factory IRs without explicit per-run confirmation
+
+The files under `Installer/factory_irs/**/*.wav` and `Installer/factory_irs/**/*.ping` are **hand-authored content**. The `.ping` sidecars may contain parameter tweaks (mic positions, tilts, geometry overrides) that are not reproducible from the hardcoded `VENUES[]` table in `Tools/generate_factory_irs.cpp`.
+
+**Do not run any of the following without asking the user first, in the same turn, and getting an explicit yes:**
+
+- `build/generate_factory_irs` (the hardcoded-venues tool — it will overwrite every `.ping` in `VENUES[]` with the generator's defaults unless `--overwrite-sidecars` is deliberately withheld, which is now the safe default but still do not invoke it unprompted)
+- `build/rebake_factory_irs` (the sidecar-driven rebaker — safer because it never touches `.ping`, but it still overwrites every `.wav` on disk)
+- any other script or ad-hoc command that writes to `Installer/factory_irs/` or `Installer/factory_presets/`
+
+Building the installer (`cmake --build build --target installer` / `Installer/build_installer.sh`) **never requires regeneration**. The installer script only reads `Installer/factory_irs/` — it copies the current state into a staging payload and trims the staging copy in place. If the user asks you to "build an installer", that is NOT implicit consent to refresh factory content. If you think the factory IRs look stale relative to an engine change you just made, say so and ask before running anything.
+
+### Never overwrite sidecars silently
+
+When regeneration *is* explicitly authorised by the user, prefer `rebake_factory_irs` over `generate_factory_irs` whenever the goal is "apply engine-code changes to the existing factory set." The rebaker uses each existing `.ping` as the source of truth and writes only the sibling `.wav`s.
+
+### Background
+
+v2.9.0 shipped a sign-bug fix for polygon rooms that required all polygon `.wav`s to be re-baked. During that work the agent ran `generate_factory_irs` unprompted and overwrote five hand-edited sidecars (King's College Chapel Cambridge, St Jude-on-the-Hill Hampstead, Vienna Musikverein Golden Hall, Royal Albert Hall London, Stone Recital Room). Those edits are gone — they were never committed. These rules exist so that cannot happen again.
 
 ---
 
