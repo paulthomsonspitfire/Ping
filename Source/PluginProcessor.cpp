@@ -2240,14 +2240,24 @@ void PingProcessor::loadIRFromFile (const juce::File& file)
                 return;
             }
 
-            // Orphan aux file: load only into its matching slot. Leave MAIN,
-            // DIRECT/OUTRIG/AMBIENT alone (whichever ones the user had before).
+            // Orphan aux file: load into its matching slot, then clear MAIN and the
+            // other two aux paths. This gives a clean "you picked one file, you get
+            // exactly that path" semantics — without clearing, the previously-loaded
+            // MAIN / sibling-aux paths would still be enableable on the front-panel
+            // mixer with stale audio from whatever was loaded before.
             juce::AudioFormatManager fm;
             fm.registerBasicFormats();
             std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (file));
             if (! reader) return;
             juce::AudioBuffer<float> auxBuf ((int) reader->numChannels, (int) reader->lengthInSamples);
             reader->read (&auxBuf, 0, (int) reader->lengthInSamples, 0, true, true);
+
+            // Clear every path *except* the one we're about to populate. Done before
+            // the load so loadIRFromBuffer's flag-flip is the final state.
+            for (auto p : { MicPath::Main, MicPath::Direct, MicPath::Outrig, MicPath::Ambient })
+                if (p != m.path)
+                    clearMicPath (p);
+
             loadIRFromBuffer (std::move (auxBuf), reader->sampleRate, /*fromSynth=*/false,
                               /*deferConvolverLoad=*/false, m.path);
 
@@ -2330,7 +2340,15 @@ void PingProcessor::loadMicPathFromFile (const juce::File& baseIRFile, MicPath p
     const auto dir  = baseIRFile.getParentDirectory();
     const auto sibling = dir.getChildFile (stem + suffix + ext);
     if (! sibling.existsAsFile())
-        return;   // extra path not available for this IR — silently skip
+    {
+        // Extra path not available for this IR — clear the slot so the user can't
+        // accidentally enable a stale IR from a previously-loaded file. Without this,
+        // loading "FooNoSiblings.wav" after "Bar.wav" (which had every sibling) would
+        // leave Bar's _direct / _outrig / _ambient still loaded and toggleable on the
+        // front-panel mixer, even though they have nothing to do with Foo.
+        clearMicPath (path);
+        return;
+    }
 
     juce::AudioFormatManager fm;
     fm.registerBasicFormats();
@@ -2412,6 +2430,39 @@ juce::File PingProcessor::writeSynthIRSetToDirectory (const juce::File& destDir,
 juce::File PingProcessor::saveCurrentIRToFile (const juce::String& name)
 {
     return writeSynthIRSetToDirectory (IRManager::getIRFolder(), name);
+}
+
+void PingProcessor::clearMicPath (MicPath path)
+{
+    // Display name reset for every path; per-path slot wipes follow.
+    setPathDisplayName (path, "<empty>");
+
+    switch (path)
+    {
+        case MicPath::Main:
+            // MAIN owns shared "current IR" state in addition to its raw synth buffer.
+            // Clearing all of it ensures getStateInformation won't re-serialise stale
+            // data and reloadSynthIR's `getNumSamples() > 0` guard correctly skips MAIN.
+            rawSynthBuffer  .setSize (0, 0);
+            currentIRBuffer .setSize (0, 0);
+            selectedIRFile   = juce::File();
+            lastLoadedIRFile = juce::File();
+            irFromSynth      = false;
+            mainIRLoaded.store (false);
+            break;
+        case MicPath::Direct:
+            rawSynthDirectBuffer.setSize (0, 0);
+            directIRLoaded.store (false);
+            break;
+        case MicPath::Outrig:
+            rawSynthOutrigBuffer.setSize (0, 0);
+            outrigIRLoaded.store (false);
+            break;
+        case MicPath::Ambient:
+            rawSynthAmbientBuffer.setSize (0, 0);
+            ambientIRLoaded.store (false);
+            break;
+    }
 }
 
 void PingProcessor::loadIRFromBuffer (juce::AudioBuffer<float> buffer, double bufferSampleRate, bool fromSynth, bool deferConvolverLoad, MicPath path)
@@ -3185,10 +3236,17 @@ void PingProcessor::applyMixerGates (const MixerGateState& g)
         if (auto* p = apvts.getParameter (id))
             p->setValueNotifyingHost (v ? 1.0f : 0.0f);
     };
-    setBool (IDs::mainOn,    g.mainOn);
-    setBool (IDs::directOn,  g.directOn);
-    setBool (IDs::outrigOn,  g.outrigOn);
-    setBool (IDs::ambientOn, g.ambientOn);
+    // Mask each gate against the actual per-path IR-loaded state. A sidecar can
+    // request e.g. `outrigOn = true` even when the user just picked a base IR
+    // whose `_outrig` sibling does not exist on disk — without masking, the
+    // parameter would flip on but the front-panel strip would be greyed out
+    // (MicMixerComponent gates the power switch on isPathIRLoaded()), leaving
+    // the mixer state silently inconsistent with what the user can interact with.
+    // Force any path with no IR to OFF so the parameter and the visible UI agree.
+    setBool (IDs::mainOn,    g.mainOn    && isPathIRLoaded (MicPath::Main));
+    setBool (IDs::directOn,  g.directOn  && isPathIRLoaded (MicPath::Direct));
+    setBool (IDs::outrigOn,  g.outrigOn  && isPathIRLoaded (MicPath::Outrig));
+    setBool (IDs::ambientOn, g.ambientOn && isPathIRLoaded (MicPath::Ambient));
 }
 
 void PingProcessor::fixImportedFilePermissions (const juce::File& f)
@@ -3336,6 +3394,22 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
 
         reverse = xml->getBoolAttribute ("reverse", false);
         lastPresetName = xml->getStringAttribute ("presetName", "Default");
+
+        // Pre-clear every mic path before loading whatever the preset actually contains.
+        // This is the key fix for the "leftover aux IRs from previous preset" bug:
+        // a preset that doesn't ship a particular path (e.g. main-signal-only) used to
+        // leave stale rawSynth*Buffer / *IRLoaded state from the previous preset, so the
+        // user could enable e.g. the OUTRIG strip on the front-panel mixer and hear audio
+        // from the prior preset's outrig IR. By wiping all four slots up-front, only the
+        // paths the new preset *does* populate (via loadIRFromBuffer / loadIRFromFile /
+        // loadMicPathFromFile below) end up with isPathIRLoaded() == true; every other
+        // strip greys out on the mixer, exactly matching the preset's intent.
+        // Done before restoring selectedIRFile because clearMicPath(MicPath::Main) wipes
+        // selectedIRFile too.
+        clearMicPath (MicPath::Main);
+        clearMicPath (MicPath::Direct);
+        clearMicPath (MicPath::Outrig);
+        clearMicPath (MicPath::Ambient);
 
         // Restore selected IR file from saved path.
         selectedIRFile = juce::File();

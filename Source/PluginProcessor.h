@@ -70,6 +70,18 @@ public:
         only the MAIN WAV, or paths the user has not synthesised). */
     void loadMicPathFromFile (const juce::File& baseIRFile, MicPath path);
 
+    /** Wipe all state belonging to a single mic path: the raw synth buffer slot, the
+        per-path IR-loaded flag, and the display name (reset to "<empty>"). For MAIN,
+        also clears currentIRBuffer / selectedIRFile / lastLoadedIRFile / irFromSynth.
+        Does NOT touch the underlying juce::dsp::Convolution objects: processBlock
+        gates each path on its *IRLoaded flag and skips the contribution when false,
+        so leaving stale IR data inside an unreachable convolver is harmless and
+        avoids any audio-thread interaction. Call from the message thread only.
+        Used when loading a preset / IR that does not populate this path, so the
+        user can no longer accidentally enable a strip carrying audio from a
+        previously-loaded preset. */
+    void clearMicPath (MicPath path);
+
     void reloadSynthIR();
 
     /** True when current IR came from IR Synth (not from file list). */
