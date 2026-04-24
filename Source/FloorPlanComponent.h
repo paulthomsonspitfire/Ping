@@ -135,5 +135,11 @@ private:
     void canvasToNorm (float cx, float cy, double& nx, double& ny) const;
     bool isInsideRoom (double nx, double ny) const;
 
+    // v2.8.0: roomPoly is now parametric in shape proportions. The polygon
+    // it returns must match the engine's polygon outline in makeWalls2D so the
+    // floor-plan visual and the reflection geometry agree.
+    static std::vector<std::pair<double, double>> roomPoly (const IRSynthParams& p);
+    // Convenience overload kept for call sites that only have a shape string
+    // (typically legacy paths); returns a polygon using IRSynthParams defaults.
     static std::vector<std::pair<double, double>> roomPoly (const std::string& shape);
 };

@@ -14,7 +14,7 @@ if(APPLE)
     endif()
 endif()
 
-project(Ping VERSION 2.7.9)
+project(Ping VERSION 2.9.4)
 
 # Minimum macOS 13.0 (Ventura) for plugin compatibility
 if(APPLE)
@@ -111,6 +111,9 @@ target_compile_definitions(Ping
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
+        # v2.9.0 WI-5: enable equivalent-box modal bank for polygon rooms.
+        # Undefine (or set =0) to restore the v2.8.0 skip-for-polygon behaviour.
+        PING_POLYGON_MODAL_BANK=1
 )
 
 target_include_directories(Ping PRIVATE ${SODIUM_INCLUDE_DIR})
@@ -149,6 +152,7 @@ add_executable(PingTests
     Tests/PingDSPTests.cpp
     Tests/PingMultiMicTests.cpp
     Tests/PingDeccaTests.cpp
+    Tests/PingPolygonTests.cpp
     Source/IRSynthEngine.cpp
 )
 
@@ -161,6 +165,7 @@ target_include_directories(PingTests
 target_compile_definitions(PingTests
     PRIVATE
         PING_TESTING_BUILD=1
+        PING_POLYGON_MODAL_BANK=1
 )
 
 # C++17 required for std::filesystem and structured bindings used in tests.

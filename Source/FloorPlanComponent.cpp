@@ -183,39 +183,100 @@ juce::MouseCursor FloorPlanComponent::makeMirrorCursor (bool horizontal)
     return juce::MouseCursor (img, sz / 2, sz / 2);
 }
 
-std::vector<std::pair<double, double>> FloorPlanComponent::roomPoly (const std::string& shape)
+std::vector<std::pair<double, double>> FloorPlanComponent::roomPoly (const IRSynthParams& p)
 {
+    const std::string& shape = p.shape;
     std::vector<std::pair<double, double>> poly;
-    if (shape == "L-shaped")
-        poly = {{0,0},{1,0},{1,.55},{.55,.55},{.55,1},{0,1}};
-    else if (shape == "Fan / Shoebox")
-        poly = {{.15,0},{.85,0},{1,1},{0,1}};
-    else if (shape == "Cylindrical")
+
+    if (shape == "Fan / Shoebox")
     {
-        for (int i = 0; i < 64; ++i)
+        // shapeTaper (0..0.7): narrow front wall by taper × 0.5 on each side.
+        // 0.0 = rectangle, 0.35 = classic shoebox, 0.7 = extreme fan.
+        const double t = juce::jlimit (0.0, 0.7, p.shapeTaper);
+        const double inset = 0.5 * t; // half-width shrink per side at front
+        poly = {{inset, 0}, {1.0 - inset, 0}, {1, 1}, {0, 1}};
+    }
+    else if (shape == "Circular Hall")
+    {
+        // shapeCornerCut (0..1) controls the ellipse "roundness" — at 0 the
+        // polygon is a rectangle-with-rounded-corners, at 1 a full ellipse.
+        // We approximate with 64 samples of an ellipse inscribed in the unit
+        // square, scaled by the roundness factor so 0 stays rectangular.
+        const double r = juce::jlimit (0.0, 1.0, p.shapeCornerCut);
+        if (r < 1e-3)
         {
-            double a = (i / 64.0) * 2 * kPi;
-            poly.push_back ({ 0.5 + 0.48 * std::cos (a), 0.5 + 0.48 * std::sin (a) });
+            poly = {{0,0},{1,0},{1,1},{0,1}};
+        }
+        else
+        {
+            for (int i = 0; i < 64; ++i)
+            {
+                const double a = (i / 64.0) * 2 * kPi;
+                // Blend rectangle corner (max(|cos|,|sin|)) with circle
+                // (1.0): roundness 0 → square, 1 → ellipse.
+                const double c = std::cos (a), s = std::sin (a);
+                const double rectRad = 1.0 / std::max (std::abs (c), std::abs (s));
+                const double circRad = 1.0;
+                const double rad = rectRad * (1.0 - r) + circRad * r;
+                poly.push_back ({ 0.5 + 0.48 * rad * c, 0.5 + 0.48 * rad * s });
+            }
         }
     }
     else if (shape == "Cathedral")
     {
-        const double cx = 0.5, cy = 0.5, nw = 0.18, nd = 0.48, tw = 0.48, th = 0.18;
+        // Cruciform. shapeNavePct (0.15..0.5) = half-width of the nave arm
+        // (the narrow N-S corridor). shapeTrptPct (0.2..0.45) = half-width
+        // of the transept arm (the wide E-W crossbar). The remaining
+        // constants match the pre-v2.8 layout when navePct=0.18, trptPct=0.18.
+        const double cx = 0.5, cy = 0.5;
+        const double nw = juce::jlimit (0.15, 0.50, p.shapeNavePct);
+        const double th = juce::jlimit (0.20, 0.45, p.shapeTrptPct); // transept half-height
+        const double nd = 0.48; // nave half-length (fixed — drawn to room walls)
+        const double tw = 0.48; // transept half-length (fixed)
         poly = {{cx-nw,cy-nd},{cx+nw,cy-nd},{cx+nw,cy-th},{cx+tw,cy-th},
                 {cx+tw,cy+th},{cx+nw,cy+th},{cx+nw,cy+nd},{cx-nw,cy+nd},
                 {cx-nw,cy+th},{cx-tw,cy+th},{cx-tw,cy-th},{cx-nw,cy-th}};
     }
     else if (shape == "Octagonal")
     {
-        for (int i = 0; i < 8; ++i)
+        // shapeCornerCut (0..1) = chamfer depth of the 4 octagonal corners
+        // as a fraction of the room half-size. 0 collapses to a rectangle
+        // (corner cut of zero depth); 1 gives a full regular octagon.
+        const double r = juce::jlimit (0.0, 1.0, p.shapeCornerCut);
+        if (r < 1e-3)
         {
-            double a = (i / 8.0) * 2 * kPi + kPi / 8;
-            poly.push_back ({ 0.5 + 0.47 * std::cos (a), 0.5 + 0.47 * std::sin (a) });
+            poly = {{0,0},{1,0},{1,1},{0,1}};
+        }
+        else
+        {
+            // c is the chamfer length; at r=1 the octagon is regular so
+            // c = 1 - 1/(1+√2) ≈ 0.4142, matching the old fixed layout.
+            const double cChamfer = r * (1.0 - 1.0 / (1.0 + std::sqrt (2.0)));
+            poly = {
+                { cChamfer,           0.0              },
+                { 1.0 - cChamfer,     0.0              },
+                { 1.0,                cChamfer         },
+                { 1.0,                1.0 - cChamfer   },
+                { 1.0 - cChamfer,     1.0              },
+                { cChamfer,           1.0              },
+                { 0.0,                1.0 - cChamfer   },
+                { 0.0,                cChamfer         },
+            };
         }
     }
     else
+    {
+        // "Rectangular" (including migrated "L-shaped") — always a plain box.
         poly = {{0,0},{1,0},{1,1},{0,1}};
+    }
     return poly;
+}
+
+std::vector<std::pair<double, double>> FloorPlanComponent::roomPoly (const std::string& shape)
+{
+    IRSynthParams p;
+    p.shape = shape;
+    return roomPoly (p);
 }
 
 bool FloorPlanComponent::transducerVisible (int index) const
@@ -239,7 +300,7 @@ juce::Point<float> FloorPlanComponent::transducerCanvasPos (int index) const
     const int W = getWidth(), H = getHeight();
     if (W < 20 || H < 20) return {};
     const double rw = std::max (0.5, p.width), rd = std::max (0.5, p.depth);
-    auto poly = roomPoly (p.shape);
+    auto poly = roomPoly (p);
     double minX = 1, maxX = 0, minY = 1, maxY = 0;
     for (const auto& pt : poly)
     {
@@ -267,7 +328,7 @@ void FloorPlanComponent::canvasToNorm (float cx, float cy, double& nx, double& n
     const int W = getWidth(), H = getHeight();
     if (W < 20 || H < 20) return;
     const double rw = std::max (0.5, p.width), rd = std::max (0.5, p.depth);
-    auto poly = roomPoly (p.shape);
+    auto poly = roomPoly (p);
     double minX = 1, maxX = 0, minY = 1, maxY = 0;
     for (const auto& pt : poly)
     {
@@ -291,7 +352,7 @@ void FloorPlanComponent::canvasToNorm (float cx, float cy, double& nx, double& n
 bool FloorPlanComponent::isInsideRoom (double nx, double ny) const
 {
     if (! getParams) return false;
-    auto poly = roomPoly (getParams().shape);
+    auto poly = roomPoly (getParams());
     int n = (int) poly.size();
     bool inside = false;
     for (int i = 0, j = n - 1; i < n; j = i++)
@@ -315,7 +376,7 @@ FloorPlanComponent::HitResult FloorPlanComponent::transducerHitTest (float mx, f
         if (W >= 20 && H >= 20)
         {
             const double rw = std::max (0.5, p.width), rd = std::max (0.5, p.depth);
-            auto poly = roomPoly (p.shape);
+            auto poly = roomPoly (p);
             double minX = 1, maxX = 0, minY = 1, maxY = 0;
             for (const auto& pt : poly)
             { minX = std::min (minX, pt.first); maxX = std::max (maxX, pt.first);
@@ -379,7 +440,7 @@ void FloorPlanComponent::mouseDown (const juce::MouseEvent& e)
                     auto p = getParams();
                     const int W = getWidth(), H = getHeight();
                     const double rw = std::max (0.5, p.width), rd = std::max (0.5, p.depth);
-                    auto poly = roomPoly (p.shape);
+                    auto poly = roomPoly (p);
                     double minX = 1, maxX = 0, minY = 1, maxY = 0;
                     for (const auto& pt : poly)
                     { minX = std::min (minX, pt.first); maxX = std::max (maxX, pt.first);
@@ -432,7 +493,7 @@ void FloorPlanComponent::mouseDrag (const juce::MouseEvent& e)
             auto p = getParams();
             const int W = getWidth(), H = getHeight();
             const double rw = std::max (0.5, p.width), rd = std::max (0.5, p.depth);
-            auto poly = roomPoly (p.shape);
+            auto poly = roomPoly (p);
             double minX = 1, maxX = 0, minY = 1, maxY = 0;
             for (const auto& pt : poly)
             { minX = std::min (minX, pt.first); maxX = std::max (maxX, pt.first);
@@ -583,7 +644,7 @@ void FloorPlanComponent::paint (juce::Graphics& g)
 
     const double rw = std::max (0.5, p.width);
     const double rd = std::max (0.5, p.depth);
-    auto poly = roomPoly (p.shape);
+    auto poly = roomPoly (p);
 
     double minX = 1, maxX = 0, minY = 1, maxY = 0;
     for (const auto& pt : poly)
@@ -657,7 +718,7 @@ void FloorPlanComponent::paint (juce::Graphics& g)
     }
     g.restoreState();
 
-    if (p.shape == "Rectangular" || p.shape == "Fan / Shoebox" || p.shape == "L-shaped")
+    if (p.shape == "Rectangular" || p.shape == "Fan / Shoebox")
     {
         auto pt00 = toCanvas (0, 0);
         auto pt10 = toCanvas (1, 0);

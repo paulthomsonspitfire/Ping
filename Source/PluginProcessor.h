@@ -48,6 +48,20 @@ public:
     /** Last loaded IR file (for reload when stretch/decay change). */
     const juce::File& getLastLoadedIRFile() const { return lastLoadedIRFile; }
 
+    /** Install a callback that is fired BEFORE every loadIRFromFile()
+        actually replaces the convolver contents. The editor registers
+        a lambda here that discards any in-flight Calculate IR result
+        sitting in IRSynthComponent's synth pool — without this, a
+        late-arriving background-thread synth result can overwrite the
+        file-loaded IR milliseconds after setStateInformation /
+        loadSelectedIR installs it. No-op if never set (e.g. headless
+        test harness with no editor). Thread: call-site is message
+        thread (same as loadIRFromFile). */
+    void setIRReplacedFromFileCallback (std::function<void()> cb)
+    {
+        onIRReplacedFromFile = std::move (cb);
+    }
+
     /** Which microphone path a buffer is being loaded into.
         Main: existing behaviour — drives currentIRBuffer, waveform, combined-tail IR.
         Direct: short-circuit load — no transforms, no ER/Tail split. 4 mono convolvers.
@@ -69,6 +83,18 @@ public:
         Returns silently if the sibling file does not exist (old presets / factory IRs with
         only the MAIN WAV, or paths the user has not synthesised). */
     void loadMicPathFromFile (const juce::File& baseIRFile, MicPath path);
+
+    /** Wipe all state belonging to a single mic path: the raw synth buffer slot, the
+        per-path IR-loaded flag, and the display name (reset to "<empty>"). For MAIN,
+        also clears currentIRBuffer / selectedIRFile / lastLoadedIRFile / irFromSynth.
+        Does NOT touch the underlying juce::dsp::Convolution objects: processBlock
+        gates each path on its *IRLoaded flag and skips the contribution when false,
+        so leaving stale IR data inside an unreachable convolver is harmless and
+        avoids any audio-thread interaction. Call from the message thread only.
+        Used when loading a preset / IR that does not populate this path, so the
+        user can no longer accidentally enable a strip carrying audio from a
+        previously-loaded preset. */
+    void clearMicPath (MicPath path);
 
     void reloadSynthIR();
 
@@ -472,6 +498,12 @@ private:
     double currentSampleRate = 48000.0;
     juce::File selectedIRFile;   // empty = synth IR or nothing loaded
     bool irFromSynth = false;
+
+    // Fired from loadIRFromFile() BEFORE a file-load replaces the convolver
+    // contents. The editor uses this to invalidate any in-flight Calculate
+    // IR result whose background-thread completion would otherwise clobber
+    // the just-loaded file-based IR. Never called from audio thread.
+    std::function<void()> onIRReplacedFromFile;
     double synthesizedIRSampleRate = 48000.0;
     double currentIRSampleRate = 48000.0;
     bool reverse = false;

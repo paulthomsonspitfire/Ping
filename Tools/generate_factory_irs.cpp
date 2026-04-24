@@ -121,6 +121,21 @@ static IRSynthParams makeP(
     return p;
 }
 
+// Override polygon-shape proportion params (sentinel -1 = leave at struct default).
+// Used to author per-venue Cathedral / Fan / Octagonal / Circular Hall geometry.
+static IRSynthParams shapeProp(IRSynthParams p,
+                               double nave = -1.0,
+                               double trpt = -1.0,
+                               double taper = -1.0,
+                               double cornerCut = -1.0)
+{
+    if (nave      >= 0.0) p.shapeNavePct   = nave;
+    if (trpt      >= 0.0) p.shapeTrptPct   = trpt;
+    if (taper     >= 0.0) p.shapeTaper     = taper;
+    if (cornerCut >= 0.0) p.shapeCornerCut = cornerCut;
+    return p;
+}
+
 // Warm-hall EQ: gentle low-frequency warmth, slight high-frequency softening
 static EQPreset warmHallEQ()
 {
@@ -249,13 +264,14 @@ static const std::vector<VenueDef> VENUES = {
     // 37 × 15 × 12 m. Edwin Lutyens design. Barrel-vaulted/domed ceiling.
     // Stone walls, painted plaster barrel vault; stained glass windows.
     { "Halls", "St Jude-on-the-Hill Hampstead",
-      makeP("Cathedral", 37, 15, 12,
+      shapeProp(makeP("Cathedral", 37, 15, 12,
             "Rough stone / rock", "Painted plaster", "Rough stone / rock",
             0.15, 0.10, 0.35,
             "Shallow barrel vault", 0.50, 0.10,
             0.4335384615384615, 0.2304123076923077,  0.5723692307692307, 0.219483076923077,
             0.4586461538461539, 0.7768738461538461,  0.539876923076923, 0.7768738461538461,
-            "cardioid", 2.255505160484458, 0.7654008428193579) },
+            "cardioid", 2.255505160484458, 0.7654008428193579),
+            /*nave*/ 0.45, /*trpt*/ 0.30) },
 
     // King's College Chapel, Cambridge
     // 88.4 × 12.2 × 24.4 m (289 ft × 40 ft × 80 ft interior height). Famous fan vault.
@@ -263,14 +279,15 @@ static const std::vector<VenueDef> VENUES = {
     // crown of the fan vault is 80 ft ≈ 24 m. Stone floor and walls; stained-glass
     // windows in lower bays only (~15% wall area). Target RT60: 4-6 s with partial audience.
     { "Halls", "King's College Chapel Cambridge",
-      makeP("Cathedral", 88, 12, 24,
+      shapeProp(makeP("Cathedral", 88, 12, 24,
             "Rough stone / rock", "Rough stone / rock", "Rough stone / rock",
             0.15, 0.10, 0.25,
             "Fan vault  (King's College)", 0.60, 0.05,
             0.2149538461538461, 0.58,  0.2105230769230769, 0.4076923076923077,
             0.4054769230769231, 0.6538461538461539,  0.4054769230769231, 0.4015384615384615,
             "cardioid", 0.4237575093842993, -0.3923401077650537,
-            2.5425772726579, -2.530494608480618) },
+            2.5425772726579, -2.530494608480618),
+            /*nave*/ 0.50, /*trpt*/ 0.20) },
 
     // Sage Gateshead — Hall One
     // ~26 × 20 × 12 m (adjustable ceiling 10–21 m; mid position).
@@ -292,13 +309,14 @@ static const std::vector<VenueDef> VENUES = {
     // (modelled as Acoustic ceiling tile); velvet box draping (Heavy curtains for
     // walls); Proms audience ~ maximum absorption. Target RT60: ~2.5-3.0 s.
     { "Large Spaces", "Royal Albert Hall London",
-      makeP("Cylindrical", 67, 56, 41,
+      shapeProp(makeP("Circular Hall", 67, 56, 41,
             "Carpet (thin)", "Painted plaster", "Painted plaster",
             0.00, 0.67, 0.55,
             "Coffered dome  (circular hall)", 0.56, 0.50,
             0.3995692307692307, 0.2666461538461538,  0.6063384615384616, 0.2696,
             0.4424, 0.6432615384615384,  0.5738461538461539, 0.6417846153846154,
             "cardioid", 2.056057171020652, 1.110441760215903),
+            /*nave*/ -1, /*trpt*/ -1, /*taper*/ -1, /*cornerCut*/ 1.00),
       warmHallEQ() },
 
     // Elbphilharmonie Hamburg — Großer Saal
@@ -317,12 +335,13 @@ static const std::vector<VenueDef> VENUES = {
     // ~35 × 24 × 14 m, fan-shaped. Australian brush box timber throughout.
     // Suspended acrylic acoustic rings; brush box veneer ceiling panels.
     { "Large Spaces", "Sydney Opera House Concert Hall",
-      makeP("Fan / Shoebox", 35, 24, 14,
+      shapeProp(makeP("Fan / Shoebox", 35, 24, 14,
             "Hardwood floor", "Plywood panel", "Plywood panel",
             0.00, 0.55, 0.50,
             "Shallow barrel vault", 0.00, 0.45,
             0.25, 0.20,  0.75, 0.20,
             0.35, 0.72,  0.65, 0.72),
+            /*nave*/ -1, /*trpt*/ -1, /*taper*/ 0.45),
       warmHallEQ() },
 
     // Hansa Tonstudio — Meistersaal (Großer Saal), Berlin
@@ -506,13 +525,14 @@ static const std::vector<VenueDef> VENUES = {
     // ~8 × 6 × 4 m. Modelled on Oxford college chapels and small vaulted stone rooms.
     // Stone walls and floor, barrel-vaulted plaster ceiling, stained glass.
     { "Tight Spaces", "Stone Recital Room",
-      makeP("Cathedral", 8, 6, 4,
+      shapeProp(makeP("Cathedral", 8, 6, 4,
             "Rough stone / rock", "Painted plaster", "Rough stone / rock",
             0.15, 0.10, 0.35,
             "Shallow barrel vault", 0.20, 0.00,
             0.4187692307692308, 0.2853538461538462,  0.5812307692307692, 0.2833846153846154,
             0.4187692307692308, 0.7540307692307693,  0.5856615384615385, 0.7500923076923077,
             "cardioid", 2.186781481895591, 0.8884797851182471),
+            /*nave*/ 0.50, /*trpt*/ 0.20),
       {}, 0.35, -20.0 },
 
     // Concrete Stairwell
@@ -585,6 +605,10 @@ static std::string makeSidecarXML(const IRSynthParams& p)
     x += " width=\""  + d(p.width)  + "\"";
     x += " depth=\""  + d(p.depth)  + "\"";
     x += " height=\"" + d(p.height) + "\"";
+    x += " shapeNavePct=\""   + d(p.shapeNavePct)   + "\"";
+    x += " shapeTrptPct=\""   + d(p.shapeTrptPct)   + "\"";
+    x += " shapeTaper=\""     + d(p.shapeTaper)     + "\"";
+    x += " shapeCornerCut=\"" + d(p.shapeCornerCut) + "\"";
     x += " floor=\""    + p.floor_material   + "\"";
     x += " ceiling=\""  + p.ceiling_material + "\"";
     x += " wall=\""     + p.wall_material    + "\"";
@@ -660,6 +684,9 @@ static std::string makeSidecarXML(const IRSynthParams& p)
     x += " deccaToeOut=\""  + d(p.decca_toe_out,12) + "\"";
     x += " deccaTilt=\""    + d(p.decca_tilt,12) + "\"";
 
+    // Floor-plan Option-mirror axis (UI-only; 0 = vertical, 1 = horizontal)
+    x += " mirrorAxis=\""   + std::to_string(p.mirror_axis) + "\"";
+
     x += "/>\n</PingIRSynth>\n";
     return x;
 }
@@ -692,6 +719,10 @@ static std::string makePresetXML(
     isp += " width=\""  + d6(irp.width)  + "\"";
     isp += " depth=\""  + d6(irp.depth)  + "\"";
     isp += " height=\"" + d6(irp.height) + "\"";
+    isp += " shapeNavePct=\""   + d6(irp.shapeNavePct)   + "\"";
+    isp += " shapeTrptPct=\""   + d6(irp.shapeTrptPct)   + "\"";
+    isp += " shapeTaper=\""     + d6(irp.shapeTaper)     + "\"";
+    isp += " shapeCornerCut=\"" + d6(irp.shapeCornerCut) + "\"";
     isp += " floor=\""    + irp.floor_material   + "\"";
     isp += " ceiling=\""  + irp.ceiling_material + "\"";
     isp += " wall=\""     + irp.wall_material    + "\"";
@@ -748,6 +779,9 @@ static std::string makePresetXML(
     isp += " deccaCtrGain=\"" + d12(irp.decca_centre_gain) + "\"";
     isp += " deccaToeOut=\""  + d12(irp.decca_toe_out)     + "\"";
     isp += " deccaTilt=\""    + d12(irp.decca_tilt)        + "\"";
+
+    // Floor-plan Option-mirror axis (UI-only; 0 = vertical, 1 = horizontal)
+    isp += " mirrorAxis=\""   + std::to_string(irp.mirror_axis) + "\"";
 
     // Build parameter list — only non-default values are given a value= attribute.
     // Everything else gets an empty tag so JUCE uses the registered default.
@@ -869,7 +903,20 @@ int main(int argc, char** argv)
 
     if (argc < 3)
     {
-        std::cerr << "Usage: generate_factory_irs <ir_outdir> <preset_outdir>\n"
+        std::cerr << "Usage: generate_factory_irs <ir_outdir> <preset_outdir> [options]\n"
+                  << "\n"
+                  << "  Venue-driven regenerator: iterates over the hardcoded VENUES[]\n"
+                  << "  list and writes the full (.wav + aux .wavs + .ping + preset .xml)\n"
+                  << "  set for each venue. Use Tools/rebake_factory_irs for the\n"
+                  << "  sidecar-driven counterpart that preserves hand-authored .pings.\n"
+                  << "\n"
+                  << "Options:\n"
+                  << "  --overwrite-sidecars   Allow overwriting existing .ping files.\n"
+                  << "                         Without this flag, any venue whose .ping\n"
+                  << "                         already exists is skipped entirely (both\n"
+                  << "                         the .wav and the .ping are left alone)\n"
+                  << "                         to protect hand-authored parameter edits.\n"
+                  << "\n"
                   << "  e.g. generate_factory_irs Installer/factory_irs Installer/factory_presets\n";
         return 1;
     }
@@ -877,14 +924,29 @@ int main(int argc, char** argv)
     fs::path irBase     = argv[1];
     fs::path presetBase = argv[2];
 
+    bool overwriteSidecars = false;
+    for (int i = 3; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--overwrite-sidecars") overwriteSidecars = true;
+        else
+        {
+            std::cerr << "Unknown option: " << arg << "\n";
+            return 1;
+        }
+    }
+
     int total   = (int)VENUES.size();
     int done    = 0;
     int failed  = 0;
+    int skipped = 0;
 
     std::cout << "=== P!NG Factory IR Generator ===\n"
               << "Venues: " << total << "\n"
               << "IR output:     " << irBase     << "\n"
-              << "Preset output: " << presetBase << "\n\n";
+              << "Preset output: " << presetBase << "\n"
+              << "Overwrite sidecars: " << (overwriteSidecars ? "YES (destructive)" : "no (safe default)") << "\n"
+              << "\n";
 
     for (const auto& venueConst : VENUES)
     {
@@ -893,7 +955,7 @@ int main(int argc, char** argv)
         VenueDef venue = venueConst;
         applyStandardMicSetup (venue.params);
 
-        std::cout << "[" << (done + failed + 1) << "/" << total << "] "
+        std::cout << "[" << (done + failed + skipped + 1) << "/" << total << "] "
                   << venue.category << " / " << venue.name << "\n";
         std::cout.flush();
 
@@ -915,6 +977,23 @@ int main(int argc, char** argv)
         fs::path directPath = irDir    / (std::string(venue.name) + "_direct.wav");
         fs::path outrigPath = irDir    / (std::string(venue.name) + "_outrig.wav");
         fs::path ambientPath= irDir    / (std::string(venue.name) + "_ambient.wav");
+
+        // Safety: skip the whole venue if a hand-authored sidecar already
+        // exists, unless the user explicitly opted in with --overwrite-sidecars.
+        // Skipping the entire venue (not just the sidecar) prevents the .wav
+        // and .ping from drifting out of sync — which would happen if we
+        // wrote a new .wav from VENUES[] while leaving the author's .ping
+        // with different parameters in place. The sidecar-driven rebake
+        // tool (Tools/rebake_factory_irs) is the right answer for
+        // re-synthesising .wavs from hand-authored sidecars.
+        if (!overwriteSidecars && fs::exists (sidecarPath))
+        {
+            std::cout << "    SKIP: sidecar already exists ("
+                      << sidecarPath.filename() << ")\n"
+                      << "          pass --overwrite-sidecars to replace.\n";
+            ++skipped;
+            continue;
+        }
 
         // Generate IR
         auto t0 = std::chrono::steady_clock::now();
@@ -994,6 +1073,13 @@ int main(int argc, char** argv)
         ++done;
     }
 
-    std::cout << "\n=== Complete: " << done << " succeeded, " << failed << " failed ===\n";
+    std::cout << "\n=== Complete: " << done << " succeeded"
+              << (skipped ? ", " + std::to_string(skipped) + " skipped (sidecar exists)" : "")
+              << (failed  ? ", " + std::to_string(failed)  + " failed"                     : "")
+              << " ===\n";
+    if (skipped > 0 && !overwriteSidecars)
+        std::cout << "Note: pass --overwrite-sidecars to replace the skipped venues' .ping files.\n"
+                  << "      To regenerate .wavs while preserving sidecar edits, use\n"
+                  << "      Tools/rebake_factory_irs (sidecar-driven) instead.\n";
     return (failed > 0) ? 1 : 0;
 }

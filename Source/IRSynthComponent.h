@@ -34,6 +34,24 @@ public:
     /** Called when synthesis completes successfully – loads IR into processor, caller stays on page. */
     void setOnComplete (OnCompleteFn fn) { onComplete = std::move (fn); }
 
+    /** Discard the result of any in-flight Calculate IR job when it
+        eventually completes, instead of installing it in the convolvers.
+        Call this before loading a new preset or a new IR from disk so a
+        pending background synth can't overwrite the freshly-loaded IR.
+        Safe to call whether or not a job is actually running — a no-op
+        if nothing is pending. */
+    void invalidatePendingSynth() noexcept { pendingSynthInvalidated.store (true); }
+
+    /** Enable/disable every user-interactive control in the IR Synth panel
+        except the Calculate IR and Bake Balance buttons (which have their
+        own `synthRunning` lifecycle) and the progress bar/label. Used to
+        lock the UI for the ~1 s (typical) to ~10 s (worst case, big
+        polygon room) while a Calculate IR job is running on the synth
+        pool, so the user can't (a) navigate away via Main Menu and get
+        confused, (b) change parameters that the in-flight synth is not
+        using, or (c) Save the still-old IR from the bottom bar. */
+    void setInteractionLocked (bool locked);
+
     /** Called when user clicks Done/Back – return to main UI. */
     void setOnDone (std::function<void()> fn) { onDoneFn = std::move (fn); }
 
@@ -139,6 +157,22 @@ private:
     juce::Label widthLabel, depthLabel, heightLabel;
     juce::Label widthValueLabel, depthValueLabel, heightValueLabel;  // Editable number only
 
+    // ── Shape proportion sliders (v2.8.0 polygon geometry) ──────────────────
+    // Visible only when the selected shape uses the corresponding parameter:
+    //   Cathedral       → navePctSlider + trptPctSlider
+    //   Fan / Shoebox   → taperSlider
+    //   Octagonal       → cornerCutSlider (0..1 chamfer depth)
+    //   Circular Hall   → cornerCutSlider (0 = rectangle, 1 = ellipse)
+    // The readout labels are right-justified unlabelled slots (no editable
+    // number) — unlike Width/Depth/Height these are dimensionless fractions.
+    juce::Slider navePctSlider, trptPctSlider, taperSlider, cornerCutSlider;
+    juce::Label  navePctLabel, trptPctLabel, taperLabel, cornerCutLabel;
+    juce::Label  navePctReadout, trptPctReadout, taperReadout, cornerCutReadout;
+
+    // Helper called from comboBoxChanged + setParams to toggle slider
+    // visibility based on the current shape combo selection.
+    void updateShapeProportionVisibility();
+
     // Option-mirror axis selector (two small icon buttons sitting under the
     // Room Geometry section). Vertical = mirror across x = 0.5 (default,
     // L/R pairs); Horizontal = mirror across y = 0.5 (front/back pairs).
@@ -168,10 +202,10 @@ private:
     juce::Label organReadout, balconiesReadout;
 
     // Options
-    juce::ComboBox micPatternCombo, sampleRateCombo;
+    juce::ComboBox micPatternCombo;
     juce::ToggleButton erOnlyButton { "ER only" };
     juce::TextButton bakeBalanceButton { "Bake ER/Tail Bal" };
-    juce::Label micPatternLabel, sampleRateLabel;
+    juce::Label micPatternLabel;
 
     // ── Experimental early-reflection A/B toggles ────────────────────────────
     // directMaxOrderCombo drives IRSynthParams::direct_max_order (0 / 1 / 2).
@@ -273,6 +307,14 @@ private:
 
     juce::ThreadPool synthPool { 1 };
     std::atomic<bool> synthRunning { false };
+    // When set true, the async completion of an in-flight Calculate IR job
+    // will skip calling onComplete() and leave whatever convolvers / params
+    // the plugin currently has in place. Used to defuse the race where the
+    // user selects a new preset between clicking Calculate and the background
+    // synthIR finishing — without this guard the stale result fires *after*
+    // setStateInformation has installed the new preset's IR and silently
+    // overwrites it with the pre-switch preset's synthesised buffer.
+    std::atomic<bool> pendingSynthInvalidated { false };
     std::unique_ptr<IRSynthResult> pendingResult;
     IRSynthParams lastRenderParams;
 

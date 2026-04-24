@@ -22,10 +22,40 @@
 struct IRSynthParams
 {
     // Room
-    std::string shape = "Rectangular";  // "Rectangular"|"L-shaped"|"Fan / Shoebox"|"Cylindrical"|"Cathedral"|"Octagonal"
+    // Shape strings (v2.8.0+): "Rectangular"|"Fan / Shoebox"|"Octagonal"|"Circular Hall"|"Cathedral".
+    // Old strings handled by PluginProcessor migration: "L-shaped" -> "Rectangular",
+    // "Cylindrical" -> "Circular Hall".
+    std::string shape = "Rectangular";
     double width  = 28.0;
     double depth  = 16.0;
     double height = 12.0;
+
+    // ── Shape proportion parameters (only used when shape != "Rectangular") ──
+    // These shape footprint via the polygon image-source method (calcRefsPolygon).
+    // Defaults are middle-of-range values that produce visually plausible shapes
+    // for typical room dimensions. Each is also clamped to its documented range
+    // by makeWalls2D before being applied to vertex math.
+    //
+    // Cathedral cruciform proportions:
+    //   shapeNavePct: nave width / total width, range [0.15, 0.50].
+    //                 Below 0.15 the nave becomes a thin slot; above 0.50 the
+    //                 transept arms vanish.
+    //   shapeTrptPct: transept arm depth / total depth, range [0.20, 0.45].
+    //                 Below 0.20 the transepts are vestigial; above 0.45 they
+    //                 would extend past the bounding box.
+    //
+    // Fan/Shoebox:
+    //   shapeTaper:   stage-end narrowing factor [0.0, 0.70]. 0 = rectangle,
+    //                 0.70 = stage end is 30% of back-wall width.
+    //
+    // Octagonal / Circular Hall:
+    //   shapeCornerCut: chamfer depth [0.0, 1.0]. For Octagonal, 0.414 = regular
+    //                   octagon when W=D. For Circular Hall, 0 = bounding rectangle,
+    //                   1 = inscribed ellipse via 16-gon interpolation.
+    double shapeNavePct   = 0.30;
+    double shapeTrptPct   = 0.35;
+    double shapeTaper     = 0.30;
+    double shapeCornerCut = 0.414;
 
     // Surfaces
     std::string floor_material   = "Hardwood floor";
@@ -233,6 +263,33 @@ struct IRSynthResult
 using IRSynthProgressFn = std::function<void(double, const std::string&)>;
 
 /**
+ * 2D polygon wall used by the polygon image-source method (calcRefsPolygon).
+ *
+ * Convention: walls are listed counter-clockwise when viewed from above
+ * (standard polygon winding). The inward unit normal therefore points to the
+ * RIGHT of the direction of travel (x2-x1, y2-y1):
+ *   nx =  (y2 - y1) / length
+ *   ny = -(x2 - x1) / length
+ *
+ * rAbs[b] is the per-band reflection coefficient (= 1 - absorption). In the
+ * initial implementation makeWalls2D sets rAbs[b] = rW[b] (the same blended
+ * wall+window absorption used by the rectangular calcRefs) for every wall.
+ * Per-wall material assignment is a future extension.
+ *
+ * The fixed array size of 8 must match IRSynthEngine::N_BANDS exactly (verified
+ * by static_assert inside IRSynthEngine.cpp). Defined at namespace scope so
+ * unit tests can construct Wall2D values directly without depending on the
+ * IRSynthEngine class internals.
+ */
+struct Wall2D
+{
+    double x1 = 0.0, y1 = 0.0;          // wall start point (metres)
+    double x2 = 0.0, y2 = 0.0;          // wall end point   (metres)
+    double nx = 0.0, ny = 0.0;          // inward unit normal
+    std::array<double, 8> rAbs{};       // reflection coefficient per band
+};
+
+/**
  * Pure C++ port of the IR Synthesiser v5 acoustic engine.
  * All methods are static — no state, fully re-entrant.
  */
@@ -251,6 +308,39 @@ public:
                                          const std::vector<double>& iLR,
                                          const std::vector<double>& iRR,
                                          int sampleRate);
+
+    // ── 2D polygon geometry utilities (v2.8.0) ────────────────────────────
+    // Public for testability (DSP_22 in PingPolygonTests.cpp). They are pure
+    // functions of their inputs with no engine-internal state, so exposing
+    // them is harmless. See Docs/Polygon-Room-Geometry-Plan.md sections 6–8.
+
+    /** Reflect a 2D point through the infinite line containing wall w. */
+    static std::pair<double, double> reflect2D (double px, double py,
+                                                const Wall2D& w) noexcept;
+
+    /** True if the directed segment (ax,ay)->(bx,by) crosses the finite wall
+        segment. t_out in [0,1] along the ray, s_out in [0,1] along the wall.
+        Uses EPS = 1e-9 for grazing-corner robustness. */
+    static bool rayIntersectsSegment (double ax, double ay,
+                                      double bx, double by,
+                                      const Wall2D& w,
+                                      double& t_out, double& s_out) noexcept;
+
+    /** Shoelace formula. Works for any simple (non-self-intersecting) polygon
+        whose walls are wound consistently (CW or CCW). Returns absolute area. */
+    static double polygonArea      (const std::vector<Wall2D>& walls) noexcept;
+
+    /** Sum of wall segment lengths. */
+    static double polygonPerimeter (const std::vector<Wall2D>& walls) noexcept;
+
+    /** Construct the 2D polygon wall list for the given shape and dimensions.
+        rWPerBand is broadcast to every wall's rAbs[]. Zero-length walls (e.g.
+        Octagonal at shapeCornerCut=0) are excluded. For shape=="Rectangular"
+        this returns the 4-wall rectangle for completeness, but the engine
+        never calls it on the Rectangular path — calcRefs is hard-routed. */
+    static std::vector<Wall2D> makeWalls2D (const IRSynthParams& p,
+                                            double W, double D,
+                                            const std::array<double, 8>& rWPerBand);
 
 private:
     // ── constants ──────────────────────────────────────────────────────────
@@ -315,15 +405,56 @@ private:
         double highOrderJitterMs = 0.0,   // jitter for order 2+ (when close, breaks periodic echo)
         double micFaceTilt = 0.0);        // mic elevation tilt in radians (0 = horizontal); see directivityCos
 
+    // calcRefsPolygon — polygon image-source method for non-rectangular shapes.
+    // Structurally mirrors calcRefs parameter-for-parameter so the two can be
+    // swapped through a dispatch lambda at each call site. Horizontal
+    // reflections are computed by a recursive 2D Borish tree with full chain
+    // validation; vertical reflections use the same nz loop as calcRefs.
+    // The Rectangular path NEVER routes here — this function is only invoked
+    // when p.shape is one of Fan / Shoebox, Octagonal, Circular Hall, Cathedral.
+    // Reflection order is capped per-shape by orderLimitForShape (internal).
+    static std::vector<Ref> calcRefsPolygon (
+        double rx, double ry, double rz,
+        double sx, double sy, double sz,
+        const IRSynthParams& p,
+        double He, int mo,
+        const std::array<double,8>& rF,
+        const std::array<double,8>& rC,
+        const std::array<double,8>& rW,
+        double oF, double vHfA, double ts,
+        bool eo, int ec, int sr,
+        uint32_t seed,
+        const std::string& micPat,
+        double spkFaceAngle, double micFaceAngle,
+        double maxRefDist,
+        double minJitterMs = 0.0,
+        double highOrderJitterMs = 0.0,
+        double micFaceTilt = 0.0);
+
     static std::vector<double> bpF  (const std::vector<double>& buf, double fc, int sr);
     static std::vector<double> bpFQ (const std::vector<double>& buf, double fc, double Q, int sr);
     static std::vector<double> lpF  (const std::vector<double>& buf, double fc, int sr);
     static std::vector<double> hpF  (const std::vector<double>& buf, double fc, int sr);
 
-    // Modal resonance boost: parallel IIR resonators tuned to axial modes below ~250 Hz
+    // Modal resonance boost: parallel IIR resonators tuned to axial modes below ~250 Hz.
+    // Axial modes (f_n = c·n/(2L)) are physically meaningful only for rectangular rooms.
+    //
+    // For non-rectangular shapes the function behaviour depends on the build:
+    //   - PING_POLYGON_MODAL_BANK undefined (v2.8.0 behaviour): early-returns unchanged.
+    //   - PING_POLYGON_MODAL_BANK defined (default v2.9.0): computes an
+    //     equivalent-box approximation — a rectangle with dimensions
+    //     Wₑ = √polygonAreaM2, Dₑ = polygonAreaM2 / Wₑ, Hₑ = He — and runs the
+    //     same axial-mode formula on those equivalent dimensions. The exact
+    //     frequencies are not physical but the psychoacoustic LF solidity is.
+    //     Caller must supply polygonAreaM2 > 0 to activate the branch.
+    //
+    // Default `polygonAreaM2 = 0.0` preserves the v2.8.0 skip-for-polygon
+    // behaviour for any caller that hasn't updated.
     static std::vector<double> applyModalBank (const std::vector<double>& buf,
                                                double W, double D, double He,
-                                               double rt60_125, double gain, int sr);
+                                               double rt60_125, double gain, int sr,
+                                               const std::string& shape = "Rectangular",
+                                               double polygonAreaM2 = 0.0);
 
     // Allpass diffuser (matches JS makeAllpassDiffuser + inline processing)
     struct AllpassDiffuser
@@ -344,13 +475,20 @@ private:
         double reflectionSpreadMs = 0.0,
         double freqScatterMs = 0.0);  // per-band time scatter (0 = off); higher bands scatter more
 
+    // Mean free path uses room volume / surface area. For rectangular rooms the
+    // formulas vol = W·D·H and surf = 2(WD + DH + WH) apply verbatim. For polygon
+    // shapes pass `paramsForShape != nullptr` so the function can compute
+    // vol = polyArea·H and surf = 2·polyArea + polyPerim·H from makeWalls2D.
+    // When the pointer is null OR the shape is "Rectangular" the original
+    // rectangular formula is used unchanged (preserves IR_11 / IR_14 bit-identity).
     static std::vector<double> renderFDNTail (
         const std::vector<double>& rt60s,
         int irLen, int erCut,
         const std::vector<double>& erIR,
         double diffusion, int sr, uint32_t seed,
         double roomW, double roomD, double roomH,
-        int maxRefCut = -1);  // -1 → same as erCut (old behaviour)
+        int maxRefCut = -1,                              // -1 → same as erCut (old behaviour)
+        const IRSynthParams* paramsForShape = nullptr);  // null → rectangular formula
 
     // ── Multi-mic path synthesis (feature/multi-mic-paths, Phase 1.3) ──────
     // synthMainPath is the historical body of synthIR, unchanged (bit-identity

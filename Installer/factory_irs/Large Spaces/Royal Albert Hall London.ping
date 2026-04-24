@@ -1,4 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
+
 <PingIRSynth>
-  <irSynthParams shape="Cylindrical" width="67" depth="56" height="41" floor="Carpet (thin)" ceiling="Painted plaster" wall="Painted plaster" windows="0" audience="0.67" diffusion="0.55" vault="Coffered dome  (circular hall)" organ="0.56" balconies="0.5" temp="20" humidity="50" slx="0.399569230769" sly="0.266646153846" srx="0.606338461538" sry="0.2696" rlx="0.4424" rly="0.643261538462" rrx="0.573846153846" rry="0.641784615385" spkl="2.05605717102" spkr="1.11044176022" micl="-2.35619449019" micr="-0.785398163397" micPat="wide cardioid (MK21)" erOnly="0" sr="48000" bakeERTail="0" bakedERGain="1" bakedTailGain="1" directOn="1" outrigOn="1" ambientOn="1" directMaxOrder="1" lambertScatter="0" spkDirFull="1" outrigLx="0.25" outrigLy="0.642523076923" outrigRx="0.75" outrigRy="0.642523076923" outrigLang="-1.22173047639" outrigRang="-1.91986217719" outrigHeight="3" outrigPat="wide cardioid (MK21)" outrigLtilt="-0.523598775598" outrigRtilt="-0.523598775598" ambientLx="0.1" ambientLy="0.9" ambientRx="0.9" ambientRy="0.9" ambientLang="-1.22173047639" ambientRang="-1.91986217719" ambientHeight="6" ambientPat="omni" ambientLtilt="-0.523598775598" ambientRtilt="-0.523598775598" miclTilt="-0.523598775598" micrTilt="-0.523598775598" deccaOn="1" deccaCx="0.5" deccaCy="0.642523076923" deccaAng="-1.57079632679" deccaCtrGain="0.5" deccaToeOut="1.57079632679" deccaTilt="-0.523598775598"/>
+  <irSynthParams shape="Circular Hall" width="50.0" depth="50.0" height="30.0"
+                 shapeNavePct="0.3" shapeTrptPct="0.35" shapeTaper="0.3" shapeCornerCut="1.0"
+                 floor="Carpet (thin)" ceiling="Painted plaster" wall="Painted plaster"
+                 windows="0.0" audience="0.67" diffusion="0.55" vault="Coffered dome  (circular hall)"
+                 organ="0.5600000000000001" balconies="0.5" temp="20.0" humidity="50.0"
+                 slx="0.399569230769" sly="0.266646153846" srx="0.606338461538"
+                 sry="0.2696" rlx="0.4424" rly="0.643261538462" rrx="0.573846153846"
+                 rry="0.641784615385" spkl="2.05605717102" spkr="1.11044176022"
+                 micl="-2.35619449019" micr="-0.785398163397" micPat="wide cardioid (MK21)"
+                 erOnly="0" sr="48000" bakeERTail="0" bakedERGain="1.0" bakedTailGain="1.0"
+                 directOn="1" outrigOn="1" ambientOn="1" directMaxOrder="1" lambertScatter="0"
+                 spkDirFull="1" outrigLx="0.2885714285714286" outrigLy="0.7285714285714285"
+                 outrigRx="0.7114285714285714" outrigRy="0.7285714285714285" outrigLang="-1.22173047639"
+                 outrigRang="-1.91986217719" outrigHeight="3.0" outrigPat="wide cardioid (MK21)"
+                 outrigLtilt="-0.5235987755980001" outrigRtilt="-0.5235987755980001"
+                 ambientLx="0.2409523809523809" ambientLy="0.8333333333333334"
+                 ambientRx="0.7590476190476191" ambientRy="0.8333333333333334"
+                 ambientLang="-1.22173047639" ambientRang="-1.91986217719" ambientHeight="6.0"
+                 ambientPat="omni" ambientLtilt="-0.5235987755980001" ambientRtilt="-0.5235987755980001"
+                 miclTilt="-0.5235987755980001" micrTilt="-0.5235987755980001"
+                 deccaOn="1" deccaCx="0.5019047619047619" deccaCy="0.7361904761904762"
+                 deccaAng="-1.57079632679" deccaCtrGain="0.5" deccaToeOut="1.570796326794897"
+                 deccaTilt="-0.5235987755980001" mirrorAxis="0"/>
+  <mixerGates mainOn="1" directOn="0" outrigOn="0" ambientOn="0"/>
 </PingIRSynth>

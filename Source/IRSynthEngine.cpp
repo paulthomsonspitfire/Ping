@@ -5,6 +5,9 @@
 #include <future>
 #include <atomic>
 #include <mutex>
+#ifdef PING_POLYGON_DEBUG
+ #include <cstdio>
+#endif
 
 // ── constants ──────────────────────────────────────────────────────────────
 const double IRSynthEngine::SPEED   = 343.0;
@@ -151,6 +154,260 @@ static const std::map<std::string, std::array<std::pair<double,double>, 8>>& ini
 }
 const std::map<std::string, std::array<std::pair<double,double>, 8>>& IRSynthEngine::getMIC() { return initMIC(); }
 
+// ── 2D polygon geometry utilities (v2.8.0) ────────────────────────────────
+// Sanity check that Wall2D::rAbs is the right size. If anyone ever changes
+// N_BANDS, this will catch it before the polygon ISM silently misreads bands.
+static_assert (sizeof(Wall2D{}.rAbs) / sizeof(double) == 8,
+               "Wall2D::rAbs must have 8 elements to match IRSynthEngine::N_BANDS");
+
+std::pair<double, double>
+IRSynthEngine::reflect2D (double px, double py, const Wall2D& w) noexcept
+{
+    const double dx = w.x2 - w.x1;
+    const double dy = w.y2 - w.y1;
+    const double len2 = dx*dx + dy*dy;
+    if (len2 < 1e-18) return { px, py };  // degenerate wall — return unchanged
+    const double t  = ((px - w.x1) * dx + (py - w.y1) * dy) / len2;
+    const double fx = w.x1 + t * dx;
+    const double fy = w.y1 + t * dy;
+    return { 2.0 * fx - px, 2.0 * fy - py };
+}
+
+bool IRSynthEngine::rayIntersectsSegment (double ax, double ay,
+                                          double bx, double by,
+                                          const Wall2D& w,
+                                          double& t_out, double& s_out) noexcept
+{
+    const double dx = bx - ax, dy = by - ay;
+    const double wx = w.x2 - w.x1, wy = w.y2 - w.y1;
+    const double denom = dx * wy - dy * wx;
+    if (std::abs(denom) < 1e-12) return false;  // parallel / collinear
+    const double t = ((w.x1 - ax) * wy - (w.y1 - ay) * wx) / denom;
+    const double s = ((w.x1 - ax) * dy - (w.y1 - ay) * dx) / denom;
+    t_out = t;
+    s_out = s;
+    // WI-4 (v2.9.0): raised from 1e-9 to 1e-6 (µm scale). Room geometry is
+    // user-specified to 1-decimal-metre, so 1e-6 is well inside the noise
+    // floor. Tightens the low-t filter (drops numerical-noise self-intersects
+    // with t ∈ [1e-9, 1e-6]) while widening the high-t and s tolerances,
+    // recovering grazing-corner image sources that were culled by 1e-9
+    // rounding error. On typical rooms the high-end widening dominates.
+    constexpr double EPS = 1e-6;
+    return (t > EPS && t < 1.0 + EPS && s >= -EPS && s <= 1.0 + EPS);
+}
+
+double IRSynthEngine::polygonArea (const std::vector<Wall2D>& walls) noexcept
+{
+    // Shoelace — accumulates 2× the signed area of the closed polygon traced
+    // by the wall edges. Works for any simple (non-self-intersecting) polygon
+    // wound consistently. The wall list assumed closed (last wall ends at the
+    // first wall's start). Returns the absolute area so callers can ignore the
+    // winding sign.
+    double area = 0.0;
+    for (const auto& w : walls)
+        area += w.x1 * w.y2 - w.x2 * w.y1;
+    return std::abs(area) * 0.5;
+}
+
+double IRSynthEngine::polygonPerimeter (const std::vector<Wall2D>& walls) noexcept
+{
+    double perim = 0.0;
+    for (const auto& w : walls)
+        perim += std::sqrt ((w.x2 - w.x1) * (w.x2 - w.x1)
+                          + (w.y2 - w.y1) * (w.y2 - w.y1));
+    return perim;
+}
+
+// ── makeWalls2D internals ─────────────────────────────────────────────────
+//
+// Inward-normal convention:
+//   The plan (Docs/Polygon-Room-Geometry-Plan.md §6) specifies CCW winding
+//   with inward normal = (dy, -dx)/len. In screen-style coordinates (y+ down)
+//   this is correct only for CW winding when read "as drawn"; the plan's
+//   vertex lists are inconsistent on this point (e.g. Fan/Shoebox vs
+//   Cathedral wind opposite ways visually). Rather than depend on every
+//   vertex list being wound the same way, we compute the candidate normal
+//   from (dy, -dx) and flip it if it does not point toward the polygon
+//   centroid. This is robust for convex polygons and the slightly concave
+//   Cathedral cruciform (whose vertex centroid still lies inside the room).
+//
+// Zero-length walls are skipped (Octagonal at shapeCornerCut = 0 produces
+// coincident corners, etc.) — see plan §11 invariant 8.
+
+namespace
+{
+    using Vertex = std::pair<double, double>;
+    using VertexList = std::vector<Vertex>;
+
+    void appendWallsFromVertices (std::vector<Wall2D>& out,
+                                  const VertexList& verts,
+                                  const std::array<double, 8>& rWPerBand)
+    {
+        if (verts.size() < 3) return;
+
+        // Vertex centroid — used only to disambiguate inward normal direction.
+        // For the convex polygons (Fan/Shoebox, Octagonal, Circular Hall) and
+        // the slightly concave Cathedral the average vertex always lies inside
+        // the polygon, which is all we need.
+        double cx = 0.0, cy = 0.0;
+        for (const auto& v : verts) { cx += v.first; cy += v.second; }
+        cx /= (double) verts.size();
+        cy /= (double) verts.size();
+
+        for (size_t i = 0; i < verts.size(); ++i)
+        {
+            const double x1 = verts[i].first;
+            const double y1 = verts[i].second;
+            const double x2 = verts[(i + 1) % verts.size()].first;
+            const double y2 = verts[(i + 1) % verts.size()].second;
+            const double dx = x2 - x1;
+            const double dy = y2 - y1;
+            const double len = std::sqrt (dx * dx + dy * dy);
+            if (len < 1e-9) continue;  // skip zero-length walls (chamfer = 0 etc.)
+
+            Wall2D w;
+            w.x1 = x1; w.y1 = y1;
+            w.x2 = x2; w.y2 = y2;
+
+            double nx = dy / len;
+            double ny = -dx / len;
+            const double mx = 0.5 * (x1 + x2);
+            const double my = 0.5 * (y1 + y2);
+            if ((cx - mx) * nx + (cy - my) * ny < 0.0)
+            {
+                nx = -nx; ny = -ny;
+            }
+            w.nx = nx; w.ny = ny;
+            w.rAbs = rWPerBand;
+            out.push_back (w);
+        }
+    }
+}
+
+std::vector<Wall2D>
+IRSynthEngine::makeWalls2D (const IRSynthParams& p,
+                            double W, double D,
+                            const std::array<double, 8>& rWPerBand)
+{
+    std::vector<Wall2D> walls;
+    walls.reserve (16);
+
+    // Clamp shape proportions to documented safe ranges. This is belt-and-
+    // suspenders — the UI sliders already enforce these — but protects against
+    // legacy sidecars or hand-edited XML that fall outside.
+    auto clampD = [] (double v, double lo, double hi)
+    {
+        return std::max (lo, std::min (hi, v));
+    };
+
+    if (p.shape == "Fan / Shoebox")
+    {
+        const double t = clampD (p.shapeTaper, 0.0, 0.70);
+        // y = 0 is the narrow stage end, y = D is the full-width back wall.
+        const VertexList verts = {
+            { W * (t * 0.5),       0.0 },   // stage_left
+            { 0.0,                 D   },   // back_left
+            { W,                   D   },   // back_right
+            { W * (1.0 - t * 0.5), 0.0 }    // stage_right
+        };
+        appendWallsFromVertices (walls, verts, rWPerBand);
+    }
+    else if (p.shape == "Octagonal")
+    {
+        const double c = clampD (p.shapeCornerCut, 0.0, 1.0);
+        // 0.293 ≈ 1 - sqrt(2)/2; with W=D and c=1 this gives a regular octagon.
+        const double cc = c * std::min (W, D) * 0.293;
+        const VertexList verts = {
+            { cc,       0.0     },  // P0
+            { W - cc,   0.0     },  // P1
+            { W,        cc      },  // P2
+            { W,        D - cc  },  // P3
+            { W - cc,   D       },  // P4
+            { cc,       D       },  // P5
+            { 0.0,      D - cc  },  // P6
+            { 0.0,      cc      }   // P7
+        };
+        appendWallsFromVertices (walls, verts, rWPerBand);
+    }
+    else if (p.shape == "Circular Hall")
+    {
+        const double c = clampD (p.shapeCornerCut, 0.0, 1.0);
+        // 16-vertex polygon interpolating between the bounding rectangle
+        // (c=0) and the inscribed ellipse (c=1). Aligned so flat sides face
+        // the axes when c is small (avoids a vertex sitting on every cardinal
+        // direction, which would make Circular Hall visually identical to
+        // Octagonal at low corner cut).
+        constexpr int kCircWalls = 16;
+        const double Wh = W * 0.5, Dh = D * 0.5;
+        VertexList verts;
+        verts.reserve (kCircWalls);
+        for (int i = 0; i < kCircWalls; ++i)
+        {
+            const double base = (double) i * 2.0 * 3.14159265358979323846 / (double) kCircWalls
+                               + 3.14159265358979323846 / (double) kCircWalls;
+            const double ca = std::cos (base), sa = std::sin (base);
+
+            // Ellipse point (c = 1)
+            const double ex = Wh + Wh * ca;
+            const double ey = Dh + Dh * sa;
+
+            // Bounding-rectangle point (c = 0): radial projection from centre
+            // onto the rectangle boundary.
+            const double sxScale = (std::abs (ca) > 1e-9) ? (Wh / std::abs (ca)) : 1e18;
+            const double syScale = (std::abs (sa) > 1e-9) ? (Dh / std::abs (sa)) : 1e18;
+            const double scale = std::min (sxScale, syScale);
+            const double rx = Wh + scale * ca;
+            const double ry = Dh + scale * sa;
+
+            verts.emplace_back (rx + c * (ex - rx), ry + c * (ey - ry));
+        }
+        appendWallsFromVertices (walls, verts, rWPerBand);
+    }
+    else if (p.shape == "Cathedral")
+    {
+        const double cx = W * 0.5, cy = D * 0.5;
+        // Half-width of nave / half-depth of transept arm. Clamp to ranges that
+        // keep the resulting cruciform non-degenerate (≥ 0.5 m of every visible
+        // wall section remaining).
+        double hw = clampD (p.shapeNavePct, 0.15, 0.50) * W * 0.5;
+        double ht = clampD (p.shapeTrptPct, 0.20, 0.45) * D * 0.5;
+        hw = std::min (hw, cx - 0.5);
+        ht = std::min (ht, cy - 0.5);
+        const VertexList verts = {
+            { cx - hw,  0.0      },  // P0  top of nave, left
+            { cx + hw,  0.0      },  // P1  top of nave, right
+            { cx + hw,  cy - ht  },  // P2  inner corner, top-right
+            { W,        cy - ht  },  // P3  right transept outer, top
+            { W,        cy + ht  },  // P4  right transept outer, bottom
+            { cx + hw,  cy + ht  },  // P5  inner corner, bottom-right
+            { cx + hw,  D        },  // P6  bottom of nave, right
+            { cx - hw,  D        },  // P7  bottom of nave, left
+            { cx - hw,  cy + ht  },  // P8  inner corner, bottom-left
+            { 0.0,      cy + ht  },  // P9  left transept outer, bottom
+            { 0.0,      cy - ht  },  // P10 left transept outer, top
+            { cx - hw,  cy - ht  }   // P11 inner corner, top-left
+        };
+        appendWallsFromVertices (walls, verts, rWPerBand);
+    }
+    else
+    {
+        // "Rectangular" fallback (and any unknown shape string). The engine
+        // never calls makeWalls2D for Rectangular — the dispatch hard-routes
+        // to calcRefs — but we generate the bounding rectangle for tests and
+        // for any future caller that wants polygonArea/Perimeter to return
+        // sensible values.
+        const VertexList verts = {
+            { 0.0, 0.0 },
+            { 0.0, D   },
+            { W,   D   },
+            { W,   0.0 }
+        };
+        appendWallsFromVertices (walls, verts, rWPerBand);
+    }
+
+    return walls;
+}
+
 // ── eyring — verbatim from JS ──────────────────────────────────────────────
 double IRSynthEngine::eyring (double vol, double mAbs, double tS)
 {
@@ -225,15 +482,37 @@ std::vector<double> IRSynthEngine::calcRT60 (const IRSynthParams& p)
     double hm = vpIt != getVP().end() ? vpIt->second[0] : 1.0;
     double H = p.height * hm;
 
-    double fA = p.width * p.depth;
+    // Floor area, side-wall area and volume — rectangular formulas by default,
+    // polygon-derived for non-rectangular shapes. Rectangular result is
+    // bit-identical to the previous code (IR_11/IR_14 regression locks).
+    double fA, sideWallA, vol;
+    if (p.shape == "Rectangular")
+    {
+        fA        = p.width * p.depth;
+        sideWallA = (p.depth + p.width) * H * 2.0;        // = sA + eA
+        vol       = p.width * p.depth * H;
+    }
+    else
+    {
+        // makeWalls2D's rAbs entries are unused for area/perimeter; pass zeros.
+        std::array<double, 8> zeroR{}; zeroR.fill(0.0);
+        const auto walls = makeWalls2D(p, p.width, p.depth, zeroR);
+        const double polyArea = polygonArea(walls);
+        const double polyPerim = polygonPerimeter(walls);
+        fA        = polyArea;
+        sideWallA = polyPerim * H;
+        vol       = polyArea * H;
+    }
     double cA = fA * (1.0 + (hm - 1.0) * 1.6);
-    double sA = p.depth * H * 2.0;
-    double eA = p.width * H * 2.0;
-    double tS = fA + cA + sA + eA;
+    double tS = fA + cA + sideWallA;
 
-    double vol = p.width * p.depth * H;
     double bA = fA * 0.25 * p.balconies;
-    double oA = p.width * H * 0.15 * p.organ_case;
+    // Organ-case absorption area: one wall fraction. For polygons use the average
+    // wall area (perimeter / 4 ≈ one rectangular-equivalent wall) so the scale
+    // matches the rectangular formula at p.shape=="Rectangular".
+    double oA = (p.shape == "Rectangular")
+                ? (p.width * H * 0.15 * p.organ_case)
+                : (sideWallA * 0.25 * 0.15 * p.organ_case);
 
     auto mfIt = mats.find(p.floor_material);
     auto mcIt = mats.find(p.ceiling_material);
@@ -250,7 +529,7 @@ std::vector<double> IRSynthEngine::calcRT60 (const IRSynthParams& p)
     std::vector<double> rt60(N_BANDS);
     for (int i = 0; i < N_BANDS; ++i)
     {
-        double a = fA * mf[i] + cA * mc[i] + (sA + eA) * mw[i]
+        double a = fA * mf[i] + cA * mc[i] + sideWallA * mw[i]
                  + p.audience * fA * 0.5 + bA * BA[i] + bA * 0.6 * BSA[i] + oA * OA[i];
         double rt = eyring(vol, a / tS, tS);
         rt = std::max(0.05, std::min(rt, 30.0));
@@ -383,6 +662,420 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
     return refs;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Polygon image-source method (v2.8.0)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Hybrid approach:
+//   Horizontal reflections are produced by a 2D recursive Borish image-source
+//   tree over the polygon walls returned by makeWalls2D. Vertical reflections
+//   (floor / ceiling) re-use the existing nz loop unchanged so floor/ceiling
+//   absorption, vault HF absorption, and air-absorption-per-distance are
+//   applied identically to calcRefs.
+//
+// Full chain validation:
+//   For every accepted 2D image source we verify the full reflection path back
+//   from the receiver hits each wall in wallPath within its finite segment.
+//   This is essential for the Cathedral cruciform whose concavity allows
+//   near-corner image sources that fail the per-step dot test but still try to
+//   "cut the corner" through a non-existent wall section. Pruning during
+//   recursion would also work but at modest extra complexity for marginal
+//   speed gain — we validate on the leaf accept and on each internal node.
+//
+// Order cap:
+//   Polygon ISM cost grows ~ O(W^N) where W = wall count, N = order. Each
+//   shape gets a hand-tuned hard cap (orderLimitForShape) on top of the
+//   RT60-based estimate so a long-RT60 cathedral does not spawn 13^6 ≈ 4.8M
+//   IS candidates.
+
+namespace
+{
+    // ── Internal image-source representation (file-static) ────────────────────
+    struct ImageSource2D
+    {
+        double                  x = 0.0, y = 0.0;   // image position (metres)
+        std::vector<int>        wallPath;           // wall indices, oldest first
+        std::array<double, 8>   cumAbs{};           // accumulated reflection coeffs
+        int                     order = 0;          // = wallPath.size()
+        // imgPositions[k] = image source after reflecting through wallPath[0..k-1].
+        // Stored so leaf-level chain validation can walk the receiver-to-source
+        // ray sequence without recomputing each parent's image position.
+        // Size = order + 1 (entry 0 is the original source position).
+        std::vector<std::pair<double, double>> imgPositions;
+    };
+
+    // Walk the reflection path from receiver back to source, verifying that at
+    // every step the line from the current point to the next-earlier image
+    // source crosses the corresponding wall WITHIN its finite segment. Returns
+    // false (= invalid image source) on the first miss. order==0 sources are
+    // trivially valid (no walls to traverse).
+    bool validateChain2D (const std::vector<Wall2D>& walls,
+                          const ImageSource2D& is,
+                          double rcvX, double rcvY) noexcept
+    {
+        double curX = rcvX, curY = rcvY;
+        for (int k = (int) is.wallPath.size() - 1; k >= 0; --k)
+        {
+            const Wall2D& w = walls[(size_t) is.wallPath[k]];
+            const auto& tgt = is.imgPositions[(size_t) (k + 1)];
+            double t = 0.0, s = 0.0;
+            if (! IRSynthEngine::rayIntersectsSegment (curX, curY, tgt.first, tgt.second, w, t, s))
+                return false;
+            curX = curX + t * (tgt.first  - curX);
+            curY = curY + t * (tgt.second - curY);
+        }
+        return true;
+    }
+
+    // Recursive Borish 2D image-source tree generator. At each level we:
+    //   1. Path-length early termination (skip if 2D distance > maxDist2D).
+    //   2. Full chain validation — accept the image source only if the receiver
+    //      can geometrically see through every wall in the chain.
+    //   3. Recurse into all walls except the most recent one (no immediate
+    //      back-reflection), pruning by a dot-product test that requires the
+    //      current image source to lie on the OUTSIDE of the candidate wall
+    //      (otherwise the reflection produces a copy on the room side, which
+    //      would never be visible to the receiver).
+    void generateIS2D (const std::vector<Wall2D>& walls,
+                       double imgX, double imgY,
+                       const std::vector<int>& wallPath,
+                       const std::vector<std::pair<double, double>>& imgPositions,
+                       const std::array<double, 8>& cumAbs,
+                       double rcvX, double rcvY,
+                       double maxDist2D, int maxOrder,
+                       size_t acceptedBudget,
+                       std::vector<ImageSource2D>& out)
+    {
+        // Image-count budget early-out (WI-1). Once we've accepted
+        // `acceptedBudget` image sources the tree stops descending entirely.
+        // The budget is a soft total cap that complements the per-shape order
+        // ceiling: convex shapes (Fan, Octagonal) naturally produce deeper
+        // trees than concave ones (Cathedral) without per-shape hand tuning.
+        if (out.size() >= acceptedBudget)
+            return;
+
+        // Path-length early termination.
+        const double dx = imgX - rcvX, dy = imgY - rcvY;
+        if (std::sqrt (dx * dx + dy * dy) > maxDist2D)
+            return;
+
+        // Build the image source candidate up front so validateChain2D can run.
+        ImageSource2D is;
+        is.x = imgX;
+        is.y = imgY;
+        is.wallPath = wallPath;
+        is.imgPositions = imgPositions;
+        is.cumAbs = cumAbs;
+        is.order = (int) wallPath.size();
+
+        // Order 0 (direct path) is always valid — no walls to validate.
+        // Higher orders need the full chain check; if it fails we PRUNE the
+        // whole branch since deeper descendants share the same wallPath[0..k-1]
+        // and would all fail at the same earlier step.
+        if (is.order > 0 && ! validateChain2D (walls, is, rcvX, rcvY))
+            return;
+
+        out.push_back (std::move (is));
+
+        if ((int) wallPath.size() >= maxOrder)
+            return;
+
+        for (int wi = 0; wi < (int) walls.size(); ++wi)
+        {
+            // Don't immediately re-reflect off the most recent wall.
+            if (! wallPath.empty() && wallPath.back() == wi)
+                continue;
+
+            const Wall2D& w = walls[(size_t) wi];
+
+            // Standard Borish ISM parent-visibility test: to reflect the
+            // current image across wall `w`, the image must lie on the INWARD
+            // side of `w` (i.e. the room-interior side). Reflecting an inward
+            // image produces a new image on the OUTWARD side, which is the
+            // side the receiver must "see through" the wall to hear this
+            // reflection. If the image is already outward of `w`, reflecting
+            // produces an inward image that can't geometrically be reached.
+            //
+            // With inward normal `w.n`, inward ⇔ (image - w.x1) · w.n ≥ 0.
+            // So we skip when `dot < -eps` (strictly outward beyond tolerance).
+            //
+            // WI-4 (v2.9.0): tolerance raised to 1e-6 (µm scale). Room
+            // dimensions are user-specified to 1-decimal-metre, so µm
+            // tolerance is well inside the noise floor and admits
+            // near-coplanar borderline images that 1e-9 rounded out.
+            //
+            // Historical note: v2.8.0 shipped this test with the sign
+            // inverted (`dot > -1e-9` → skip inward images). The result was
+            // that the top-level call — where `imgX,imgY` is the real source,
+            // which is inward of every wall — skipped every wall, so the
+            // polygon image-source tree never descended below order 0.
+            // Horizontal reflections were effectively absent from polygon
+            // IRs (only vertical + scatter survived). v2.9.0 fixes the sign;
+            // this is the single largest contributor to polygon density.
+            const double dot = (imgX - w.x1) * w.nx + (imgY - w.y1) * w.ny;
+            if (dot < -1e-6)
+                continue;
+
+            const auto refl = IRSynthEngine::reflect2D (imgX, imgY, w);
+
+            std::vector<int> newPath = wallPath;
+            newPath.push_back (wi);
+            std::vector<std::pair<double, double>> newPositions = imgPositions;
+            newPositions.emplace_back (refl.first, refl.second);
+
+            std::array<double, 8> newAbs;
+            for (int b = 0; b < 8; ++b)
+                newAbs[(size_t) b] = cumAbs[(size_t) b] * w.rAbs[(size_t) b];
+
+            generateIS2D (walls, refl.first, refl.second, newPath, newPositions,
+                          newAbs, rcvX, rcvY, maxDist2D, maxOrder,
+                          acceptedBudget, out);
+        }
+    }
+
+    // Per-shape hard cap on horizontal reflection order. Polygon ISM cost is
+    // roughly W * (W-1)^(N-1) image sources at order N for a polygon with W
+    // walls (each level skips the most recent wall). The caps below keep the
+    // worst-case IS count in the low hundreds-of-thousands, well within the
+    // budget for a one-time IR synthesis pass on a background thread.
+    //
+    // The RT60-based formula `mo` from synthMainPath is an over-estimate for
+    // polygon shapes (it uses the rectangular minDim) so we just take the min
+    // of `mo` and the per-shape cap.
+    //
+    // WI-1 (v2.9.0): caps raised from the original 2.8.0 values
+    // (Fan=20, Octagonal=8, Circular Hall=6, Cathedral=6) toward the
+    // CLAUDE.md design-intent values. Chain validation in generateIS2D prunes
+    // so aggressively that the worst-case (W-1)^N branching rarely
+    // materialises; the new soft total-image budget (kPolygonAcceptedBudget)
+    // bounds work even when the order ceiling is generous.
+    int orderLimitForShape (const std::string& shape, int rt60BasedMO) noexcept
+    {
+        int hardCap = 60;  // permissive default — this branch never runs for "Rectangular"
+        if      (shape == "Fan / Shoebox") hardCap = 24;
+        else if (shape == "Octagonal")     hardCap = 14;
+        else if (shape == "Circular Hall") hardCap = 12;
+        else if (shape == "Cathedral")     hardCap = 16;
+        return std::min (std::max (rt60BasedMO, 1), hardCap);
+    }
+
+    // WI-1 (v2.9.0): soft cap on accepted image-source count per
+    // calcRefsPolygon call. Once generateIS2D has accumulated this many
+    // accepted images the tree stops descending. Sized to leave headroom for
+    // each of the 4 main-path channel-direction calls (4 * 20_000 = 80_000
+    // horizontal images total) which is well within background-thread budget.
+    constexpr size_t kPolygonAcceptedBudget = 20000;
+}
+
+// ── calcRefsPolygon ─────────────────────────────────────────────────────────
+// Polygon-aware ER calculator. Mirrors calcRefs parameter-for-parameter.
+// Horizontal (xy-plane) reflections come from the 2D image-source tree;
+// vertical reflections re-use the same nz loop calcRefs uses. The two are
+// combined so floor/ceiling absorption, air absorption and vault HF damping
+// are applied identically to the rectangular path.
+std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
+    double rx, double ry, double rz,
+    double sx, double sy, double sz,
+    const IRSynthParams& p,
+    double He, int mo,
+    const std::array<double,8>& rF,
+    const std::array<double,8>& rC,
+    const std::array<double,8>& /*rW*/,
+    double oF, double vHfA, double ts,
+    bool eo, int ec, int sr,
+    uint32_t seed,
+    const std::string& micPat,
+    double spkFaceAngle, double micFaceAngle,
+    double maxRefDist,
+    double minJitterMs,
+    double highOrderJitterMs,
+    double micFaceTilt)
+{
+    Rng rng = mkRng (seed);
+    std::vector<Ref> refs;
+
+    // Build the 2D wall list from the room shape. Per-band wall reflection
+    // coefficients come from the same blended wall+window calculation that
+    // produced the rW argument; we re-derive it here so makeWalls2D's rAbs
+    // is populated correctly for the new polygon-specific path. (The plan
+    // calls for per-wall material assignment as a future extension — for
+    // now every wall gets the same rW.)
+    std::array<double, 8> rWPerBand;
+    {
+        auto& mats = getMats();
+        auto mwIt = mats.find (p.wall_material);
+        if (mwIt == mats.end()) mwIt = mats.find ("Painted plaster");
+        const auto& aw = mwIt->second;
+
+        if (p.window_fraction > 1e-9)
+        {
+            auto mgIt = mats.find ("Glass (large pane)");
+            const auto& ag = mgIt != mats.end() ? mgIt->second : aw;
+            const double wf = std::max (0.0, std::min (1.0, p.window_fraction));
+            for (int b = 0; b < N_BANDS; ++b)
+            {
+                const double a_blend = (1.0 - wf) * aw[(size_t) b] + wf * ag[(size_t) b];
+                rWPerBand[(size_t) b] = std::sqrt (1.0 - a_blend);
+            }
+        }
+        else
+        {
+            for (int b = 0; b < N_BANDS; ++b)
+                rWPerBand[(size_t) b] = std::sqrt (1.0 - aw[(size_t) b]);
+        }
+    }
+
+    const auto walls = makeWalls2D (p, p.width, p.depth, rWPerBand);
+    if (walls.size() < 3)
+        return refs;  // degenerate room — no reflections possible
+
+    // Horizontal order cap: clamp the rectangular RT60-based mo by the per-
+    // shape hard cap to keep worst-case cost bounded.
+    const int moHoriz = orderLimitForShape (p.shape, mo);
+
+    // 2D image-source tree generation.
+    std::array<double, 8> initAbs;
+    initAbs.fill (1.0);
+    std::vector<ImageSource2D> images;
+    images.reserve (256);
+    {
+        std::vector<int> emptyPath;
+        std::vector<std::pair<double, double>> startPositions { { sx, sy } };
+        // Use maxRefDist directly as the 2D distance gate. For a typical
+        // mo-bounded full-reverb pass this is 1e9 (no gate), so the pruning
+        // happens via maxOrder alone.
+        generateIS2D (walls, sx, sy, emptyPath, startPositions, initAbs,
+                      rx, ry, maxRefDist, moHoriz,
+                      kPolygonAcceptedBudget, images);
+    }
+
+#ifdef PING_POLYGON_DEBUG
+    // Calibration log (WI-1). Off in normal builds; enable by defining
+    // PING_POLYGON_DEBUG to verify per-shape image-count behaviour.
+    std::fprintf (stderr,
+                  "[PING polygon] shape=%s moHoriz=%d acceptedImages=%zu (budget=%zu, hitBudget=%d)\n",
+                  p.shape.c_str(), moHoriz, images.size(),
+                  kPolygonAcceptedBudget,
+                  images.size() >= kPolygonAcceptedBudget ? 1 : 0);
+#endif
+
+    // Vertical order cap: keep the original rectangular formula (image-source
+    // count grows ~ moHoriz * (2*moVert+1) which is bounded by mo * 2 even
+    // for tall rooms, and floor/ceiling material absorption naturally damps
+    // the chain). Use the calcRefs formula based on minDim.
+    const double minDimVert = std::min ({ p.width, p.depth, He });
+    int moVert = mo;
+    if (minDimVert > 1e-6)
+        moVert = std::min (60, std::max (3, mo));
+
+    // Combine 2D and 1D vertical reflections. For each (image, nz) pair we
+    // build a single Ref with combined absorption and arrival time, mirroring
+    // calcRefs' per-bounce gain stack.
+    for (const auto& is : images)
+    {
+        for (int nz = -moVert; nz <= moVert; ++nz)
+        {
+            // 3D image source position (z derived from rectangular nz mirror)
+            const double iz = nz * He + (nz % 2 ? He - sz : sz);
+            const double dx3 = is.x - rx;
+            const double dy3 = is.y - ry;
+            const double dz3 = iz   - rz;
+            const double dist = std::sqrt (dx3 * dx3 + dy3 * dy3 + dz3 * dz3);
+            if (dist < 1e-6) continue;
+            if (dist > maxRefDist) continue;
+
+            // Total reflection count = horizontal hops + vertical hops.
+            const int totalBounces = is.order + std::abs (nz);
+
+            int t = (int) std::floor (dist / SPEED * sr);
+            if (ts > 0.05)
+                t = std::max (1, t + (int) std::floor (rU (rng, -ts * 4.0, ts * 4.0) * sr / 1000.0));
+            const double jitterMs = (totalBounces >= 2) ? highOrderJitterMs : minJitterMs;
+            if (jitterMs > 0.0)
+                t = std::max (1, t + (int) std::floor (rU (rng, -jitterMs, jitterMs) * sr / 1000.0));
+
+            // ER gate: in ER-only mode skip sources that arrive at or beyond
+            // the ER window boundary. Same logic as calcRefs.
+            if (eo && t >= ec) continue;
+
+            // Screen-space azimuth from receiver to image source.
+            const double az = std::atan2 (is.y - ry, is.x - rx);
+            const double hDist = std::sqrt (dx3 * dx3 + dy3 * dy3);
+            const double el    = std::atan2 (dz3, std::max (hDist, 1e-9));
+            const double cosTh3D = directivityCos (az, el, micFaceAngle, micFaceTilt);
+
+            // Speaker directivity — same fade-to-omni schedule as calcRefs.
+            // spkAz is the angle from the (real) source to the receiver in
+            // screen space; high-order reflections fade to omnidirectional.
+            const double spkAz = std::atan2 (ry - sy, rx - sx);
+            const double sgDir = spkG (spkFaceAngle, spkAz);
+            double sg;
+            if (p.spk_directivity_full)
+                sg = sgDir;
+            else if (totalBounces <= 1)
+                sg = sgDir;
+            else if (totalBounces == 2)
+                sg = 0.5 * sgDir + 0.5;
+            else
+                sg = 1.0;
+
+            const double polarity = (totalBounces % 2 == 0) ? 1.0 : -1.0;
+
+            std::array<double, 8> amps;
+            for (int b = 0; b < N_BANDS; ++b)
+            {
+                double a = 1.0 / std::max (dist, 0.5);
+                // Vertical bounces: floor/ceiling absorption (alternating).
+                a *= std::pow (rF[(size_t) b], std::ceil  (std::abs (nz) / 2.0));
+                a *= std::pow (rC[(size_t) b], std::floor (std::abs (nz) / 2.0));
+                // Horizontal bounces: cumulative wall absorption from the 2D
+                // chain (stored in is.cumAbs, accumulated at each wall hit).
+                a *= is.cumAbs[(size_t) b];
+                // Vault HF absorption — applied per vertical bounce.
+                if (std::abs (nz) > 0)
+                    a *= std::pow (1.0 - vHfA * std::min (b / 3.0, 1.0), std::abs (nz));
+                // Organ-case absorption — calcRefs applies it per |ny|; for the
+                // polygon path we approximate by applying it once per horizontal
+                // bounce (it is a coarse blanket factor anyway).
+                if (is.order > 0)
+                    a *= std::pow (oF, is.order);
+                amps[(size_t) b] = a * std::pow (10.0, -AIR[b] * dist / 20.0)
+                                   * micG (b, micPat, cosTh3D) * sg * polarity;
+            }
+            refs.push_back ({ t, amps, az });
+
+            // Feature A — Lambert diffuse scatter.
+            // WI-2/WI-3 (v2.9.0): polygon gets denser scatter than rectangular.
+            // N_SCATTER raised 2 -> 4 and order range widened [1,3] -> [1,5] to
+            // plug the wider gaps between polygon's sparser specular images;
+            // decay base raised 0.6 -> 0.75 to preserve scatter energy at the
+            // truncated polygon order range (per-scatter-ray amplitude is
+            // normalised by N_SCATTER so total diffuse energy roughly doubles
+            // vs the rectangular 2-ray version, which is the intent).
+            const int N_SCATTER = 4;
+            if (p.lambert_scatter_enabled && ts > 0.05
+                && totalBounces >= 1 && totalBounces <= 5)
+            {
+                const double scatterWeight =
+                    (ts * 0.08) / (double) N_SCATTER * std::pow (0.75, totalBounces - 1);
+                for (int s = 0; s < N_SCATTER; ++s)
+                {
+                    const double scatterAz = rU (rng, -3.141592653589793, 3.141592653589793);
+                    int scatterT = t + (int) std::round (rU (rng, 0.0, 4.0) * sr / 1000.0);
+                    scatterT = std::max (1, scatterT);
+                    if (eo && scatterT >= ec) continue;
+                    std::array<double, 8> scatterAmps;
+                    for (int b = 0; b < N_BANDS; ++b)
+                        scatterAmps[(size_t) b] = amps[(size_t) b] * scatterWeight;
+                    refs.push_back ({ scatterT, scatterAmps, scatterAz });
+                }
+            }
+        }
+    }
+
+    return refs;
+}
+
 // ── bpF — verbatim from JS (bandpass) ──────────────────────────────────────
 std::vector<double> IRSynthEngine::bpF (const std::vector<double>& buf, double fc, int sr)
 {
@@ -474,15 +1167,48 @@ std::vector<double> IRSynthEngine::bpFQ (const std::vector<double>& buf, double 
 std::vector<double> IRSynthEngine::applyModalBank (
     const std::vector<double>& buf,
     double W, double D, double He,
-    double rt60_125, double gain, int sr)
+    double rt60_125, double gain, int sr,
+    const std::string& shape,
+    double polygonAreaM2)
 {
+    // Effective dimensions for the axial-mode formula. For rectangular rooms
+    // these are just (W, D, He). For polygon rooms, the equivalent-box
+    // approximation derives Wₑ, Dₑ from the polygon area so the modes sit at
+    // frequencies a box of the same horizontal area would produce.
+    double Leff = W, Weff = D, Heff = He;
+
+    if (shape != "Rectangular")
+    {
+#ifdef PING_POLYGON_MODAL_BANK
+        // WI-5 (v2.9.0): equivalent-box modal bank for polygon shapes.
+        // Axial modes aren't geometrically exact for non-rectangular plans,
+        // but the low-frequency tonal solidity the bank contributes is a
+        // psychoacoustic asset independent of the exact standing-wave math.
+        // The equivalent box is area-preserving, so modes sit in the right
+        // general frequency range for the room's actual size.
+        //
+        // Caller must pass the polygon's actual horizontal area. If it's
+        // missing or zero we fall back to the v2.8.0 early-return.
+        if (polygonAreaM2 <= 1e-6)
+            return buf;
+
+        Leff = std::sqrt (polygonAreaM2);          // Wₑ = side of the area-equal square
+        Weff = polygonAreaM2 / Leff;               // Dₑ = polygonArea / Wₑ  (= Leff for square)
+        Heff = He;
+#else
+        // v2.8.0 behaviour: axial modes not meaningful for polygon plans.
+        (void) polygonAreaM2;
+        return buf;
+#endif
+    }
+
     // Axial mode frequencies: f_n = c*n / (2*L), n = 1..4 per dimension
     std::vector<double> modes;
     for (int n = 1; n <= 4; ++n)
     {
-        double fx = SPEED * n / (2.0 * W);
-        double fy = SPEED * n / (2.0 * D);
-        double fz = SPEED * n / (2.0 * He);
+        double fx = SPEED * n / (2.0 * Leff);
+        double fy = SPEED * n / (2.0 * Weff);
+        double fz = SPEED * n / (2.0 * Heff);
         if (fx > 10.0 && fx < 250.0) modes.push_back(fx);
         if (fy > 10.0 && fy < 250.0) modes.push_back(fy);
         if (fz > 10.0 && fz < 250.0) modes.push_back(fz);
@@ -718,11 +1444,29 @@ std::vector<double> IRSynthEngine::renderFDNTail (
     const std::vector<double>& erIR,
     double diffusion, int sr, uint32_t seed,
     double roomW, double roomD, double roomH,
-    int maxRefCut)
+    int maxRefCut,
+    const IRSynthParams* paramsForShape)
 {
     const int N = 16;
-    double vol = roomW * roomD * roomH;
-    double surf = 2.0 * (roomW * roomD + roomD * roomH + roomW * roomH);
+    // Volume / surface — rectangular formula by default. For polygon shapes the
+    // floor area and perimeter come from makeWalls2D, giving the correct mean
+    // free path for fan/cathedral/octagonal/circular footprints. The rectangular
+    // branch is bit-identical to the previous code (IR_11/IR_14 regression locks).
+    double vol, surf;
+    if (paramsForShape != nullptr && paramsForShape->shape != "Rectangular")
+    {
+        std::array<double, 8> zeroR{}; zeroR.fill(0.0);
+        const auto walls = makeWalls2D(*paramsForShape, roomW, roomD, zeroR);
+        const double polyArea  = polygonArea(walls);
+        const double polyPerim = polygonPerimeter(walls);
+        vol  = polyArea * roomH;
+        surf = 2.0 * polyArea + polyPerim * roomH;
+    }
+    else
+    {
+        vol  = roomW * roomD * roomH;
+        surf = 2.0 * (roomW * roomD + roomD * roomH + roomW * roomH);
+    }
     double mfp = 4.0 * vol / surf;
     double mfpMs = mfp / SPEED * 1000.0;
     double minMs = std::max(20.0, mfpMs * 0.5);
@@ -897,13 +1641,22 @@ std::vector<double> IRSynthEngine::renderFDNTail (
     return out;
 }
 
-// Shape density factor — verbatim from JS
+// Shape density factor — verbatim from JS.
+// v2.8.0 note: the scalar rectangular engine still calls this from calcRefs
+// and renderFDNTail. Non-rectangular shapes are routed to the polygon engine
+// in Phase 3, at which point the non-Rectangular branches here become dead
+// code. Until then, "Circular Hall" is kept at the old "Cylindrical" value
+// (1.2) so that presets migrated by irSynthParamsFromXml keep their pre-v2.8
+// acoustic output. "L-shaped" / "Cylindrical" branches retained as a
+// belt-and-suspenders fallback — migration happens at the sidecar-read layer
+// so these strings should never reach here in practice.
 static double shapeDen (const std::string& shape)
 {
     if (shape == "Rectangular") return 1.0;
     if (shape == "Fan / Shoebox") return 0.8;
     if (shape == "L-shaped") return 0.7;
     if (shape == "Cylindrical") return 1.2;
+    if (shape == "Circular Hall") return 1.2;
     if (shape == "Cathedral") return 0.5;
     if (shape == "Octagonal") return 0.9;
     return 1.0;
@@ -1188,10 +1941,26 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     const double jitterOrder2PlusMs = close ? 2.5 : 0.0;
     const double reflectionSpreadMs = 0.0;  // disabled — was causing collapse when close
 
-    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 42, mainMicPattern, p.spkl_angle, faceL, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltL);
-    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 43, mainMicPattern, p.spkr_angle, faceL, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltL);
-    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 44, mainMicPattern, p.spkl_angle, faceR, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltR);
-    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 45, mainMicPattern, p.spkr_angle, faceR, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltR);
+    // Polygon ISM dispatch (v2.8.0) — non-rectangular shapes use the 2D
+    // polygon image-source generator. The "Rectangular" path is bit-identical
+    // to the pre-2.8.0 behaviour because it forwards directly to calcRefs.
+    auto refsDispatch = [&] (double rxL, double ryL, double rzL,
+                             double sxL, double syL, double szL,
+                             uint32_t seed,
+                             const std::string& pat,
+                             double spkAng, double micAng,
+                             double micTilt) -> std::vector<Ref>
+    {
+        if (p.shape == "Rectangular")
+            return calcRefs        (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pat, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt);
+        else
+            return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pat, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt);
+    };
+
+    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, 42, mainMicPattern, p.spkl_angle, faceL, tiltL);
+    std::vector<Ref> rRL = refsDispatch(rlx, rly, rz, srx, sry, sz, 43, mainMicPattern, p.spkr_angle, faceL, tiltL);
+    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, 44, mainMicPattern, p.spkl_angle, faceR, tiltR);
+    std::vector<Ref> rRR = refsDispatch(rrx, rry, rz, srx, sry, sz, 45, mainMicPattern, p.spkr_angle, faceR, tiltR);
 
     // Centre-mic rays (Decca only). Seed offsets 46/47 are unique across the
     // dispatcher (MAIN=42+, OUTRIG=52+, AMBIENT=62+, DIRECT=72+), so parallel
@@ -1199,8 +1968,8 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     std::vector<Ref> rLC, rRC;
     if (p.main_decca_enabled)
     {
-        rLC = calcRefs(rcx, rcy, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 46, mainMicPattern, p.spkl_angle, faceC, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltC);
-        rRC = calcRefs(rcx, rcy, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 47, mainMicPattern, p.spkr_angle, faceC, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, tiltC);
+        rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, 46, mainMicPattern, p.spkl_angle, faceC, tiltC);
+        rRC = refsDispatch(rcx, rcy, rz, srx, sry, sz, 47, mainMicPattern, p.spkr_angle, faceC, tiltC);
     }
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size() + rLC.size() + rRC.size()) + " reflections…");
@@ -1353,8 +2122,21 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         // the constraint regardless of speaker–mic distance.
 
         // longest FDN delay line (same formula as inside renderFDNTail)
-        const double fdnVol  = p.width * p.depth * He;
-        const double fdnSurf = 2.0 * (p.width * p.depth + p.depth * He + p.width * He);
+        double fdnVol, fdnSurf;
+        if (p.shape == "Rectangular")
+        {
+            fdnVol  = p.width * p.depth * He;
+            fdnSurf = 2.0 * (p.width * p.depth + p.depth * He + p.width * He);
+        }
+        else
+        {
+            std::array<double, 8> zeroR{}; zeroR.fill(0.0);
+            const auto wallsFdn = makeWalls2D(p, p.width, p.depth, zeroR);
+            const double polyArea  = polygonArea(wallsFdn);
+            const double polyPerim = polygonPerimeter(wallsFdn);
+            fdnVol  = polyArea * He;
+            fdnSurf = 2.0 * polyArea + polyPerim * He;
+        }
         const double fdnMfp  = 4.0 * fdnVol / fdnSurf;
         const double fdnMaxMs = std::max(130.0, fdnMfp / SPEED * 1000.0 * 3.0);
 
@@ -1384,8 +2166,8 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         const int fdnMaxRefCut = std::min(irLen,
             (int)std::ceil((ecFdn + fdnMaxMs * sr / 1000.0) * 1.1));
 
-        std::vector<double> tL = renderFDNTail(rt, irLen, ecFdn, eL, diff, sr, 100, p.width, p.depth, He, fdnMaxRefCut);
-        std::vector<double> tR = renderFDNTail(rt, irLen, ecFdn, eR, diff, sr, 101, p.width, p.depth, He, fdnMaxRefCut);
+        std::vector<double> tL = renderFDNTail(rt, irLen, ecFdn, eL, diff, sr, 100, p.width, p.depth, He, fdnMaxRefCut, &p);
+        std::vector<double> tR = renderFDNTail(rt, irLen, ecFdn, eR, diff, sr, 101, p.width, p.depth, He, fdnMaxRefCut, &p);
 
         iLL.resize((size_t)irLen);
         iRL.resize((size_t)irLen);
@@ -1414,8 +2196,14 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         //                        =  (eLL+eRL)·bakedErGain
         //     ∴  fdnGainL = RMS(eLL+eRL, ref)·bakedErGain·(1−erFloor) / (RMS(tL, fdn)·bakedTailGain)
         const double erFloor  = 0.05;   // 5 % ER residual amplitude — fully diffuse past ecFdn
-        const double kMaxGain = 16.0;           // hard cap: +24 dB
-        const double kMinGain = 1.0 / kMaxGain; // floor: −24 dB — allows tail attenuation to match ER at distance
+        // WI-6 (v2.9.0): polygon rooms get +30 dB more FDN headroom. Polygon ER
+        // density is lower than rectangular even after the v2.9.0 fixes, so the
+        // windowed-RMS level-match at ecFdn binds against the 16 clamp more
+        // often, leaving the tail audibly thin vs the ER onset. Doubling the
+        // ceiling to 32 (+30 dB) gives the level-match more headroom without
+        // changing the formula. Rectangular is untouched (bit-identity lock).
+        const double kMaxGain = (p.shape != "Rectangular") ? 32.0 : 16.0;
+        const double kMinGain = 1.0 / kMaxGain; // floor: −24/−30 dB — allows tail attenuation to match ER at distance
         const double kMinRms  = 1e-7;           // silence guard
 
         auto wRMS = [&](const std::vector<double>& v, int a, int b) -> double {
@@ -1525,13 +2313,23 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         }
     }
 
-    // Feature B — modal resonance boost (axial room modes 10–250 Hz)
+    // Feature B — modal resonance boost (axial room modes 10–250 Hz).
+    // For polygon shapes the v2.9.0 equivalent-box branch (WI-5) uses the
+    // polygon's horizontal area to derive (Wₑ, Dₑ) so the bank runs on an
+    // area-preserving box approximation — see applyModalBank header comment.
     {
         const double modalGain = 0.18;
-        iLL = applyModalBank(iLL, p.width, p.depth, He, rt[0], modalGain, sr);
-        iRL = applyModalBank(iRL, p.width, p.depth, He, rt[0], modalGain, sr);
-        iLR = applyModalBank(iLR, p.width, p.depth, He, rt[0], modalGain, sr);
-        iRR = applyModalBank(iRR, p.width, p.depth, He, rt[0], modalGain, sr);
+        double polyArea = 0.0;
+        if (p.shape != "Rectangular")
+        {
+            std::array<double, 8> zeroR; zeroR.fill (0.0);
+            const auto wallsForArea = makeWalls2D (p, p.width, p.depth, zeroR);
+            polyArea = polygonArea (wallsForArea);
+        }
+        iLL = applyModalBank(iLL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iRL = applyModalBank(iRL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iLR = applyModalBank(iLR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iRR = applyModalBank(iRR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
     }
 
     report(0.85, "Finishing…");
@@ -1676,10 +2474,23 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
     const double jitterOrder2PlusMs = close ? 2.5 : 0.0;
     const double reflectionSpreadMs = 0.0;
 
-    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 0, pattern, p.spkl_angle, langle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, ltilt);
-    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 1, pattern, p.spkr_angle, langle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, ltilt);
-    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 2, pattern, p.spkl_angle, rangle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, rtilt);
-    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seedBase + 3, pattern, p.spkr_angle, rangle, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, rtilt);
+    // Polygon ISM dispatch (v2.8.0) — see synthMainPath for rationale.
+    auto refsDispatch = [&] (double rxL, double ryL, double rzL,
+                             double sxL, double syL, double szL,
+                             uint32_t seed,
+                             double spkAng, double micAng,
+                             double micTilt) -> std::vector<Ref>
+    {
+        if (p.shape == "Rectangular")
+            return calcRefs        (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pattern, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt);
+        else
+            return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pattern, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt);
+    };
+
+    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, seedBase + 0, p.spkl_angle, langle, ltilt);
+    std::vector<Ref> rRL = refsDispatch(rlx, rly, rz, srx, sry, sz, seedBase + 1, p.spkr_angle, langle, ltilt);
+    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, seedBase + 2, p.spkl_angle, rangle, rtilt);
+    std::vector<Ref> rRR = refsDispatch(rrx, rry, rz, srx, sry, sz, seedBase + 3, p.spkr_angle, rangle, rtilt);
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size()) + " reflections…");
 
@@ -1748,8 +2559,22 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
             }
         }
 
-        const double fdnVol  = p.width * p.depth * He;
-        const double fdnSurf = 2.0 * (p.width * p.depth + p.depth * He + p.width * He);
+        // longest FDN delay line (same formula as inside renderFDNTail)
+        double fdnVol, fdnSurf;
+        if (p.shape == "Rectangular")
+        {
+            fdnVol  = p.width * p.depth * He;
+            fdnSurf = 2.0 * (p.width * p.depth + p.depth * He + p.width * He);
+        }
+        else
+        {
+            std::array<double, 8> zeroR{}; zeroR.fill(0.0);
+            const auto wallsFdn = makeWalls2D(p, p.width, p.depth, zeroR);
+            const double polyArea  = polygonArea(wallsFdn);
+            const double polyPerim = polygonPerimeter(wallsFdn);
+            fdnVol  = polyArea * He;
+            fdnSurf = 2.0 * polyArea + polyPerim * He;
+        }
         const double fdnMfp  = 4.0 * fdnVol / fdnSurf;
         const double fdnMaxMs = std::max(130.0, fdnMfp / SPEED * 1000.0 * 3.0);
 
@@ -1771,8 +2596,8 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
 
         // FDN seed derived from seedBase so OUTRIG (52 → 110/111) and AMBIENT (62 → 120/121)
         // have distinct diffuse fields from MAIN (100/101) and from each other.
-        std::vector<double> tL = renderFDNTail(rt, irLen, ecFdn, eL, diff, sr, seedBase + 58, p.width, p.depth, He, fdnMaxRefCut);
-        std::vector<double> tR = renderFDNTail(rt, irLen, ecFdn, eR, diff, sr, seedBase + 59, p.width, p.depth, He, fdnMaxRefCut);
+        std::vector<double> tL = renderFDNTail(rt, irLen, ecFdn, eL, diff, sr, seedBase + 58, p.width, p.depth, He, fdnMaxRefCut, &p);
+        std::vector<double> tR = renderFDNTail(rt, irLen, ecFdn, eR, diff, sr, seedBase + 59, p.width, p.depth, He, fdnMaxRefCut, &p);
 
         iLL.resize((size_t)irLen);
         iRL.resize((size_t)irLen);
@@ -1781,7 +2606,8 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
         int xfade = (int)std::floor(0.020 * sr);
 
         const double erFloor  = 0.05;
-        const double kMaxGain = 16.0;
+        // WI-6 (v2.9.0): polygon rooms get the same +30 dB headroom as synthMainPath.
+        const double kMaxGain = (p.shape != "Rectangular") ? 32.0 : 16.0;
         const double kMinGain = 1.0 / kMaxGain;
         const double kMinRms  = 1e-7;
 
@@ -1859,12 +2685,20 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
         }
     }
 
+    // Modal bank — skipped for non-rectangular shapes (axial-mode formula models a box).
     {
         const double modalGain = 0.18;
-        iLL = applyModalBank(iLL, p.width, p.depth, He, rt[0], modalGain, sr);
-        iRL = applyModalBank(iRL, p.width, p.depth, He, rt[0], modalGain, sr);
-        iLR = applyModalBank(iLR, p.width, p.depth, He, rt[0], modalGain, sr);
-        iRR = applyModalBank(iRR, p.width, p.depth, He, rt[0], modalGain, sr);
+        double polyArea = 0.0;
+        if (p.shape != "Rectangular")
+        {
+            std::array<double, 8> zeroR; zeroR.fill (0.0);
+            const auto wallsForArea = makeWalls2D (p, p.width, p.depth, zeroR);
+            polyArea = polygonArea (wallsForArea);
+        }
+        iLL = applyModalBank(iLL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iRL = applyModalBank(iRL, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iLR = applyModalBank(iLR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
+        iRR = applyModalBank(iRR, p.width, p.depth, He, rt[0], modalGain, sr, p.shape, polyArea);
     }
 
     report(0.85, "Finishing…");
@@ -2061,16 +2895,31 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
     // No jitter at all for DIRECT: close-speaker jitter would misalign the direct pulse.
     const double jitter01 = 0.0, jitter2 = 0.0;
 
-    std::vector<Ref> rLL = calcRefs(rlx, rly, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 72, mainMicPattern, p.spkl_angle, faceL, maxRefDist, jitter01, jitter2, tiltL);
-    std::vector<Ref> rRL = calcRefs(rlx, rly, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 73, mainMicPattern, p.spkr_angle, faceL, maxRefDist, jitter01, jitter2, tiltL);
-    std::vector<Ref> rLR = calcRefs(rrx, rry, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 74, mainMicPattern, p.spkl_angle, faceR, maxRefDist, jitter01, jitter2, tiltR);
-    std::vector<Ref> rRR = calcRefs(rrx, rry, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 75, mainMicPattern, p.spkr_angle, faceR, maxRefDist, jitter01, jitter2, tiltR);
+    // Polygon ISM dispatch (v2.8.0). DIRECT uses very low order (`mo` ≈ 1) and
+    // ER-only gating (`eo = true`), so even for non-rectangular rooms the
+    // polygon path produces only a small handful of nearby image sources.
+    auto refsDispatch = [&] (double rxL, double ryL, double rzL,
+                             double sxL, double syL, double szL,
+                             uint32_t seed,
+                             double spkAng, double micAng,
+                             double micTilt) -> std::vector<Ref>
+    {
+        if (p.shape == "Rectangular")
+            return calcRefs        (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, mainMicPattern, spkAng, micAng, maxRefDist, jitter01, jitter2, micTilt);
+        else
+            return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, mainMicPattern, spkAng, micAng, maxRefDist, jitter01, jitter2, micTilt);
+    };
+
+    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, 72, p.spkl_angle, faceL, tiltL);
+    std::vector<Ref> rRL = refsDispatch(rlx, rly, rz, srx, sry, sz, 73, p.spkr_angle, faceL, tiltL);
+    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, 74, p.spkl_angle, faceR, tiltR);
+    std::vector<Ref> rRR = refsDispatch(rrx, rry, rz, srx, sry, sz, 75, p.spkr_angle, faceR, tiltR);
 
     std::vector<Ref> rLC, rRC;
     if (p.main_decca_enabled)
     {
-        rLC = calcRefs(rcx, rcy, rz, slx, sly, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 76, mainMicPattern, p.spkl_angle, faceC, maxRefDist, jitter01, jitter2, tiltC);
-        rRC = calcRefs(rcx, rcy, rz, srx, sry, sz, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, 77, mainMicPattern, p.spkr_angle, faceC, maxRefDist, jitter01, jitter2, tiltC);
+        rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, 76, p.spkl_angle, faceC, tiltC);
+        rRC = refsDispatch(rcx, rcy, rz, srx, sry, sz, 77, p.spkr_angle, faceC, tiltC);
     }
 
     // No diffusion, no frequency scatter, no reflection spread — just the bpF cascade.

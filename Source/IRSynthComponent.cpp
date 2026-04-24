@@ -66,9 +66,13 @@ namespace
     const juce::Colour textCol     { 0xffe8e8e8 };
     const juce::Colour textDim     { 0xff909090 };
 
+    // v2.8.0: "L-shaped" removed, "Cylindrical" renamed to "Circular Hall".
+    // setParams()/setComboTo() migrates legacy values before matching, so old
+    // presets still surface the right UI selection.
     const char* const shapeOptions[] = {
-        "Rectangular", "L-shaped", "Fan / Shoebox", "Cylindrical", "Cathedral", "Octagonal"
+        "Rectangular", "Fan / Shoebox", "Octagonal", "Circular Hall", "Cathedral"
     };
+    constexpr int kNumShapeOptions = 5;
     const char* const materialOptions[] = {
         "Concrete / bare brick", "Painted plaster", "Hardwood floor", "Carpet (thin)",
         "Carpet (thick)", "Glass (large pane)", "Heavy curtains", "Acoustic ceiling tile",
@@ -136,7 +140,7 @@ IRSynthComponent::IRSynthComponent()
                                                   BinaryData::texture_bg_jpgSize);
 
     // Room geometry (previously "Placement" tab)
-    addOptions (shapeCombo, shapeOptions, 6);
+    addOptions (shapeCombo, shapeOptions, kNumShapeOptions);
     shapeCombo.setSelectedId (1, juce::dontSendNotification);
 
     widthSlider.setRange (0.5, 50.0, 0.5);
@@ -173,6 +177,25 @@ IRSynthComponent::IRSynthComponent()
     setupDimRow (widthLabel, widthValueLabel, widthSlider, "Width");
     setupDimRow (depthLabel, depthValueLabel, depthSlider, "Depth");
     setupDimRow (heightLabel, heightValueLabel, heightSlider, "Height");
+
+    // Shape proportion sliders (v2.8.0). Ranges match the documented clamps in
+    // makeWalls2D / IRSynthParams. Defaults match IRSynthParams struct so a
+    // fresh instance shows the same value the engine will use.
+    navePctSlider  .setRange (0.15, 0.50, 0.01); navePctSlider  .setValue (0.30);
+    trptPctSlider  .setRange (0.20, 0.45, 0.01); trptPctSlider  .setValue (0.35);
+    taperSlider    .setRange (0.00, 0.70, 0.01); taperSlider    .setValue (0.30);
+    cornerCutSlider.setRange (0.00, 1.00, 0.01); cornerCutSlider.setValue (0.414);
+    for (auto* s : { &navePctSlider, &trptPctSlider, &taperSlider, &cornerCutSlider })
+    {
+        s->setSliderStyle (juce::Slider::LinearHorizontal);
+        s->setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+        s->setColour (juce::Slider::thumbColourId, accent);
+        s->setColour (juce::Slider::trackColourId, panelBorder);
+    }
+    navePctLabel  .setText ("Nave",      juce::dontSendNotification);
+    trptPctLabel  .setText ("Transept",  juce::dontSendNotification);
+    taperLabel    .setText ("Taper",     juce::dontSendNotification);
+    cornerCutLabel.setText ("Cnr Cut",   juce::dontSendNotification);
 
     // Surfaces
     addOptions (floorCombo, materialOptions, 14);
@@ -229,15 +252,11 @@ IRSynthComponent::IRSynthComponent()
     // Options
     addOptions (micPatternCombo, micOptions, 7);
     micPatternCombo.setSelectedId (5, juce::dontSendNotification); // cardioid (LDC) — 5th item after adding omni (MK2H) + wide cardioid (MK21)
-    sampleRateCombo.addItem ("44100", 1);
-    sampleRateCombo.addItem ("48000", 2);
-    sampleRateCombo.setSelectedId (2, juce::dontSendNotification);
     erOnlyButton.setToggleState (false, juce::dontSendNotification);
     bakeBalanceButton.addListener (this);
     bakeBalanceButton.setColour (juce::TextButton::buttonColourId, panelBg);
     bakeBalanceButton.setColour (juce::TextButton::textColourOffId, textDim);
     micPatternLabel.setText ("Pattern", juce::dontSendNotification);
-    sampleRateLabel.setText ("Sample Rate", juce::dontSendNotification);
 
     // Experimental early-reflection A/B toggles.
     directMaxOrderCombo.addItem ("0 (direct only)",     1);
@@ -361,6 +380,34 @@ IRSynthComponent::IRSynthComponent()
                      &deccaToeOutSlider })
         s->onValueChange = notifyParamChanged;
 
+    // Width/Depth/Height also need to repaint the floor plan because the
+    // shape outline is parametric in W/D from v2.8.0.
+    auto wdhRepaint = [this]
+    {
+        floorPlanComponent.repaint();
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    widthSlider .onValueChange = wdhRepaint;
+    depthSlider .onValueChange = wdhRepaint;
+    heightSlider.onValueChange = wdhRepaint;
+
+    // Shape proportion sliders — each updates its own readout, repaints the
+    // floor plan (so the shape outline reflects the new proportion), then
+    // notifies the editor so the IR-synth-dirty flag flips.
+    auto wirePropSlider = [this] (juce::Slider& s, juce::Label& readout, int decimals)
+    {
+        s.onValueChange = [this, &s, &readout, decimals]
+        {
+            readout.setText (juce::String (s.getValue(), decimals), juce::dontSendNotification);
+            floorPlanComponent.repaint();
+            if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+        };
+    };
+    wirePropSlider (navePctSlider,   navePctReadout,   2);
+    wirePropSlider (trptPctSlider,   trptPctReadout,   2);
+    wirePropSlider (taperSlider,     taperReadout,     2);
+    wirePropSlider (cornerCutSlider, cornerCutReadout, 2);
+
     // Tilt slider callbacks: update readout text, write the tilt value (in
     // radians) into FloorPlanComponent's TransducerState so it travels with
     // the rest of the mic-layout state, then notify. MAIN drives both
@@ -428,7 +475,7 @@ IRSynthComponent::IRSynthComponent()
     lambertScatterButton.onClick = notifyParamChanged;
     spkDirFullButton.onClick     = notifyParamChanged;
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
-                      &vaultCombo, &micPatternCombo, &sampleRateCombo,
+                      &vaultCombo, &micPatternCombo,
                       &outrigPatternCombo, &ambientPatternCombo, &directMaxOrderCombo })
         cb->addListener (this);
 
@@ -470,6 +517,32 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (widthValueLabel);
     addAndMakeVisible (depthValueLabel);
     addAndMakeVisible (heightValueLabel);
+
+    // Shape proportion sliders + readouts. Visibility is set by
+    // updateShapeProportionVisibility() — calling addAndMakeVisible just makes
+    // them children of this component; they will be hidden again immediately
+    // for any shape that does not use them.
+    for (juce::Component* c : std::initializer_list<juce::Component*> {
+             &navePctSlider, &navePctLabel, &navePctReadout,
+             &trptPctSlider, &trptPctLabel, &trptPctReadout,
+             &taperSlider,   &taperLabel,   &taperReadout,
+             &cornerCutSlider, &cornerCutLabel, &cornerCutReadout })
+        addAndMakeVisible (*c);
+
+    // Style the readouts to match the existing windowsReadout / audienceReadout
+    // pattern (right-justified dim text).
+    for (auto* l : { &navePctReadout, &trptPctReadout, &taperReadout, &cornerCutReadout })
+    {
+        l->setJustificationType (juce::Justification::centredRight);
+        l->setColour (juce::Label::textColourId, textDim);
+    }
+    navePctReadout  .setText (juce::String (navePctSlider  .getValue(), 2), juce::dontSendNotification);
+    trptPctReadout  .setText (juce::String (trptPctSlider  .getValue(), 2), juce::dontSendNotification);
+    taperReadout    .setText (juce::String (taperSlider    .getValue(), 2), juce::dontSendNotification);
+    cornerCutReadout.setText (juce::String (cornerCutSlider.getValue(), 2), juce::dontSendNotification);
+
+    // Initial visibility — defaults to "Rectangular" so all four are hidden.
+    updateShapeProportionVisibility();
 
     // Option-mirror axis selector. Two small radio buttons (shared radioGroupId
     // inside the class) — tapping one sets FloorPlanComponent::mirrorAxis and
@@ -521,11 +594,9 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (organReadout);
     addAndMakeVisible (balconiesReadout);
     addAndMakeVisible (micPatternCombo);
-    addAndMakeVisible (sampleRateCombo);
     addAndMakeVisible (erOnlyButton);
     addAndMakeVisible (bakeBalanceButton);
     addAndMakeVisible (micPatternLabel);
-    addAndMakeVisible (sampleRateLabel);
     addAndMakeVisible (directMaxOrderCombo);
     addAndMakeVisible (directMaxOrderLabel);
     addAndMakeVisible (lambertScatterButton);
@@ -643,7 +714,7 @@ IRSynthComponent::IRSynthComponent()
     // Apply the same glassy transparent fill to all other combos on this page so they
     // visually match the main-page preset combo (0x30ffffff = 19 % opaque white).
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
-                      &vaultCombo, &micPatternCombo, &sampleRateCombo,
+                      &vaultCombo, &micPatternCombo,
                       &outrigPatternCombo, &ambientPatternCombo })
     {
         cb->setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x1effffff));
@@ -696,12 +767,16 @@ IRSynthComponent::IRSynthComponent()
     for (auto* l : { &widthLabel, &depthLabel, &heightLabel, &widthValueLabel, &depthValueLabel, &heightValueLabel,
                      &floorLabel, &ceilingLabel, &wallLabel, &windowsLabel,
                      &audienceLabel, &diffusionLabel, &vaultLabel, &organLabel, &balconiesLabel,
-                     &micPatternLabel, &sampleRateLabel,
+                     &micPatternLabel,
                      &outrigPatternLabel, &ambientPatternLabel,
                      &outrigHeightLabel,  &ambientHeightLabel,
                      &outrigHeightReadout, &ambientHeightReadout,
                      &deccaCentreGainLabel, &deccaCentreGainReadout,
-                     &deccaToeOutLabel, &deccaToeOutReadout })
+                     &deccaToeOutLabel, &deccaToeOutReadout,
+                     // v2.8.0 shape-proportion labels (Nave / Transept / Taper / Cnr Cut / Roundness)
+                     &navePctLabel, &trptPctLabel, &taperLabel, &cornerCutLabel,
+                     // v2.7.6 per-mic Tilt labels (MAIN / OUTRIG / AMBIENT)
+                     &mainTiltLabel, &outrigTiltLabel, &ambientTiltLabel })
         l->setColour (juce::Label::textColourId, textDim);
 
     startTimerHz (4);
@@ -960,36 +1035,35 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
 
     // ── OPTIONS ─────────────────────────────────────────────────────────────
     // MAIN mic pattern has moved into the MAIN column of the Mic Paths strip
-    // (alongside Outrig/Ambient patterns), so Options here only holds Sample
-    // Rate, ER-only toggle, and the bake-balance action.
+    // (alongside Outrig/Ambient patterns), so Options here only holds the
+    // ER-only toggle and the bake-balance action.
     //
-    // Layout (compacted in v2.7.5 to free vertical space for Room Geometry
-    // and the wider MAIN column in the Mic Paths strip):
-    //   Row 1: "Sample Rate" label across the row
-    //   Row 2: [SR combo]  [ER only]  [Bake ER/Tail Bal]          (one row)
-    //   Row 3: DIRECT reach label + half-width combo
-    //   Row 4: [Lambert Scatter]      [Full Spkr Dir]             (one row)
+    // Layout:
+    //   Row 1: [ER only]  [Bake ER/Tail Bal]                       (one row)
+    //   Row 2: DIRECT reach label + half-width combo
+    //   Row 3: [Lambert Scatter]      [Full Spkr Dir]              (one row)
+    //
+    // v2.8.x: the Sample Rate picker was removed. It was a holdover from the
+    // pre-plugin web-app era where the user downloaded a WAV of the IR at a
+    // chosen rate. Inside the plugin the IR is synthesised at 48 kHz and
+    // juce::dsp::Convolution::loadImpulseResponse automatically resamples it
+    // to whatever rate prepareToPlay received from the host, so the picker
+    // had no effect on playback — only on the native rate of exported WAVs.
+    // Presets still round-trip the "sr" XML attribute (default 48000) so old
+    // content loads unchanged; IRSynthParams::sample_rate is now effectively
+    // pinned to 48000 by the UI.
     optionsHeaderBounds = { x0, y, ctrlW, headerH };
     y += headerH + 2;
 
-    // Sample Rate label sits above the combo row, same style as before.
-    sampleRateLabel.setBounds (x0, y, ctrlW, rowH - 4);
-    y += rowH - 2;
-
-    // Row 2: SR combo + ER only + Bake button, all side-by-side. The combo
-    // gets a fixed 72 px (wide enough for "48000"), then gap, then an equal
-    // split of the remaining width between the ER-only toggle and the Bake
-    // button, minus small inter-item gaps.
+    // Row 1: ER only + Bake button side-by-side. The Bake button's text
+    // ("Bake ER/Tail Bal") is longer than the ER-only label, so give it ~60%
+    // of the width and the toggle ~40%, minus one small inter-item gap.
     {
-        const int srW      = 72;
         const int rowGap   = 6;
-        const int remaining = ctrlW - srW - rowGap - rowGap;
-        const int erW      = juce::jmax (60,  remaining / 2);
-        const int bakeW    = juce::jmax (110, remaining - erW);
-        sampleRateCombo.setBounds  (x0,                            y, srW,   rowH);
-        erOnlyButton.setBounds     (x0 + srW + rowGap,             y, erW,   rowH);
-        bakeBalanceButton.setBounds(x0 + srW + rowGap + erW + rowGap,
-                                    y, bakeW, rowH + 2);
+        const int erW      = juce::jmax (60,  (ctrlW - rowGap) * 2 / 5);
+        const int bakeW    = juce::jmax (110, ctrlW - rowGap - erW);
+        erOnlyButton.setBounds     (x0,                  y, erW,   rowH);
+        bakeBalanceButton.setBounds(x0 + erW + rowGap,   y, bakeW, rowH + 2);
         y += rowH + secGap;
     }
 
@@ -1018,39 +1092,94 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
     // Shape combo spans the full control width
     shapeCombo.setBounds (x0, y, ctrlW, rowH);                       y += rowH + 2;
 
+    // Reserve the rightmost 15% of the geometry column for the Option-mirror
+    // V/H buttons, so the symbols sit beside the geometry rows rather than
+    // taking their own row beneath them. Dimension and proportion rows compute
+    // their slider+readout layout against geomRowW (the narrowed width), not
+    // ctrlW. The reserve is independent of the row count, so all geometry rows
+    // shrink uniformly.
+    const int mirrorReserveW = juce::jmax (42, juce::roundToInt (ctrlW * 0.15f));
+    const int geomRowW       = juce::jmax (120, ctrlW - mirrorReserveW);
+    int       lastGeomRowY   = y;     // tracks the most recent geometry row baseline
+
     // Dimension rows: name label + slider + editable value label on a single
     // row, matching the vertical rhythm of audience/diffusion in Contents.
     auto dimRow = [&] (juce::Label& nameLbl, juce::Label& valueLbl, juce::Slider& slider)
     {
         const int nameW     = 52;
         const int valueBoxW = 48;
-        const int sW        = juce::jmax (60, ctrlW - nameW - valueBoxW - gap * 2);
+        const int sW        = juce::jmax (60, geomRowW - nameW - valueBoxW - gap * 2);
         nameLbl .setBounds (x0,                              y, nameW,     rowH);
         slider  .setBounds (x0 + nameW + gap,                y, sW,        rowH);
         valueLbl.setBounds (x0 + nameW + gap + sW + gap,     y, valueBoxW, rowH);
+        lastGeomRowY = y;
         y += rowH;
     };
     dimRow (widthLabel,  widthValueLabel,  widthSlider);
     dimRow (depthLabel,  depthValueLabel,  depthSlider);
     dimRow (heightLabel, heightValueLabel, heightSlider);
 
-    // Option-mirror axis selector — two small icon buttons under the
-    // dimension rows. Label on the left, V then H buttons on the right.
+    // Shape proportion rows (v2.8.0). Same layout as dimRow but the readout is
+    // right-justified, dim and non-editable (dimensionless fraction, not an
+    // editable number). Rows are skipped when the control is hidden so they
+    // don't leave a gap for shapes that don't consume them.
+    auto propRow = [&] (juce::Slider& slider, juce::Label& nameLbl, juce::Label& readoutLbl)
     {
-        y += 2;
-        const int btnSize = 18;
-        const int btnGap  = 6;
-        const int lblW    = 100;
-        mirrorAxisLabel.setBounds (x0, y + (rowH - btnSize) / 2, lblW, btnSize);
-        if (mirrorHorizontalButton)
-            mirrorHorizontalButton->setBounds (x0 + ctrlW - btnSize,
-                                               y + (rowH - btnSize) / 2,
-                                               btnSize, btnSize);
-        if (mirrorVerticalButton)
-            mirrorVerticalButton->setBounds   (x0 + ctrlW - btnSize - btnGap - btnSize,
-                                               y + (rowH - btnSize) / 2,
-                                               btnSize, btnSize);
+        if (! slider.isVisible()) return;
+        const int nameW     = 52;
+        const int valueBoxW = 48;
+        const int sW        = juce::jmax (60, geomRowW - nameW - valueBoxW - gap * 2);
+        nameLbl   .setBounds (x0,                              y, nameW,     rowH);
+        slider    .setBounds (x0 + nameW + gap,                y, sW,        rowH);
+        readoutLbl.setBounds (x0 + nameW + gap + sW + gap,     y, valueBoxW, rowH);
+        lastGeomRowY = y;
         y += rowH;
+    };
+
+    // Cathedral has two proportion rows (Nave + Transept) which used to stack
+    // and crash into the bottom Mic Paths strip. Lay them side by side so they
+    // occupy a single row and free vertical space below.
+    if (navePctSlider.isVisible() && trptPctSlider.isVisible())
+    {
+        const int halfW   = (geomRowW - gap) / 2;
+        const int nameW   = 38;            // tighter than dimRow — half the width
+        const int valueW  = 36;
+        const int sW      = juce::jmax (40, halfW - nameW - valueW - gap * 2);
+        navePctLabel  .setBounds (x0,                              y, nameW,  rowH);
+        navePctSlider .setBounds (x0 + nameW + gap,                y, sW,     rowH);
+        navePctReadout.setBounds (x0 + nameW + gap + sW + gap,     y, valueW, rowH);
+        const int x1 = x0 + halfW + gap;
+        trptPctLabel  .setBounds (x1,                              y, nameW,  rowH);
+        trptPctSlider .setBounds (x1 + nameW + gap,                y, sW,     rowH);
+        trptPctReadout.setBounds (x1 + nameW + gap + sW + gap,     y, valueW, rowH);
+        lastGeomRowY = y;
+        y += rowH;
+    }
+    else
+    {
+        propRow (navePctSlider, navePctLabel, navePctReadout);
+        propRow (trptPctSlider, trptPctLabel, trptPctReadout);
+    }
+    propRow (taperSlider,     taperLabel,     taperReadout);
+    propRow (cornerCutSlider, cornerCutLabel, cornerCutReadout);
+
+    // Option-mirror axis selector — two small icon buttons (V then H), packed
+    // tightly together at the right edge in the reserved 15% strip, no label
+    // (the dashed-line glyphs are self-explanatory). They sit on the same Y
+    // as the *last* geometry / proportion row, in the space we reserved on
+    // the right side of that row.
+    {
+        mirrorAxisLabel.setVisible (false);   // glyphs are clear enough on their own
+        const int btnSize   = 18;
+        const int btnGap    = 3;              // tight pairing
+        const int btnY      = lastGeomRowY + (rowH - btnSize) / 2;
+        const int rightEdge = x0 + ctrlW;
+        const int hBtnX     = rightEdge - btnSize;
+        const int vBtnX     = hBtnX - btnGap - btnSize;
+        if (mirrorVerticalButton)
+            mirrorVerticalButton->setBounds   (vBtnX, btnY, btnSize, btnSize);
+        if (mirrorHorizontalButton)
+            mirrorHorizontalButton->setBounds (hBtnX, btnY, btnSize, btnSize);
     }
 
     // Mic paths have moved out of the left column into a horizontal strip
@@ -1227,10 +1356,14 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
 IRSynthParams IRSynthComponent::getParams() const
 {
     IRSynthParams p;
-    p.shape = comboSelection (shapeCombo, shapeOptions, 6).toStdString();
+    p.shape = comboSelection (shapeCombo, shapeOptions, kNumShapeOptions).toStdString();
     p.width = widthSlider.getValue();
     p.depth = depthSlider.getValue();
     p.height = heightSlider.getValue();
+    p.shapeNavePct   = navePctSlider  .getValue();
+    p.shapeTrptPct   = trptPctSlider  .getValue();
+    p.shapeTaper     = taperSlider    .getValue();
+    p.shapeCornerCut = cornerCutSlider.getValue();
     p.floor_material = comboSelection (floorCombo, materialOptions, 14).toStdString();
     p.ceiling_material = comboSelection (ceilingCombo, materialOptions, 14).toStdString();
     p.wall_material = comboSelection (wallCombo, materialOptions, 14).toStdString();
@@ -1260,7 +1393,14 @@ IRSynthParams IRSynthComponent::getParams() const
     p.decca_centre_gain = deccaCentreGainSlider.getValue();
     p.decca_toe_out     = deccaToeOutSlider.getValue() * M_PI / 180.0;
     p.er_only = erOnlyButton.getToggleState();
-    p.sample_rate = sampleRateCombo.getSelectedId() == 1 ? 44100 : 48000;
+    // sample_rate is pinned to 48 kHz — the native rate of all factory IRs.
+    // The picker that used to drive this was removed in v2.8.x (see layout
+    // comment in resized() for full rationale); JUCE's Convolution resamples
+    // the IR to the host rate regardless. Any old preset that saved
+    // sr="44100" will synthesise at 48 kHz on the next Calculate IR, but the
+    // previously-rendered raw synth buffer stored in the preset still plays
+    // back at its original rate until re-rendered.
+    p.sample_rate = 48000;
 
     // Mic paths (DIRECT / OUTRIG / AMBIENT).
     p.direct_enabled  = directEnableButton.getToggleState();
@@ -1298,13 +1438,30 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
 {
     suppressingParamNotifications = true;
 
-    setComboTo (shapeCombo, p.shape, shapeOptions, 6);
+    // v2.8.0 shape migration for legacy APVTS state that embedded the old
+    // strings. irSynthParamsFromXml handles the XML path; this covers the
+    // case where setParams is called with a pre-migrated p struct that still
+    // carries an old string (e.g. in-process preset restore).
+    juce::String shapeStr = juce::String (p.shape);
+    if (shapeStr == "L-shaped")    shapeStr = "Rectangular";
+    if (shapeStr == "Cylindrical") shapeStr = "Circular Hall";
+    setComboTo (shapeCombo, shapeStr, shapeOptions, kNumShapeOptions);
     widthSlider.setValue (p.width, juce::dontSendNotification);
     depthSlider.setValue (p.depth, juce::dontSendNotification);
     heightSlider.setValue (p.height, juce::dontSendNotification);
     widthValueLabel.setText (juce::String (p.width, 1), juce::dontSendNotification);
     depthValueLabel.setText (juce::String (p.depth, 1), juce::dontSendNotification);
     heightValueLabel.setText (juce::String (p.height, 1), juce::dontSendNotification);
+
+    navePctSlider  .setValue (p.shapeNavePct,   juce::dontSendNotification);
+    trptPctSlider  .setValue (p.shapeTrptPct,   juce::dontSendNotification);
+    taperSlider    .setValue (p.shapeTaper,     juce::dontSendNotification);
+    cornerCutSlider.setValue (p.shapeCornerCut, juce::dontSendNotification);
+    navePctReadout  .setText (juce::String (p.shapeNavePct,   2), juce::dontSendNotification);
+    trptPctReadout  .setText (juce::String (p.shapeTrptPct,   2), juce::dontSendNotification);
+    taperReadout    .setText (juce::String (p.shapeTaper,     2), juce::dontSendNotification);
+    cornerCutReadout.setText (juce::String (p.shapeCornerCut, 2), juce::dontSendNotification);
+    updateShapeProportionVisibility();
     setComboTo (floorCombo, p.floor_material, materialOptions, 14);
     setComboTo (ceilingCombo, p.ceiling_material, materialOptions, 14);
     setComboTo (wallCombo, p.wall_material, materialOptions, 14);
@@ -1347,7 +1504,9 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     setComboTo (outrigPatternCombo,  migratePattern (p.outrig_pattern),  micOptions, 7);
     setComboTo (ambientPatternCombo, migratePattern (p.ambient_pattern), micOptions, 7);
     erOnlyButton.setToggleState (p.er_only, juce::dontSendNotification);
-    sampleRateCombo.setSelectedId (p.sample_rate == 44100 ? 1 : 2, juce::dontSendNotification);
+    // p.sample_rate is no longer surfaced in the UI (v2.8.x removal of the
+    // Sample Rate picker). Value is preserved on the params struct for XML
+    // round-trip but has no UI control to populate.
 
     directEnableButton.setToggleState  (p.direct_enabled,  juce::dontSendNotification);
     outrigEnableButton.setToggleState  (p.outrig_enabled,  juce::dontSendNotification);
@@ -1512,8 +1671,41 @@ void IRSynthComponent::comboBoxChanged (juce::ComboBox* combo)
     }
     else if (combo != &irCombo && ! suppressingParamNotifications && onParamModifiedFn)
     {
+        if (combo == &shapeCombo)
+        {
+            updateShapeProportionVisibility();
+            floorPlanComponent.repaint();
+            resized();
+        }
         onParamModifiedFn();
     }
+}
+
+// Show only the shape-proportion sliders the current shape actually consumes.
+// Called from comboBoxChanged + setParams.
+void IRSynthComponent::updateShapeProportionVisibility()
+{
+    const juce::String shape = shapeCombo.getText();
+    const bool cathedral    = (shape == "Cathedral");
+    const bool fanShoebox   = (shape == "Fan / Shoebox");
+    const bool octagonal    = (shape == "Octagonal");
+    const bool circularHall = (shape == "Circular Hall");
+
+    auto setRowVisible = [] (juce::Slider& s, juce::Label& lbl, juce::Label& readout, bool v)
+    {
+        s.setVisible (v);
+        lbl.setVisible (v);
+        readout.setVisible (v);
+    };
+    setRowVisible (navePctSlider,   navePctLabel,   navePctReadout,   cathedral);
+    setRowVisible (trptPctSlider,   trptPctLabel,   trptPctReadout,   cathedral);
+    setRowVisible (taperSlider,     taperLabel,     taperReadout,     fanShoebox);
+    // Corner Cut covers both octagonal chamfer and circular ellipse-roundness.
+    setRowVisible (cornerCutSlider, cornerCutLabel, cornerCutReadout, octagonal || circularHall);
+
+    // Retitle the cornerCut row to match its semantic role for the current shape.
+    if (circularHall)      cornerCutLabel.setText ("Roundness", juce::dontSendNotification);
+    else /* octagonal */   cornerCutLabel.setText ("Cnr Cut",   juce::dontSendNotification);
 }
 
 void IRSynthComponent::setIRList (const juce::Array<IRManager::IREntry>& entries)
@@ -1604,8 +1796,21 @@ void IRSynthComponent::startSynthesis (bool bakeCurrentBalance)
 
     lastRenderParams = p;
     synthRunning = true;
+    // Fresh Calculate run: clear any invalidation flag set by a previous
+    // preset switch. If the user kicks off Calculate, navigates away, then
+    // kicks off another Calculate before the first finishes, the second
+    // startSynthesis() re-arms the flag; the first job's completion still
+    // sees the flag as false only if no intervening invalidation happened,
+    // which is the correct "keep whichever finished last" semantics.
+    pendingSynthInvalidated.store (false);
     previewButton.setEnabled (false);
     bakeBalanceButton.setEnabled (false);
+    // Lock the rest of the IR Synth UI for the duration of the background
+    // synth. Prevents the user from (a) leaving via Main Menu mid-calc,
+    // (b) tweaking parameters under the impression they'd apply to the
+    // running job, or (c) saving the still-old IR from the bottom bar.
+    // Released in the completion callAsync below.
+    setInteractionLocked (true);
     pendingResult.reset();
     progressValue = 0.0;
     progressLabel.setText ("Starting\xe2\x80\xa6", juce::dontSendNotification);
@@ -1627,15 +1832,97 @@ void IRSynthComponent::startSynthesis (bool bakeCurrentBalance)
             synthRunning = false;
             previewButton.setEnabled (true);
             bakeBalanceButton.setEnabled (true);
+            // Re-enable the rest of the UI (Main Menu, sliders, combos,
+            // floor-plan, Save/Export/Import, IR combo) that startSynthesis
+            // locked. Runs BEFORE the invalidation check so the user
+            // regains control either way — even when the result is
+            // discarded because they already navigated away.
+            setInteractionLocked (false);
             progressValue = 1.0;
-            progressLabel.setText ("Done.", juce::dontSendNotification);
 
+            // If the user loaded a new preset / IR while the synth was
+            // running in the pool, installing this (now stale) result
+            // would silently overwrite the freshly-loaded convolver
+            // contents. Drop it.
+            if (pendingSynthInvalidated.load())
+            {
+                progressLabel.setText ("Cancelled (preset changed).", juce::dontSendNotification);
+                return;
+            }
+
+            progressLabel.setText ("Done.", juce::dontSendNotification);
             if (result.success && onComplete)
             {
                 onComplete (result);
             }
         });
     });
+}
+
+void IRSynthComponent::setInteractionLocked (bool locked)
+{
+    const bool e = ! locked;
+
+    // Room geometry + shape proportions
+    shapeCombo      .setEnabled (e);
+    widthSlider     .setEnabled (e);
+    depthSlider     .setEnabled (e);
+    heightSlider    .setEnabled (e);
+    widthValueLabel .setEnabled (e);
+    depthValueLabel .setEnabled (e);
+    heightValueLabel.setEnabled (e);
+    navePctSlider   .setEnabled (e);
+    trptPctSlider   .setEnabled (e);
+    taperSlider     .setEnabled (e);
+    cornerCutSlider .setEnabled (e);
+    if (mirrorVerticalButton)   mirrorVerticalButton  ->setEnabled (e);
+    if (mirrorHorizontalButton) mirrorHorizontalButton->setEnabled (e);
+
+    // Surfaces / Contents / Interior
+    floorCombo      .setEnabled (e);
+    ceilingCombo    .setEnabled (e);
+    wallCombo       .setEnabled (e);
+    windowsSlider   .setEnabled (e);
+    audienceSlider  .setEnabled (e);
+    diffusionSlider .setEnabled (e);
+    vaultCombo      .setEnabled (e);
+    organSlider     .setEnabled (e);
+    balconiesSlider .setEnabled (e);
+
+    // Options + experimental toggles
+    micPatternCombo     .setEnabled (e);
+    erOnlyButton        .setEnabled (e);
+    directMaxOrderCombo .setEnabled (e);
+    lambertScatterButton.setEnabled (e);
+    spkDirFullButton    .setEnabled (e);
+
+    // Mic-path enables + Decca + aux controls + tilts
+    directEnableButton   .setEnabled (e);
+    outrigEnableButton   .setEnabled (e);
+    ambientEnableButton  .setEnabled (e);
+    deccaEnableButton    .setEnabled (e);
+    deccaCentreGainSlider.setEnabled (e);
+    deccaToeOutSlider    .setEnabled (e);
+    outrigPatternCombo   .setEnabled (e);
+    ambientPatternCombo  .setEnabled (e);
+    outrigHeightSlider   .setEnabled (e);
+    ambientHeightSlider  .setEnabled (e);
+    mainTiltSlider       .setEnabled (e);
+    outrigTiltSlider     .setEnabled (e);
+    ambientTiltSlider    .setEnabled (e);
+
+    // Floor-plan puck dragging
+    floorPlanComponent.setEnabled (e);
+
+    // Bottom bar (IR combo + Save/Export/Import + Main Menu)
+    irCombo       .setEnabled (e);
+    saveIRButton  .setEnabled (e);
+    exportIRButton.setEnabled (e);
+    importIRButton.setEnabled (e);
+    doneButton    .setEnabled (e);
+
+    // previewButton / bakeBalanceButton are managed by startSynthesis + the
+    // completion callAsync so their own disable lifecycle wins.
 }
 
 void IRSynthComponent::onDone()

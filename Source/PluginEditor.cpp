@@ -259,6 +259,17 @@ PingEditor::PingEditor (PingProcessor& p)
 
     addChildComponent (irSynthComponent);
     irSynthComponent.setVisible (false);
+
+    // Wire the "IR replaced from file" hook to the IR Synth component's
+    // pending-synth invalidator. Every PingProcessor::loadIRFromFile call
+    // (preset restore, IR combo pick, drag-and-drop import, trim change,
+    // …) fires this before replacing the convolver contents, so a late-
+    // arriving Calculate IR result can't clobber the just-loaded file IR.
+    pingProcessor.setIRReplacedFromFileCallback ([this]
+    {
+        irSynthComponent.invalidatePendingSynth();
+    });
+
     irSynthComponent.setOnComplete ([this] (const IRSynthResult& result)
     {
         if (! result.success || result.iLL.empty() || result.iRL.empty() || result.iLR.empty() || result.iRR.empty())
@@ -1766,6 +1777,8 @@ void PingEditor::loadPreset (const juce::String& name)
         juce::MemoryBlock data;
         if (file.loadFileAsData (data))
         {
+            // (Pending Calculate-IR jobs are invalidated by the hook that
+            //  PingProcessor::setStateInformation fires at its entry.)
             pingProcessor.setStateInformation (data.getData(), (int) data.getSize());
             pingProcessor.setLastPresetName (name);
             pingProcessor.snapshotCleanState();
