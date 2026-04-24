@@ -2201,6 +2201,15 @@ void PingProcessor::loadIRFromFile (const juce::File& file)
 {
     if (! file.existsAsFile()) return;
 
+    // Fire the "IR about to be replaced from a file" hook before doing any
+    // work. The editor subscribes to this and invalidates any in-flight
+    // Calculate IR job in IRSynthComponent's synth pool; without this the
+    // background thread's callAsync completion can overwrite the
+    // freshly-loaded file-based IR milliseconds later. See
+    // PingProcessor::setIRReplacedFromFileCallback for details.
+    if (onIRReplacedFromFile)
+        onIRReplacedFromFile();
+
     // ── Multi-mic aux-suffix handling ────────────────────────────────────────
     // The user may select an aux file (e.g. "Venue_outrig.wav") directly from
     // the combo or via Import. Two cases:
@@ -3334,6 +3343,15 @@ void PingProcessor::setStateInformation (const void* data, int sizeInBytes)
     // callAsync clears the flag AFTER all queued notifications have been processed (FIFO).
     isRestoringState.store (true);
     stateWasRestored.store (true);
+
+    // Drop any in-flight Calculate IR sitting in IRSynthComponent's synth
+    // pool. A preset may reach the convolvers via either loadIRFromFile
+    // (which also fires this hook internally) or loadIRFromBuffer for an
+    // embedded <synthIR> child (which doesn't). Calling the hook once at
+    // the top of setStateInformation covers both paths. See
+    // PingProcessor::setIRReplacedFromFileCallback header comment.
+    if (onIRReplacedFromFile)
+        onIRReplacedFromFile();
 
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
     {

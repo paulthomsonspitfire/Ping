@@ -34,6 +34,14 @@ public:
     /** Called when synthesis completes successfully – loads IR into processor, caller stays on page. */
     void setOnComplete (OnCompleteFn fn) { onComplete = std::move (fn); }
 
+    /** Discard the result of any in-flight Calculate IR job when it
+        eventually completes, instead of installing it in the convolvers.
+        Call this before loading a new preset or a new IR from disk so a
+        pending background synth can't overwrite the freshly-loaded IR.
+        Safe to call whether or not a job is actually running — a no-op
+        if nothing is pending. */
+    void invalidatePendingSynth() noexcept { pendingSynthInvalidated.store (true); }
+
     /** Called when user clicks Done/Back – return to main UI. */
     void setOnDone (std::function<void()> fn) { onDoneFn = std::move (fn); }
 
@@ -289,6 +297,14 @@ private:
 
     juce::ThreadPool synthPool { 1 };
     std::atomic<bool> synthRunning { false };
+    // When set true, the async completion of an in-flight Calculate IR job
+    // will skip calling onComplete() and leave whatever convolvers / params
+    // the plugin currently has in place. Used to defuse the race where the
+    // user selects a new preset between clicking Calculate and the background
+    // synthIR finishing — without this guard the stale result fires *after*
+    // setStateInformation has installed the new preset's IR and silently
+    // overwrites it with the pre-switch preset's synthesised buffer.
+    std::atomic<bool> pendingSynthInvalidated { false };
     std::unique_ptr<IRSynthResult> pendingResult;
     IRSynthParams lastRenderParams;
 

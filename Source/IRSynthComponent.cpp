@@ -1796,6 +1796,13 @@ void IRSynthComponent::startSynthesis (bool bakeCurrentBalance)
 
     lastRenderParams = p;
     synthRunning = true;
+    // Fresh Calculate run: clear any invalidation flag set by a previous
+    // preset switch. If the user kicks off Calculate, navigates away, then
+    // kicks off another Calculate before the first finishes, the second
+    // startSynthesis() re-arms the flag; the first job's completion still
+    // sees the flag as false only if no intervening invalidation happened,
+    // which is the correct "keep whichever finished last" semantics.
+    pendingSynthInvalidated.store (false);
     previewButton.setEnabled (false);
     bakeBalanceButton.setEnabled (false);
     pendingResult.reset();
@@ -1820,8 +1827,18 @@ void IRSynthComponent::startSynthesis (bool bakeCurrentBalance)
             previewButton.setEnabled (true);
             bakeBalanceButton.setEnabled (true);
             progressValue = 1.0;
-            progressLabel.setText ("Done.", juce::dontSendNotification);
 
+            // If the user loaded a new preset / IR while the synth was
+            // running in the pool, installing this (now stale) result
+            // would silently overwrite the freshly-loaded convolver
+            // contents. Drop it.
+            if (pendingSynthInvalidated.load())
+            {
+                progressLabel.setText ("Cancelled (preset changed).", juce::dontSendNotification);
+                return;
+            }
+
+            progressLabel.setText ("Done.", juce::dontSendNotification);
             if (result.success && onComplete)
             {
                 onComplete (result);

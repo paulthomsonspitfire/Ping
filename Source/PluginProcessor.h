@@ -48,6 +48,20 @@ public:
     /** Last loaded IR file (for reload when stretch/decay change). */
     const juce::File& getLastLoadedIRFile() const { return lastLoadedIRFile; }
 
+    /** Install a callback that is fired BEFORE every loadIRFromFile()
+        actually replaces the convolver contents. The editor registers
+        a lambda here that discards any in-flight Calculate IR result
+        sitting in IRSynthComponent's synth pool — without this, a
+        late-arriving background-thread synth result can overwrite the
+        file-loaded IR milliseconds after setStateInformation /
+        loadSelectedIR installs it. No-op if never set (e.g. headless
+        test harness with no editor). Thread: call-site is message
+        thread (same as loadIRFromFile). */
+    void setIRReplacedFromFileCallback (std::function<void()> cb)
+    {
+        onIRReplacedFromFile = std::move (cb);
+    }
+
     /** Which microphone path a buffer is being loaded into.
         Main: existing behaviour — drives currentIRBuffer, waveform, combined-tail IR.
         Direct: short-circuit load — no transforms, no ER/Tail split. 4 mono convolvers.
@@ -484,6 +498,12 @@ private:
     double currentSampleRate = 48000.0;
     juce::File selectedIRFile;   // empty = synth IR or nothing loaded
     bool irFromSynth = false;
+
+    // Fired from loadIRFromFile() BEFORE a file-load replaces the convolver
+    // contents. The editor uses this to invalidate any in-flight Calculate
+    // IR result whose background-thread completion would otherwise clobber
+    // the just-loaded file-based IR. Never called from audio thread.
+    std::function<void()> onIRReplacedFromFile;
     double synthesizedIRSampleRate = 48000.0;
     double currentIRSampleRate = 48000.0;
     bool reverse = false;
