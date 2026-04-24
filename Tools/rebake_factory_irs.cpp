@@ -49,6 +49,8 @@
 #include <cstdint>
 #include <cstring>
 #include <chrono>
+#include <cstdio>
+#include <cmath>
 #include <map>
 #include <sys/stat.h>
 
@@ -427,6 +429,29 @@ int main(int argc, char** argv)
             std::cerr << "    ERROR: synthIR failed: " << result.errorMessage << "\n";
             ++failed;
             continue;
+        }
+
+        // Per-channel peak amplitude readout. Useful for spotting any IR
+        // that's heading toward 0 dBFS (which would clip when written to
+        // 24-bit PCM in makeWav). Suppressed under -q / --quiet.
+        if (!quiet)
+        {
+            auto peakOf = [](const std::vector<double>& v) {
+                double pk = 0.0;
+                for (double s : v) { double a = s < 0 ? -s : s; if (a > pk) pk = a; }
+                return pk;
+            };
+            const double pLL = peakOf(result.iLL);
+            const double pRL = peakOf(result.iRL);
+            const double pLR = peakOf(result.iLR);
+            const double pRR = peakOf(result.iRR);
+            auto db = [](double x) {
+                if (x <= 0.0) return std::string("-inf");
+                char buf[32]; std::snprintf(buf, sizeof buf, "%6.2f", 20.0 * std::log10(x));
+                return std::string(buf);
+            };
+            std::cout << "    peak (dBFS):  LL=" << db(pLL) << "  RL=" << db(pRL)
+                      << "  LR=" << db(pLR) << "  RR=" << db(pRR) << "\n";
         }
 
         if (!quiet)

@@ -9,7 +9,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 STAGING_DIR=""
 OUTPUT_DIR="$PROJECT_ROOT/Installer/output"
-VERSION="2.9.0"
+VERSION="2.9.2"
 PKG_ID="com.ping.audio.ping"
 PKG_NAME="P!NG-Installer"
 
@@ -90,18 +90,65 @@ if [[ -d "$SCRIPT_DIR/factory_irs" ]]; then
         echo ""
     fi
 
+    # Preset path safety (v2.9.2): scan factory preset XMLs for irFilePath
+    # values that don't point at the system-wide install location. Presets
+    # saved by hand from the running plugin record the user's local
+    # /Users/<name>/Library/... path; if shipped that way, the installer
+    # will work on the author's machine but on a clean install the plugin
+    # will load the wrong (or no) IR. The patcher fix is:
+    #   python3 Tools/fix_factory_preset_paths.py Installer/factory_presets
+    # Warnings only — does not block the build.
+    if [[ -d "$SCRIPT_DIR/factory_presets" ]]; then
+        echo ""
+        echo "=== Factory preset path inventory ==="
+        preset_count=0
+        bad_path_count=0
+        bad_path_list=()
+        local_re='/Library/Application Support/Ping/Factory IRs/'
+        while IFS= read -r -d '' xml; do
+            preset_count=$((preset_count + 1))
+            # Extract irFilePath value via grep on the binary file (XML payload is ASCII).
+            ir_path=$(grep -ao 'irFilePath="[^"]*"' "$xml" 2>/dev/null | head -n1 | sed 's/^irFilePath="//; s/"$//')
+            if [[ -z "$ir_path" ]]; then continue; fi
+            if [[ "$ir_path" != "$local_re"* ]]; then
+                bad_path_count=$((bad_path_count + 1))
+                rel_xml="${xml#$PROJECT_ROOT/}"
+                bad_path_list+=("$rel_xml -> $ir_path")
+            fi
+        done < <(find "$SCRIPT_DIR/factory_presets" -name '*.xml' -print0)
+
+        echo "  Preset XMLs:      $preset_count"
+        if [[ $bad_path_count -gt 0 ]]; then
+            echo ""
+            echo "  ${bad_path_count} preset(s) have irFilePath OUTSIDE the system install location"
+            echo "  (this means the .pkg will install correctly but the plugin will load"
+            echo "   the wrong IR on any machine that doesn't have the user-path file):"
+            for entry in "${bad_path_list[@]}"; do echo "    $entry"; done
+            echo ""
+            echo "  To fix: python3 Tools/fix_factory_preset_paths.py Installer/factory_presets"
+            echo ""
+        fi
+    fi
+
     # Interactive confirmation. Reads directly from /dev/tty (not stdin),
     # so the prompt still works when this script is invoked via
     # `cmake --build build --target installer` — cmake pipes the child's
     # stdin, but /dev/tty remains attached to the controlling terminal.
     # CI / no-TTY environments (where /dev/tty is unreadable) auto-continue
     # so pipelines aren't blocked.
-    if [[ -r /dev/tty ]]; then
+    #
+    # Opt-out: set PING_INSTALLER_SKIP_PROMPT=1 in the environment to
+    # bypass the prompt even when a TTY is available. Use this from
+    # automation / agent sessions where a human isn't available to
+    # approve. Do NOT set it as a default in shell rc files.
+    if [[ -r /dev/tty && "${PING_INSTALLER_SKIP_PROMPT:-0}" != "1" ]]; then
         read -r -p "Continue with installer build? [y/N] " reply </dev/tty
         case "$reply" in
             [Yy]*) ;;
             *) echo "Aborted."; exit 1 ;;
         esac
+    elif [[ "${PING_INSTALLER_SKIP_PROMPT:-0}" == "1" ]]; then
+        echo "(PING_INSTALLER_SKIP_PROMPT=1 — skipping confirmation prompt.)"
     fi
 fi
 
