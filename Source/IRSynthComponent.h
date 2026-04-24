@@ -42,6 +42,16 @@ public:
         if nothing is pending. */
     void invalidatePendingSynth() noexcept { pendingSynthInvalidated.store (true); }
 
+    /** Enable/disable every user-interactive control in the IR Synth panel
+        except the Calculate IR and Bake Balance buttons (which have their
+        own `synthRunning` lifecycle) and the progress bar/label. Used to
+        lock the UI for the ~1 s (typical) to ~10 s (worst case, big
+        polygon room) while a Calculate IR job is running on the synth
+        pool, so the user can't (a) navigate away via Main Menu and get
+        confused, (b) change parameters that the in-flight synth is not
+        using, or (c) Save the still-old IR from the bottom bar. */
+    void setInteractionLocked (bool locked);
+
     /** Called when user clicks Done/Back – return to main UI. */
     void setOnDone (std::function<void()> fn) { onDoneFn = std::move (fn); }
 

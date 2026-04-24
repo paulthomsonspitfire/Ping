@@ -1805,6 +1805,12 @@ void IRSynthComponent::startSynthesis (bool bakeCurrentBalance)
     pendingSynthInvalidated.store (false);
     previewButton.setEnabled (false);
     bakeBalanceButton.setEnabled (false);
+    // Lock the rest of the IR Synth UI for the duration of the background
+    // synth. Prevents the user from (a) leaving via Main Menu mid-calc,
+    // (b) tweaking parameters under the impression they'd apply to the
+    // running job, or (c) saving the still-old IR from the bottom bar.
+    // Released in the completion callAsync below.
+    setInteractionLocked (true);
     pendingResult.reset();
     progressValue = 0.0;
     progressLabel.setText ("Starting\xe2\x80\xa6", juce::dontSendNotification);
@@ -1826,6 +1832,12 @@ void IRSynthComponent::startSynthesis (bool bakeCurrentBalance)
             synthRunning = false;
             previewButton.setEnabled (true);
             bakeBalanceButton.setEnabled (true);
+            // Re-enable the rest of the UI (Main Menu, sliders, combos,
+            // floor-plan, Save/Export/Import, IR combo) that startSynthesis
+            // locked. Runs BEFORE the invalidation check so the user
+            // regains control either way — even when the result is
+            // discarded because they already navigated away.
+            setInteractionLocked (false);
             progressValue = 1.0;
 
             // If the user loaded a new preset / IR while the synth was
@@ -1845,6 +1857,72 @@ void IRSynthComponent::startSynthesis (bool bakeCurrentBalance)
             }
         });
     });
+}
+
+void IRSynthComponent::setInteractionLocked (bool locked)
+{
+    const bool e = ! locked;
+
+    // Room geometry + shape proportions
+    shapeCombo      .setEnabled (e);
+    widthSlider     .setEnabled (e);
+    depthSlider     .setEnabled (e);
+    heightSlider    .setEnabled (e);
+    widthValueLabel .setEnabled (e);
+    depthValueLabel .setEnabled (e);
+    heightValueLabel.setEnabled (e);
+    navePctSlider   .setEnabled (e);
+    trptPctSlider   .setEnabled (e);
+    taperSlider     .setEnabled (e);
+    cornerCutSlider .setEnabled (e);
+    if (mirrorVerticalButton)   mirrorVerticalButton  ->setEnabled (e);
+    if (mirrorHorizontalButton) mirrorHorizontalButton->setEnabled (e);
+
+    // Surfaces / Contents / Interior
+    floorCombo      .setEnabled (e);
+    ceilingCombo    .setEnabled (e);
+    wallCombo       .setEnabled (e);
+    windowsSlider   .setEnabled (e);
+    audienceSlider  .setEnabled (e);
+    diffusionSlider .setEnabled (e);
+    vaultCombo      .setEnabled (e);
+    organSlider     .setEnabled (e);
+    balconiesSlider .setEnabled (e);
+
+    // Options + experimental toggles
+    micPatternCombo     .setEnabled (e);
+    erOnlyButton        .setEnabled (e);
+    directMaxOrderCombo .setEnabled (e);
+    lambertScatterButton.setEnabled (e);
+    spkDirFullButton    .setEnabled (e);
+
+    // Mic-path enables + Decca + aux controls + tilts
+    directEnableButton   .setEnabled (e);
+    outrigEnableButton   .setEnabled (e);
+    ambientEnableButton  .setEnabled (e);
+    deccaEnableButton    .setEnabled (e);
+    deccaCentreGainSlider.setEnabled (e);
+    deccaToeOutSlider    .setEnabled (e);
+    outrigPatternCombo   .setEnabled (e);
+    ambientPatternCombo  .setEnabled (e);
+    outrigHeightSlider   .setEnabled (e);
+    ambientHeightSlider  .setEnabled (e);
+    mainTiltSlider       .setEnabled (e);
+    outrigTiltSlider     .setEnabled (e);
+    ambientTiltSlider    .setEnabled (e);
+
+    // Floor-plan puck dragging
+    floorPlanComponent.setEnabled (e);
+
+    // Bottom bar (IR combo + Save/Export/Import + Main Menu)
+    irCombo       .setEnabled (e);
+    saveIRButton  .setEnabled (e);
+    exportIRButton.setEnabled (e);
+    importIRButton.setEnabled (e);
+    doneButton    .setEnabled (e);
+
+    // previewButton / bakeBalanceButton are managed by startSynthesis + the
+    // completion callAsync so their own disable lifecycle wins.
 }
 
 void IRSynthComponent::onDone()
