@@ -8,7 +8,7 @@ Developer context for AI-assisted work on this codebase.
 
 **P!NG** (`PRODUCT_NAME "P!NG"`) is a stereo reverb plugin for macOS (AU + VST3) built with JUCE. It convolves audio with impulse responses (IRs) and also includes a from-scratch IR synthesiser that simulates room acoustics using the image-source method + a 16-line FDN.
 
-**Current version:** 2.9.4 (see `CMakeLists.txt`)
+**Current version:** 2.9.5 (see `CMakeLists.txt`)
 **Minimum macOS:** 13.0 Ventura
 **Formats:** AU (primary, for Logic Pro) + VST3
 
@@ -1107,6 +1107,22 @@ When the two speakers are close together, perfectly periodic image-source reflec
 - **Coincident** (`srcDist < 10% of min room dimension`): additionally, `eL`/`eR` are scaled by 0.8 before FDN seeding to prevent the doubled direct-path spike from overloading the delay lines.
 
 `reflectionSpreadMs` was also explored (smearing each reflection across a time window in `renderCh`) but caused the early-reflection pattern to collapse and is disabled (set to 0).
+
+### Mono speaker source mode (`mono_source`)
+
+The two-source true-stereo IR layout (rLL, rRL, rLR, rRR) inherently produces inter-speaker comb filtering when the two speaker positions are close: rLL and rRL have very similar geometry but slightly different jitter / Lambert-scatter realisations (different RNG seeds), so the wet output `outL = IR_LL ⊛ inL + IR_RL ⊛ inR` sums two near-identical responses and combs. Spatial decorrelation (jitter, Lambert) hides this in the late field but cannot cancel it in the early field.
+
+The `IRSynthParams::mono_source` flag (UI toggle "Mono Source" in the IR Synth Options group, persisted in the IR sidecar as the `monoSrc` attribute) opts into a single-speaker render. When on:
+
+1. `srx`/`sry` are aliased to `slx`/`sly` at the top of every render path (MAIN, OUTRIG, AMBIENT, DIRECT). This affects every distance / arrival calculation downstream so the engine sees one source.
+2. The R-source `refsDispatch` calls are skipped entirely — `rRL := rLL`, `rRR := rLR` (and likewise for the Decca centre-mic ray `rRC := rLC`). This is exactly correct because the R-source slot would compute the same geometry, so reusing the L-source IR is identical to re-rendering with the same seed.
+3. By **linearity of convolution** the existing 4-convolver `runFour` mixer in `processBlock` then produces `outL = IR_A ⊛ (inL + inR)`, `outR = IR_B ⊛ (inL + inR)` — exactly equivalent to summing the input to mono and convolving with a single-speaker IR. **No audio-thread code changes were needed.**
+4. `close = false` is forced (no inter-source jitter — there is no inter-source comb to break) but `coincident = true` is kept on so the existing 0.8× FDN seed scale still absorbs the doubled direct-path spike (`eL = eLL + eRL = 2·eLL` in mono mode).
+5. Image-source compute cost drops by ~50% (only 2 ISM passes per mic pair instead of 4).
+
+UI side: `FloorPlanComponent::monoSource` (set from `IRSynthComponent::setParams`) hides the R speaker puck (`transducerVisible(1)` returns false) and removes the `Spk R` legend row. The R speaker's stored `source_rx`/`source_ry` are preserved in the params struct so toggling mono off restores the original two-speaker layout. Option-mirror drags from speaker L are automatically suppressed when partner index 1 is invisible (`mirrorDrag` already gates on `transducerVisible(hit.index ^ 1)`).
+
+**Default is off** — preserves bit-identity with pre-feature builds. Verified by IR_11 (golden onset 482) and IR_14 with `mono_source = false`. The new `monoSrc` XML attribute is absent in older sidecars and falls back to `false` via `defaults.mono_source`.
 
 ### FDN seeding (start at first arrival, warmup + delay-line coverage)
 

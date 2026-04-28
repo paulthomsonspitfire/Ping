@@ -83,6 +83,19 @@ struct IRSynthParams
     double receiver_lx = 0.35; double receiver_ly = 0.8;
     double receiver_rx = 0.65; double receiver_ry = 0.8;
 
+    // Mono speaker source mode (off by default — preserves bit-identity with
+    // pre-feature builds). When true, every synthesis path (MAIN, OUTRIG,
+    // AMBIENT, DIRECT) uses a single speaker positioned at (source_lx,
+    // source_ly) for both the L-source and R-source slots in the 4-channel
+    // IR layout (rRL := rLL, rRR := rLR). By linearity of convolution the
+    // existing 4-convolver runFour mixer then produces
+    //   outL = IR_A ⊛ (inL + inR), outR = IR_B ⊛ (inL + inR)
+    // which is exactly equivalent to summing the input to mono and
+    // convolving with a single-speaker IR. Eliminates inter-speaker comb
+    // filtering when the two speakers were placed close together.
+    // The R speaker puck is hidden in the floor plan UI when this is on.
+    bool        mono_source = false;
+
     // Angles (radians): 0=right, π/2=down, -π/2=up. Speakers down (π/2), mics up-left (-3π/4) / up-right (-π/4)
     double spkl_angle = 1.57079632679;   // π/2 down
     double spkr_angle = 1.57079632679;

@@ -1927,14 +1927,30 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
         rz = std::min(kDeccaHeightM, He * 0.9);
     }
 
+    // ── Mono speaker source mode ──────────────────────────────────────────────
+    // When p.mono_source is true the engine renders ONLY the L-speaker IR
+    // path and copies it into the R-speaker slots (rRL := rLL, rRR := rLR)
+    // a few lines below. Force srx/sry to the L position so all downstream
+    // code (Decca centre rays, distance calculations) sees a single source.
+    if (p.mono_source)
+    {
+        srx = slx;
+        sry = sly;
+    }
+
     const double srcDist = std::sqrt((slx - srx) * (slx - srx) + (sly - sry) * (sly - sry));
     const double roomMin = std::min(p.width, p.depth);
     // Two tiers: "close" (break periodic delay with jitter only) vs "coincident" (soft FDN seed scale).
     // We do NOT use reflection spread — it smears the early response and causes the sound to collapse.
     const double closeThreshold = roomMin * 0.30;   // close: time jitter to break periodic delay
     const double coincidentThreshold = roomMin * 0.10;  // very close: gentle FDN seed scale only
-    const bool close = (srcDist < closeThreshold);
-    const bool coincident = (srcDist < coincidentThreshold);
+    // In mono mode there is no inter-source comb so the close-speaker jitter
+    // is meaningless (and would introduce time-smear that wouldn't exist in
+    // a real single-speaker setup). The FDN seed double-energy still
+    // applies (eL = eLL + eRL = 2·eLL deterministically) so coincident=true
+    // is kept on so the existing 0.8× FDN seed scale absorbs it.
+    const bool close = p.mono_source ? false : (srcDist < closeThreshold);
+    const bool coincident = p.mono_source ? true : (srcDist < coincidentThreshold);
     // When close: small jitter on direct/first-order (keep them tight), larger jitter on
     // order 2+ to break the periodic echo from repeated wall/floor/ceiling bounces.
     const double jitterOrder01Ms = close ? 0.25 : 0.0;
@@ -1958,18 +1974,29 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     };
 
     std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, 42, mainMicPattern, p.spkl_angle, faceL, tiltL);
-    std::vector<Ref> rRL = refsDispatch(rlx, rly, rz, srx, sry, sz, 43, mainMicPattern, p.spkr_angle, faceL, tiltL);
+    // Mono mode: rRL is identical to rLL (same speaker drives both convolver
+    // input slots), so skip the redundant calcRefs call and copy. By
+    // linearity of convolution the existing 4-conv mixer then produces
+    //   outL = IR_LL ⊛ inL + IR_RL ⊛ inR = IR_LL ⊛ (inL + inR)
+    // which is exactly equivalent to mono-summing the input and feeding a
+    // single-speaker IR — eliminating inter-speaker comb filtering.
+    std::vector<Ref> rRL = p.mono_source ? rLL
+                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, 43, mainMicPattern, p.spkr_angle, faceL, tiltL);
     std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, 44, mainMicPattern, p.spkl_angle, faceR, tiltR);
-    std::vector<Ref> rRR = refsDispatch(rrx, rry, rz, srx, sry, sz, 45, mainMicPattern, p.spkr_angle, faceR, tiltR);
+    std::vector<Ref> rRR = p.mono_source ? rLR
+                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, 45, mainMicPattern, p.spkr_angle, faceR, tiltR);
 
     // Centre-mic rays (Decca only). Seed offsets 46/47 are unique across the
     // dispatcher (MAIN=42+, OUTRIG=52+, AMBIENT=62+, DIRECT=72+), so parallel
-    // aux-path synthesis never collides with these.
+    // aux-path synthesis never collides with these. Mono mode: same rule
+    // as above — the R-source centre ray is identical to the L-source one
+    // because srx/sry were aliased to slx/sly above.
     std::vector<Ref> rLC, rRC;
     if (p.main_decca_enabled)
     {
         rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, 46, mainMicPattern, p.spkl_angle, faceC, tiltC);
-        rRC = refsDispatch(rcx, rcy, rz, srx, sry, sz, 47, mainMicPattern, p.spkr_angle, faceC, tiltC);
+        rRC = p.mono_source ? rLC
+                            : refsDispatch(rcx, rcy, rz, srx, sry, sz, 47, mainMicPattern, p.spkr_angle, faceC, tiltC);
     }
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size() + rLC.size() + rRC.size()) + " reflections…");
@@ -2464,12 +2491,21 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
     double rlx = p.width * rlxNorm, rly = p.depth * rlyNorm;
     double rrx = p.width * rrxNorm, rry = p.depth * rryNorm;
 
+    // Mono speaker source — see synthMainPath for full rationale. Apply
+    // globally to OUTRIG / AMBIENT so the spatial choice is consistent
+    // across all mic paths.
+    if (p.mono_source)
+    {
+        srx = slx;
+        sry = sly;
+    }
+
     const double srcDist = std::sqrt((slx - srx) * (slx - srx) + (sly - sry) * (sly - sry));
     const double roomMin = std::min(p.width, p.depth);
     const double closeThreshold = roomMin * 0.30;
     const double coincidentThreshold = roomMin * 0.10;
-    const bool close = (srcDist < closeThreshold);
-    const bool coincident = (srcDist < coincidentThreshold);
+    const bool close = p.mono_source ? false : (srcDist < closeThreshold);
+    const bool coincident = p.mono_source ? true : (srcDist < coincidentThreshold);
     const double jitterOrder01Ms = close ? 0.25 : 0.0;
     const double jitterOrder2PlusMs = close ? 2.5 : 0.0;
     const double reflectionSpreadMs = 0.0;
@@ -2488,9 +2524,13 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
     };
 
     std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, seedBase + 0, p.spkl_angle, langle, ltilt);
-    std::vector<Ref> rRL = refsDispatch(rlx, rly, rz, srx, sry, sz, seedBase + 1, p.spkr_angle, langle, ltilt);
+    // Mono mode: rRL := rLL and rRR := rLR — see synthMainPath for the
+    // full rationale (linearity of convolution gives outL = IR_LL ⊛ (inL+inR)).
+    std::vector<Ref> rRL = p.mono_source ? rLL
+                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, seedBase + 1, p.spkr_angle, langle, ltilt);
     std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, seedBase + 2, p.spkl_angle, rangle, rtilt);
-    std::vector<Ref> rRR = refsDispatch(rrx, rry, rz, srx, sry, sz, seedBase + 3, p.spkr_angle, rangle, rtilt);
+    std::vector<Ref> rRR = p.mono_source ? rLR
+                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, seedBase + 3, p.spkr_angle, rangle, rtilt);
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size()) + " reflections…");
 
@@ -2764,6 +2804,13 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
     double rlx = p.width * p.receiver_lx, rly = p.depth * p.receiver_ly;
     double rrx = p.width * p.receiver_rx, rry = p.depth * p.receiver_ry;
 
+    // Mono speaker source — see synthMainPath for full rationale.
+    if (p.mono_source)
+    {
+        srx = slx;
+        sry = sly;
+    }
+
     // Decca geometry (must match synthMainPath exactly so DIRECT stays
     // acoustically aligned with MAIN).  Defaults kept file-static locally
     // rather than shared with synthMainPath because PING_TESTING_BUILD
@@ -2911,15 +2958,19 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
     };
 
     std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, 72, p.spkl_angle, faceL, tiltL);
-    std::vector<Ref> rRL = refsDispatch(rlx, rly, rz, srx, sry, sz, 73, p.spkr_angle, faceL, tiltL);
+    // Mono mode: rRL := rLL and rRR := rLR — see synthMainPath for the rationale.
+    std::vector<Ref> rRL = p.mono_source ? rLL
+                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, 73, p.spkr_angle, faceL, tiltL);
     std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, 74, p.spkl_angle, faceR, tiltR);
-    std::vector<Ref> rRR = refsDispatch(rrx, rry, rz, srx, sry, sz, 75, p.spkr_angle, faceR, tiltR);
+    std::vector<Ref> rRR = p.mono_source ? rLR
+                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, 75, p.spkr_angle, faceR, tiltR);
 
     std::vector<Ref> rLC, rRC;
     if (p.main_decca_enabled)
     {
         rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, 76, p.spkl_angle, faceC, tiltC);
-        rRC = refsDispatch(rcx, rcy, rz, srx, sry, sz, 77, p.spkr_angle, faceC, tiltC);
+        rRC = p.mono_source ? rLC
+                            : refsDispatch(rcx, rcy, rz, srx, sry, sz, 77, p.spkr_angle, faceC, tiltC);
     }
 
     // No diffusion, no frequency scatter, no reflection spread — just the bpF cascade.

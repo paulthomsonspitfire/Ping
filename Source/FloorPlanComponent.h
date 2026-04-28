@@ -95,6 +95,13 @@ public:
     // toggles main_decca_enabled.
     bool deccaVisible   = false;
 
+    // Mono speaker source mode. When true the R speaker puck (index 1) is
+    // hidden and not hit-testable, and Option-mirror drags from the L
+    // speaker do not move it. The L speaker puck remains the sole draggable
+    // source — IRSynthEngine renders only that position when this is on.
+    // IRSynthComponent flips this when the user toggles mono_source.
+    bool monoSource     = false;
+
     // Option-mirror axis preference. Vertical mirrors a partner puck across
     // x = 0.5 (the historical default — useful for L/R pairs); Horizontal
     // mirrors across y = 0.5 (useful for matching front/back placements).

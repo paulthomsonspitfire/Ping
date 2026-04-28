@@ -218,6 +218,14 @@ private:
     juce::ToggleButton lambertScatterButton { "Lambert Scatter" };
     juce::ToggleButton spkDirFullButton     { "Full Spkr Dir" };
 
+    // monoSourceButton drives IRSynthParams::mono_source. When ON the engine
+    // renders a single speaker (positioned at the L speaker puck) for both
+    // L- and R-source slots in the 4-IR layout, eliminating inter-speaker
+    // comb filtering when speakers are placed close together. The R speaker
+    // puck is hidden on the floor plan while this is on. Off by default —
+    // preserves bit-identity with pre-feature builds.
+    juce::ToggleButton monoSourceButton { "Mono Source" };
+
     // Mic paths (DIRECT / OUTRIG / AMBIENT). MAIN is always on for synthesis
     // (there is always a MAIN pair) — its mixer strip handles on/off.
     //

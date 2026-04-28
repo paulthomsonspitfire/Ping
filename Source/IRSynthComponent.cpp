@@ -265,7 +265,7 @@ IRSynthComponent::IRSynthComponent()
     directMaxOrderCombo.setSelectedId (2, juce::dontSendNotification); // default 1
     directMaxOrderLabel.setText ("DIRECT reach", juce::dontSendNotification);
     directMaxOrderLabel.setColour (juce::Label::textColourId, textDim);
-    for (auto* b : { &lambertScatterButton, &spkDirFullButton })
+    for (auto* b : { &lambertScatterButton, &spkDirFullButton, &monoSourceButton })
     {
         b->setColour (juce::ToggleButton::textColourId,         textDim);
         b->setColour (juce::ToggleButton::tickColourId,         accent);
@@ -273,6 +273,7 @@ IRSynthComponent::IRSynthComponent()
     }
     lambertScatterButton.setToggleState (true,  juce::dontSendNotification);  // current default
     spkDirFullButton    .setToggleState (false, juce::dontSendNotification);  // current default
+    monoSourceButton    .setToggleState (false, juce::dontSendNotification);  // off by default — preserves bit-identity
 
     // ── Mic path toggles + OUTRIG / AMBIENT pattern + height controls ────────
     // Defaults mirror IRSynthParams: all paths off until explicitly enabled;
@@ -474,6 +475,16 @@ IRSynthComponent::IRSynthComponent()
     erOnlyButton.onClick         = notifyParamChanged;
     lambertScatterButton.onClick = notifyParamChanged;
     spkDirFullButton.onClick     = notifyParamChanged;
+    monoSourceButton.onClick     = [this]
+    {
+        // Sync floor-plan visibility immediately so the R speaker puck
+        // disappears the moment the toggle is flipped, even before the next
+        // IR is calculated. Then notify so the change persists in APVTS /
+        // sidecar state and triggers a recalc on the user's next click.
+        floorPlanComponent.monoSource = monoSourceButton.getToggleState();
+        floorPlanComponent.repaint();
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
                       &vaultCombo, &micPatternCombo,
                       &outrigPatternCombo, &ambientPatternCombo, &directMaxOrderCombo })
@@ -601,6 +612,7 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (directMaxOrderLabel);
     addAndMakeVisible (lambertScatterButton);
     addAndMakeVisible (spkDirFullButton);
+    addAndMakeVisible (monoSourceButton);
 
     addAndMakeVisible (directEnableButton);
     addAndMakeVisible (outrigEnableButton);
@@ -1082,6 +1094,15 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
         const int halfW = (ctrlW - gap) / 2;
         lambertScatterButton.setBounds (x0,                  y, halfW, rowH);
         spkDirFullButton    .setBounds (x0 + halfW + gap,    y, halfW, rowH);
+        y += rowH + 2;
+    }
+
+    // Row 5: Mono Source toggle — full width. When on the engine renders a
+    // single speaker (positioned at the L speaker puck) and the R speaker
+    // puck is hidden on the floor plan. Eliminates inter-speaker comb
+    // filtering when speakers were placed close together. Off by default.
+    {
+        monoSourceButton.setBounds (x0, y, ctrlW, rowH);
         y += rowH + secGap;
     }
 
@@ -1425,6 +1446,7 @@ IRSynthParams IRSynthComponent::getParams() const
     p.direct_max_order         = juce::jlimit (0, 2, directMaxOrderCombo.getSelectedId() - 1);
     p.lambert_scatter_enabled  = lambertScatterButton.getToggleState();
     p.spk_directivity_full     = spkDirFullButton    .getToggleState();
+    p.mono_source              = monoSourceButton    .getToggleState();
 
     // Floor-plan Option-mirror axis (UI-only; not consumed by the synthesis
     // engine, persisted so the preference round-trips with the rest of the
@@ -1555,6 +1577,10 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
                                          juce::dontSendNotification);
     spkDirFullButton    .setToggleState (p.spk_directivity_full,
                                          juce::dontSendNotification);
+    monoSourceButton    .setToggleState (p.mono_source,
+                                         juce::dontSendNotification);
+    floorPlanComponent.monoSource = p.mono_source;
+    floorPlanComponent.repaint();
     outrigHeightReadout.setText  (juce::String (p.outrig_height,  1) + " m", juce::dontSendNotification);
     ambientHeightReadout.setText (juce::String (p.ambient_height, 1) + " m", juce::dontSendNotification);
 
@@ -1895,6 +1921,7 @@ void IRSynthComponent::setInteractionLocked (bool locked)
     directMaxOrderCombo .setEnabled (e);
     lambertScatterButton.setEnabled (e);
     spkDirFullButton    .setEnabled (e);
+    monoSourceButton    .setEnabled (e);
 
     // Mic-path enables + Decca + aux controls + tilts
     directEnableButton   .setEnabled (e);

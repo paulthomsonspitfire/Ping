@@ -284,7 +284,10 @@ bool FloorPlanComponent::transducerVisible (int index) const
     if (index < 0 || index > 7) return false;
     switch (groupFor (index))
     {
-        case Group::Speaker: return true;
+        // Speaker R (index 1) is hidden in mono-source mode — the engine
+        // renders a single speaker at the L position so the second puck
+        // would be misleading and is not hit-testable.
+        case Group::Speaker: return ! (monoSource && index == 1);
         // MAIN pucks are hidden when the Decca Tree puck replaces them.
         case Group::Main:    return ! deccaVisible;
         case Group::Outrig:  return outrigVisible;
@@ -943,9 +946,10 @@ void FloorPlanComponent::paint (juce::Graphics& g)
     // Legend: colour guide. Base rows (Spk L/R, Mic L/R) are always shown.
     // OUTRIG and AMBIENT rows are appended only when visible.
     struct LegRow { const char* label; int index; };
-    std::vector<LegRow> rows = {
-        { "Spk L", 0 }, { "Spk R", 1 },
-    };
+    std::vector<LegRow> rows = { { "Spk L", 0 } };
+    // Mono mode hides the R speaker row — there is no second source.
+    if (! monoSource)
+        rows.push_back ({ "Spk R", 1 });
     // When Decca is visible, show a single "Decca" legend row in place of the
     // Mic L/R rows (MAIN mic pucks are hidden).
     if (deccaVisible)

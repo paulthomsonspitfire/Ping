@@ -2957,6 +2957,9 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("directMaxOrder", p.direct_max_order);
     ir->setAttribute ("lambertScatter", p.lambert_scatter_enabled);
     ir->setAttribute ("spkDirFull",     p.spk_directivity_full);
+    // Mono speaker source — see IRSynthEngine.h. Absent in older sidecars
+    // → defaults to false (preserves historical dual-speaker rendering).
+    ir->setAttribute ("monoSrc",        p.mono_source);
 
     ir->setAttribute ("outrigLx",     p.outrig_lx);
     ir->setAttribute ("outrigLy",     p.outrig_ly);
@@ -3113,6 +3116,7 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.direct_max_order         = ir->getIntAttribute  ("directMaxOrder", defaults.direct_max_order);
     p.lambert_scatter_enabled  = ir->getBoolAttribute ("lambertScatter", defaults.lambert_scatter_enabled);
     p.spk_directivity_full     = ir->getBoolAttribute ("spkDirFull",     defaults.spk_directivity_full);
+    p.mono_source              = ir->getBoolAttribute ("monoSrc",        defaults.mono_source);
 
     p.outrig_lx      = ir->getDoubleAttribute ("outrigLx",     defaults.outrig_lx);
     p.outrig_ly      = ir->getDoubleAttribute ("outrigLy",     defaults.outrig_ly);
