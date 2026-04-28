@@ -1088,21 +1088,16 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
         y += rowH + 2;
     }
 
-    // Row 4: Lambert Scatter + Full Spkr Dir side-by-side, each half the
-    // control width minus a small gap.
+    // Row 4: Lambert Scatter + Full Spkr Dir + Mono Src — three equal-width
+    // toggles across the row. Lambert sits on the left, Full Spkr Dir is
+    // centred, Mono Src sits on the right. Mono Src renders a single
+    // speaker (positioned at the L speaker puck) — the R speaker puck is
+    // hidden on the floor plan when on. Off by default.
     {
-        const int halfW = (ctrlW - gap) / 2;
-        lambertScatterButton.setBounds (x0,                  y, halfW, rowH);
-        spkDirFullButton    .setBounds (x0 + halfW + gap,    y, halfW, rowH);
-        y += rowH + 2;
-    }
-
-    // Row 5: Mono Source toggle — full width. When on the engine renders a
-    // single speaker (positioned at the L speaker puck) and the R speaker
-    // puck is hidden on the floor plan. Eliminates inter-speaker comb
-    // filtering when speakers were placed close together. Off by default.
-    {
-        monoSourceButton.setBounds (x0, y, ctrlW, rowH);
+        const int thirdW = (ctrlW - 2 * gap) / 3;
+        lambertScatterButton.setBounds (x0,                          y, thirdW, rowH);
+        spkDirFullButton    .setBounds (x0 + thirdW + gap,           y, thirdW, rowH);
+        monoSourceButton    .setBounds (x0 + 2 * (thirdW + gap),     y, thirdW, rowH);
         y += rowH + secGap;
     }
 
