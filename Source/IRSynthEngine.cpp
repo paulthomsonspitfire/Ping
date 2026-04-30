@@ -501,7 +501,16 @@ static void fillSpkBandGainsParametric (const SourceRadiation& s,
     {
         const double e   = s.bandExp  [(size_t) b];
         const double f   = s.bandFloor[(size_t) b];
-        const double pat = f + (1.0 - f) * std::pow (card, e);
+        // Fast-paths for the two common identity exponents:
+        //   e == 1 → cardioid (pow(x,1) on macOS libm is NOT bit-equal to x;
+        //            the IR_34 bit-equivalence test depends on this branch).
+        //   e == 0 → omni-shape (pow(x,0) == 1 trivially).
+        // For other exponents fall through to std::pow.
+        double pwr;
+        if      (e == 1.0) pwr = card;
+        else if (e == 0.0) pwr = 1.0;
+        else               pwr = std::pow (card, e);
+        const double pat = f + (1.0 - f) * pwr;
         out[(size_t) b]  = fade * pat + (1.0 - fade) * 1.0;
     }
 }
@@ -587,26 +596,33 @@ SourceRadiation SourceRadiation::voice()
 {
     // Voice: forward bias at HF, gentle narrowing, moderate rear floor —
     // singers radiate audibly behind themselves but with HF roll-off.
+    // defaultTiltDeg = +10°: a singer's mouth tends to be raised slightly
+    // above horizontal when projecting (the chin is up, not down).
     SourceRadiation r;
     r.kind = Kind::Parametric;
     r.bandExp   = { { 0.0, 0.1, 0.4, 0.8, 1.4, 2.2, 3.0, 3.5 } };
     r.bandFloor = { { 1.0, 0.70, 0.40, 0.25, 0.15, 0.10, 0.10, 0.10 } };
     r.presetName = "Voice";
+    r.defaultTiltDeg = 10.0;
     return r;
 }
 
 SourceRadiation SourceRadiation::stringsBroad()
 {
-    // Strings: complex pattern, mostly upward in real life, but in the 2D
-    // engine we model it as a broad forward lobe with high rear floor (the
-    // off-axis level varies less than for voice/brass). Tilt-aware version
-    // is a future extension when the engine grows a vertical-radiation
-    // axis.
+    // Strings: complex pattern, with strong upward radiation in real life
+    // (violin/viola/cello f-holes radiate above the horizontal plane).
+    // The pre-v2.12 presets approximated this as a 2D-broad pattern with
+    // very high floor; with the v2.12 tilt knob the user can now actually
+    // tip the source up. Coefficients are unchanged so existing v2.11
+    // presets that load as "Strings (broad)" with srcTilt=0 stay
+    // bit-identical to v2.11 — the defaultTiltDeg only affects new
+    // scenes via the UI auto-populate.
     SourceRadiation r;
     r.kind = Kind::Parametric;
     r.bandExp   = { { 0.0, 0.0, 0.2, 0.5, 1.0, 1.5, 2.0, 2.5 } };
     r.bandFloor = { { 1.0, 0.80, 0.50, 0.40, 0.30, 0.25, 0.20, 0.20 } };
     r.presetName = "Strings (broad)";
+    r.defaultTiltDeg = 30.0;
     return r;
 }
 
@@ -614,11 +630,14 @@ SourceRadiation SourceRadiation::windReed()
 {
     // Wind / reed (clarinet, oboe, bassoon): moderate forward bias,
     // moderate rear floor, narrower than strings but broader than brass.
+    // defaultTiltDeg = +15°: instruments are typically held at a slight
+    // upward angle (clarinet/oboe held away from the body).
     SourceRadiation r;
     r.kind = Kind::Parametric;
     r.bandExp   = { { 0.0, 0.1, 0.3, 0.6, 1.0, 1.6, 2.4, 3.0 } };
     r.bandFloor = { { 1.0, 0.70, 0.40, 0.25, 0.15, 0.15, 0.15, 0.15 } };
     r.presetName = "Wind / reed";
+    r.defaultTiltDeg = 15.0;
     return r;
 }
 
@@ -932,7 +951,8 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
     double maxRefDist,
     double minJitterMs,
     double highOrderJitterMs,
-    double micFaceTilt)
+    double micFaceTilt,
+    double spkFaceTilt)
 {
     double W = p.width, D = p.depth;
     // `seed` is now the per-speaker SALT in the hash-keyed jitter scheme
@@ -1002,6 +1022,9 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                     // pre-v2.11 engine. Same scalar `sg` is broadcast to
                     // every band; per-band multiplication below is
                     // numerically identical to the original `* sg *`.
+                    // NB: spkFaceTilt is intentionally NOT consumed here —
+                    // see the v2.12 promise that LegacyCardioid stays
+                    // bit-identical (UI greys out the tilt slider).
                     double sgDir = spkG(spkFaceAngle, spkAz);
                     double sg;
                     if (p.spk_directivity_full)
@@ -1016,7 +1039,13 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                 }
                 else
                 {
-                    const double cosThSpk = std::cos(spkAz - spkFaceAngle);
+                    // Non-Legacy: full 3D directivity cone. Elevation is
+                    // computed source→receiver (NOT source→image-source)
+                    // to match the convention spkAz uses, so it represents
+                    // the angle the wave leaves the source's frame.
+                    const double hDistSrcReal = std::sqrt((rx - sx) * (rx - sx) + (ry - sy) * (ry - sy));
+                    const double elSrc        = std::atan2(rz - sz, std::max(hDistSrcReal, 1e-9));
+                    const double cosThSpk     = directivityCos(spkAz, elSrc, spkFaceAngle, spkFaceTilt);
                     fillSpkBandGainsParametric(p.source_radiation, cosThSpk,
                                                totalBounces, p.spk_directivity_full,
                                                sgBand);
@@ -1291,7 +1320,8 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
     double maxRefDist,
     double minJitterMs,
     double highOrderJitterMs,
-    double micFaceTilt)
+    double micFaceTilt,
+    double spkFaceTilt)
 {
     // `seed` is now the per-speaker SALT in the hash-keyed jitter scheme
     // (see "Image-source-keyed deterministic jitter" comment block above
@@ -1429,7 +1459,8 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
             // screen space; high-order reflections fade to omnidirectional.
             // For non-legacy radiation models the per-band gain replaces
             // the legacy scalar `sg`; LegacyCardioid fills sgBand with the
-            // legacy scalar so bit-identity is preserved.
+            // legacy scalar so bit-identity is preserved (and intentionally
+            // does NOT consume spkFaceTilt — see calcRefs counterpart).
             const double spkAz = std::atan2 (ry - sy, rx - sx);
             std::array<double, 8> sgBand;
             if (p.source_radiation.kind == SourceRadiation::Kind::LegacyCardioid)
@@ -1448,7 +1479,9 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
             }
             else
             {
-                const double cosThSpk = std::cos (spkAz - spkFaceAngle);
+                const double hDistSrcReal = std::sqrt ((rx - sx) * (rx - sx) + (ry - sy) * (ry - sy));
+                const double elSrc        = std::atan2 (rz - sz, std::max (hDistSrcReal, 1e-9));
+                const double cosThSpk     = directivityCos (spkAz, elSrc, spkFaceAngle, spkFaceTilt);
                 fillSpkBandGainsParametric (p.source_radiation, cosThSpk,
                                             totalBounces, p.spk_directivity_full,
                                             sgBand);
@@ -2405,12 +2438,13 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
                              uint32_t seed,
                              const std::string& pat,
                              double spkAng, double micAng,
-                             double micTilt) -> std::vector<Ref>
+                             double micTilt,
+                             double spkTilt) -> std::vector<Ref>
     {
         if (p.shape == "Rectangular")
-            return calcRefs        (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pat, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt);
+            return calcRefs        (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pat, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt, spkTilt);
         else
-            return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pat, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt);
+            return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pat, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt, spkTilt);
     };
 
     // Per-speaker salts (hash-keyed jitter scheme — see "Image-source-keyed
@@ -2425,7 +2459,7 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     constexpr uint32_t kMainSaltL = 42u;
     constexpr uint32_t kMainSaltR = 43u;
 
-    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, kMainSaltL, mainMicPattern, p.spkl_angle, faceL, tiltL);
+    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, kMainSaltL, mainMicPattern, p.spkl_angle, faceL, tiltL, p.spkl_tilt);
     // Mono mode: rRL is identical to rLL (same speaker drives both convolver
     // input slots), so skip the redundant calcRefs call and copy. By
     // linearity of convolution the existing 4-conv mixer then produces
@@ -2433,10 +2467,10 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     // which is exactly equivalent to mono-summing the input and feeding a
     // single-speaker IR — eliminating inter-speaker comb filtering.
     std::vector<Ref> rRL = p.mono_source ? rLL
-                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, kMainSaltR, mainMicPattern, p.spkr_angle, faceL, tiltL);
-    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, kMainSaltL, mainMicPattern, p.spkl_angle, faceR, tiltR);
+                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, kMainSaltR, mainMicPattern, p.spkr_angle, faceL, tiltL, p.spkr_tilt);
+    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, kMainSaltL, mainMicPattern, p.spkl_angle, faceR, tiltR, p.spkl_tilt);
     std::vector<Ref> rRR = p.mono_source ? rLR
-                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, kMainSaltR, mainMicPattern, p.spkr_angle, faceR, tiltR);
+                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, kMainSaltR, mainMicPattern, p.spkr_angle, faceR, tiltR, p.spkr_tilt);
 
     // Centre-mic rays (Decca only) share the MAIN per-speaker salts. The
     // centre mic from L speaker uses kMainSaltL (same as L outer + R outer
@@ -2445,9 +2479,9 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     std::vector<Ref> rLC, rRC;
     if (p.main_decca_enabled)
     {
-        rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, kMainSaltL, mainMicPattern, p.spkl_angle, faceC, tiltC);
+        rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, kMainSaltL, mainMicPattern, p.spkl_angle, faceC, tiltC, p.spkl_tilt);
         rRC = p.mono_source ? rLC
-                            : refsDispatch(rcx, rcy, rz, srx, sry, sz, kMainSaltR, mainMicPattern, p.spkr_angle, faceC, tiltC);
+                            : refsDispatch(rcx, rcy, rz, srx, sry, sz, kMainSaltR, mainMicPattern, p.spkr_angle, faceC, tiltC, p.spkr_tilt);
     }
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size() + rLC.size() + rRC.size()) + " reflections…");
@@ -2966,12 +3000,13 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
                              double sxL, double syL, double szL,
                              uint32_t seed,
                              double spkAng, double micAng,
-                             double micTilt) -> std::vector<Ref>
+                             double micTilt,
+                             double spkTilt) -> std::vector<Ref>
     {
         if (p.shape == "Rectangular")
-            return calcRefs        (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pattern, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt);
+            return calcRefs        (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pattern, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt, spkTilt);
         else
-            return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pattern, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt);
+            return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pattern, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt, spkTilt);
     };
 
     // Per-speaker salts (hash-keyed jitter scheme; see calcRT60 comment block).
@@ -2979,14 +3014,14 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
     const uint32_t saltL = seedBase + 0;
     const uint32_t saltR = seedBase + 1;
 
-    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, saltL, p.spkl_angle, langle, ltilt);
+    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, saltL, p.spkl_angle, langle, ltilt, p.spkl_tilt);
     // Mono mode: rRL := rLL and rRR := rLR — see synthMainPath for the
     // full rationale (linearity of convolution gives outL = IR_LL ⊛ (inL+inR)).
     std::vector<Ref> rRL = p.mono_source ? rLL
-                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, saltR, p.spkr_angle, langle, ltilt);
-    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, saltL, p.spkl_angle, rangle, rtilt);
+                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, saltR, p.spkr_angle, langle, ltilt, p.spkr_tilt);
+    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, saltL, p.spkl_angle, rangle, rtilt, p.spkl_tilt);
     std::vector<Ref> rRR = p.mono_source ? rLR
-                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, saltR, p.spkr_angle, rangle, rtilt);
+                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, saltR, p.spkr_angle, rangle, rtilt, p.spkr_tilt);
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size()) + " reflections…");
 
@@ -3405,12 +3440,13 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
                              double sxL, double syL, double szL,
                              uint32_t seed,
                              double spkAng, double micAng,
-                             double micTilt) -> std::vector<Ref>
+                             double micTilt,
+                             double spkTilt) -> std::vector<Ref>
     {
         if (p.shape == "Rectangular")
-            return calcRefs        (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, mainMicPattern, spkAng, micAng, maxRefDist, jitter01, jitter2, micTilt);
+            return calcRefs        (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, mainMicPattern, spkAng, micAng, maxRefDist, jitter01, jitter2, micTilt, spkTilt);
         else
-            return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, mainMicPattern, spkAng, micAng, maxRefDist, jitter01, jitter2, micTilt);
+            return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, mainMicPattern, spkAng, micAng, maxRefDist, jitter01, jitter2, micTilt, spkTilt);
     };
 
     // Per-speaker salts (hash-keyed jitter scheme; see calcRT60 comment block).
@@ -3418,20 +3454,20 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
     constexpr uint32_t kDirectSaltL = 72u;
     constexpr uint32_t kDirectSaltR = 73u;
 
-    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, kDirectSaltL, p.spkl_angle, faceL, tiltL);
+    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, kDirectSaltL, p.spkl_angle, faceL, tiltL, p.spkl_tilt);
     // Mono mode: rRL := rLL and rRR := rLR — see synthMainPath for the rationale.
     std::vector<Ref> rRL = p.mono_source ? rLL
-                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, kDirectSaltR, p.spkr_angle, faceL, tiltL);
-    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, kDirectSaltL, p.spkl_angle, faceR, tiltR);
+                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, kDirectSaltR, p.spkr_angle, faceL, tiltL, p.spkr_tilt);
+    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, kDirectSaltL, p.spkl_angle, faceR, tiltR, p.spkl_tilt);
     std::vector<Ref> rRR = p.mono_source ? rLR
-                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, kDirectSaltR, p.spkr_angle, faceR, tiltR);
+                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, kDirectSaltR, p.spkr_angle, faceR, tiltR, p.spkr_tilt);
 
     std::vector<Ref> rLC, rRC;
     if (p.main_decca_enabled)
     {
-        rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, kDirectSaltL, p.spkl_angle, faceC, tiltC);
+        rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, kDirectSaltL, p.spkl_angle, faceC, tiltC, p.spkl_tilt);
         rRC = p.mono_source ? rLC
-                            : refsDispatch(rcx, rcy, rz, srx, sry, sz, kDirectSaltR, p.spkr_angle, faceC, tiltC);
+                            : refsDispatch(rcx, rcy, rz, srx, sry, sz, kDirectSaltR, p.spkr_angle, faceC, tiltC, p.spkr_tilt);
     }
 
     // No diffusion, no frequency scatter, no reflection spread — just the bpF cascade.

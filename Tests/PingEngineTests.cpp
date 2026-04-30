@@ -654,32 +654,41 @@ TEST_CASE("IR_33: polygon (Cathedral) x-mirror symmetry over the ER region",
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IR_34 — SourceRadiation::Parametric with cardioid params reproduces legacy
+// IR_34 — SourceRadiation::Parametric with cardioid params ≈ legacy (v2.12)
 // ─────────────────────────────────────────────────────────────────────────────
-// Verifies that SourceRadiation::cardioidExperimental() (Parametric kind with
-// bandExp = [1,1,...] and bandFloor = [0,0,...]) produces an output that
-// matches LegacyCardioid to within floating-point precision. This protects
-// the parametric formula's correctness: any future change to
-// fillSpkBandGainsParametric() that breaks the cardioid identity will be
-// caught by this test even if it doesn't break the IR_11 / IR_14 byte-
-// identity locks (because LegacyCardioid keeps the inline scalar `sg`
-// path).
+// Verifies that SourceRadiation::cardioidExperimental() (Parametric kind
+// with bandExp = [1,1,...], bandFloor = [0,0,...]) produces an output
+// CLOSE to LegacyCardioid. This protects the parametric formula's
+// correctness — any future change to fillSpkBandGainsParametric() that
+// breaks the cardioid identity will be caught here, while still letting
+// the inline-scalar v2.10/v2.11 IR_11/IR_14 bit-identity locks pass.
 //
-// We compare a small Decca-tree scene with both kinds in the same room.
-// Tolerance is 1e-12 (essentially FP precision); the parametric path
-// computes max(0, 0.5+0.5*cosTh)^1 which simplifies to the cardioid
-// expression, with one extra multiplication by (1-floor)+floor=1 — so the
-// result is bit-equal except for FP rounding from the std::pow(_, 1.0)
-// call.
-TEST_CASE("IR_34: SourceRadiation Parametric with cardioid params equals LegacyCardioid",
+// v2.12 changed the Parametric branch from a 2D `cos(spkAz - faceAz)`
+// formula to the 3D directivityCos (azimuth+elevation+tilt), while
+// LegacyCardioid INTENTIONALLY stays 2D so the bit-identity promise from
+// v2.11 holds. As a result the two paths now only agree EXACTLY when
+// source.z == receiver.z (cos(el) == 1) AND no off-axis vertical
+// reflections (image-source z-mirrors) sample the lobe at varying
+// elevations — both of which are violated by realistic scenes.
+//
+// We accept the resulting tiny ~0.15 % drift via a relative tolerance:
+//   max |Parametric − Legacy| < 0.5 % of peak.
+// This still catches gross formula errors (the v2.11 hard zero in the
+// rear lobe drifted by ~12 % when measured incorrectly during dev). For
+// the pure 3D-parametric formula correctness see IR_35 (coefficient
+// stability) and IR_37 (tilt actually wires through).
+TEST_CASE("IR_34: SourceRadiation Parametric with cardioid params ≈ LegacyCardioid",
           "[engine][source-radiation]")
 {
     IRSynthParams pA = smallRoomParams();
-    pA.diffusion = 0.55;
+    pA.height     = 1.0;          // squeezes sz/rz toward 0.9 (engine clamp)
+    pA.diffusion  = 0.55;
     pA.organ_case = 0.40;
     pA.balconies  = 0.60;
     pA.spkl_angle = 1.5707963267948966;
     pA.spkr_angle = 1.5707963267948966;
+    pA.spkl_tilt  = 0.0;          // explicit (default) — see test docstring
+    pA.spkr_tilt  = 0.0;
     pA.mono_source = true;
     pA.main_decca_enabled = true;
     pA.decca_cx = 0.5;  pA.decca_cy = 0.65;
@@ -710,8 +719,10 @@ TEST_CASE("IR_34: SourceRadiation Parametric with cardioid params equals LegacyC
         peak = std::max ({ peak, std::fabs (rA.iLL[(size_t) i]), std::fabs (rA.iLR[(size_t) i]) });
     }
 
-    INFO ("peak: " << peak << "   max |Parametric − LegacyCardioid|: " << maxDiff);
-    CHECK (maxDiff < 1e-12);
+    INFO ("peak: " << peak << "   max |Parametric − LegacyCardioid|: " << maxDiff
+                    << " (= " << (100.0 * maxDiff / peak) << "% of peak)");
+    REQUIRE (peak > 1e-6);
+    CHECK (maxDiff < 0.005 * peak);   // 0.5 % — 3D-vs-2D structural drift, not formula error
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -791,6 +802,171 @@ TEST_CASE("IR_35: Phase 1 source radiation presets have expected coefficients",
     // Case-insensitive lookup is part of the contract.
     CHECK (SourceRadiation::byPreset ("CARDIOID (LEGACY)").kind == SourceRadiation::Kind::LegacyCardioid);
     CHECK (SourceRadiation::byPreset ("voice").kind            == SourceRadiation::Kind::Parametric);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IR_36 — Source tilt = 0 with LegacyCardioid is bit-identical to v2.11
+// ─────────────────────────────────────────────────────────────────────────────
+// Bit-identity lock for the v2.12 promise: "tilt is opt-in; the default
+// (spkl_tilt = spkr_tilt = 0) with the default LegacyCardioid radiation
+// produces output bit-identical to v2.11." Because the LegacyCardioid
+// path in calcRefs / calcRefsPolygon intentionally NEVER consumes
+// spkFaceTilt, this also holds for any non-zero tilt value when the
+// kind is LegacyCardioid (the tilt knob is ignored). We assert both:
+// (a) IR is unchanged when tilt is the default 0.
+// (b) IR is unchanged when tilt is set to a nonsense value (e.g. +π/2)
+//     while kind stays LegacyCardioid.
+// Together these guarantee that an existing v2.11 sidecar (which has no
+// srcTiltL/srcTiltR attributes and no srcRad ⇒ resolves to legacy)
+// continues to render the exact same audio in v2.12.
+TEST_CASE("IR_36: LegacyCardioid ignores spk tilt — bit-identical to v2.11",
+          "[engine][source-tilt]")
+{
+    IRSynthParams pBase = smallRoomParams();
+    pBase.diffusion  = 0.55;
+    pBase.organ_case = 0.40;
+    pBase.balconies  = 0.60;
+    pBase.spkl_angle = 1.5707963267948966;
+    pBase.spkr_angle = 1.5707963267948966;
+    pBase.mono_source = true;
+    pBase.main_decca_enabled = true;
+    pBase.decca_cx = 0.5;  pBase.decca_cy = 0.65;
+    pBase.decca_angle = -1.5707963267948966;
+    pBase.source_lx = 0.30; pBase.source_ly = 0.50;
+    pBase.source_rx = 0.30; pBase.source_ry = 0.50;
+    // pBase.source_radiation defaults to LegacyCardioid; pBase.spkl_tilt = 0.
+
+    auto noop = [](double, const std::string&) {};
+
+    // Reference: tilt = 0 (the v2.11 default state).
+    auto rRef = IRSynthEngine::synthIR (pBase, noop);
+    REQUIRE (rRef.success);
+
+    // Variant A: tilts swung to +π/2 and -π/3 — should be IGNORED by the
+    // LegacyCardioid path, so the IR must be byte-for-byte identical.
+    IRSynthParams pTilted = pBase;
+    pTilted.spkl_tilt = 1.5707963267948966;
+    pTilted.spkr_tilt = -1.0471975511965976;
+    auto rTilted = IRSynthEngine::synthIR (pTilted, noop);
+    REQUIRE (rTilted.success);
+    REQUIRE (rRef.irLen == rTilted.irLen);
+
+    double maxDiff = 0.0;
+    for (int i = 0; i < rRef.irLen; ++i)
+    {
+        const double dLL = std::fabs (rRef.iLL[(size_t) i] - rTilted.iLL[(size_t) i]);
+        const double dRL = std::fabs (rRef.iRL[(size_t) i] - rTilted.iRL[(size_t) i]);
+        const double dLR = std::fabs (rRef.iLR[(size_t) i] - rTilted.iLR[(size_t) i]);
+        const double dRR = std::fabs (rRef.iRR[(size_t) i] - rTilted.iRR[(size_t) i]);
+        maxDiff = std::max ({ maxDiff, dLL, dRL, dLR, dRR });
+    }
+    INFO ("LegacyCardioid: max |IR(tilt=π/2) − IR(tilt=0)| = " << maxDiff);
+    CHECK (maxDiff == 0.0);   // exact bit equality — legacy path ignores tilt
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IR_37 — Source tilt actually wires through (Parametric kind)
+// ─────────────────────────────────────────────────────────────────────────────
+// Sanity that for non-Legacy radiation kinds, changing spkl_tilt produces
+// a measurably different IR. Without this test, a future refactor that
+// silently dropped the tilt forwarding (e.g. forgetting the spkTilt
+// argument in one of the three refsDispatch lambdas) would compile
+// cleanly and pass IR_36 — but tilt would be a no-op. IR_37 catches that.
+//
+// We use the Generic instrument preset (Parametric, mid-narrow lobe with
+// 0.10 floor) so the tilt direction visibly changes which mics catch
+// the on-axis lobe. We check that tilt = +π/4 produces an IR that
+// differs from tilt = 0 by at least 1 % of the peak amplitude.
+TEST_CASE("IR_37: Parametric radiation honours spk tilt", "[engine][source-tilt]")
+{
+    IRSynthParams pBase = smallRoomParams();
+    pBase.diffusion  = 0.55;
+    pBase.spkl_angle = 1.5707963267948966;
+    pBase.spkr_angle = 1.5707963267948966;
+    pBase.mono_source = true;
+    pBase.main_decca_enabled = true;
+    pBase.decca_cx = 0.5;  pBase.decca_cy = 0.65;
+    pBase.decca_angle = -1.5707963267948966;
+    pBase.source_lx = 0.30; pBase.source_ly = 0.50;
+    pBase.source_rx = 0.30; pBase.source_ry = 0.50;
+    pBase.source_radiation = SourceRadiation::genericInstrument();   // Parametric, narrow HF
+    pBase.spkl_tilt = 0.0;
+    pBase.spkr_tilt = 0.0;
+
+    auto noop = [](double, const std::string&) {};
+
+    auto rFlat = IRSynthEngine::synthIR (pBase, noop);
+    REQUIRE (rFlat.success);
+
+    IRSynthParams pUp = pBase;
+    pUp.spkl_tilt = 0.7853981633974483;   // +45°
+    pUp.spkr_tilt = 0.7853981633974483;
+    auto rUp = IRSynthEngine::synthIR (pUp, noop);
+    REQUIRE (rUp.success);
+    REQUIRE (rFlat.irLen == rUp.irLen);
+
+    double peak = 0.0, maxDiff = 0.0;
+    for (int i = 0; i < rFlat.irLen; ++i)
+    {
+        peak    = std::max ({ peak, std::fabs (rFlat.iLL[(size_t) i]), std::fabs (rFlat.iLR[(size_t) i]) });
+        maxDiff = std::max ({ maxDiff,
+                              std::fabs (rFlat.iLL[(size_t) i] - rUp.iLL[(size_t) i]),
+                              std::fabs (rFlat.iLR[(size_t) i] - rUp.iLR[(size_t) i]) });
+    }
+    INFO ("peak: " << peak << "   max |IR(tilt=+45°) − IR(tilt=0)| = " << maxDiff
+                    << " (= " << (100.0 * maxDiff / peak) << "% of peak)");
+    REQUIRE (peak > 1e-6);
+    CHECK (maxDiff > 0.01 * peak);   // at least 1% of peak — tilt clearly changes the IR
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IR_38 — x-mirror symmetry holds for arbitrary tilt
+// ─────────────────────────────────────────────────────────────────────────────
+// Tilt is a vertical-only operation, so it must NOT break the horizontal
+// x-mirror symmetry that v2.10 jitter-fix established (IR_32 / IR_33).
+// We render a Parametric scene with tilt = +π/4 and verify the L vs
+// (mirrored R) IR pair is bit-symmetric in the ER region — same as
+// IR_32 but with a non-trivial source elevation in the mix.
+TEST_CASE("IR_38: source tilt preserves x-mirror symmetry", "[engine][source-tilt]")
+{
+    IRSynthParams pL = smallRoomParams();
+    pL.er_only       = true;
+    pL.source_radiation = SourceRadiation::genericInstrument();
+    pL.spkl_tilt     = 0.7853981633974483;   // +45°
+    pL.spkr_tilt     = 0.7853981633974483;
+    pL.mono_source   = true;
+    pL.spkl_angle    = 1.5707963267948966;   // forward
+    pL.spkr_angle    = 1.5707963267948966;
+    pL.source_lx     = 0.30; pL.source_ly = 0.50;
+    pL.source_rx     = 0.30; pL.source_ry = 0.50;
+    pL.receiver_lx   = 0.40; pL.receiver_ly = 0.80;
+    pL.receiver_rx   = 0.60; pL.receiver_ry = 0.80;
+
+    // R = mirror of L across x = 0.5 (rectangular small-room midline).
+    IRSynthParams pR = pL;
+    pR.source_lx = 1.0 - pL.source_lx;
+    pR.source_rx = 1.0 - pL.source_rx;
+    pR.receiver_lx = 1.0 - pL.receiver_rx;
+    pR.receiver_rx = 1.0 - pL.receiver_lx;
+
+    auto noop = [](double, const std::string&) {};
+    auto rL = IRSynthEngine::synthIR (pL, noop);
+    auto rR = IRSynthEngine::synthIR (pR, noop);
+    REQUIRE (rL.success);
+    REQUIRE (rR.success);
+    REQUIRE (rL.irLen == rR.irLen);
+
+    // Mirror-pair: rL.iLL should equal rR.iLR (and rL.iLR == rR.iLL).
+    double maxAbsLL_LR = 0.0, maxAbsLR_LL = 0.0;
+    for (int i = 0; i < rL.irLen; ++i)
+    {
+        maxAbsLL_LR = std::max (maxAbsLL_LR, std::fabs (rL.iLL[(size_t) i] - rR.iLR[(size_t) i]));
+        maxAbsLR_LL = std::max (maxAbsLR_LL, std::fabs (rL.iLR[(size_t) i] - rR.iLL[(size_t) i]));
+    }
+    INFO ("tilt=+45° mirror max |iLL_L - iLR_R| = " << maxAbsLL_LR
+          << "   max |iLR_L - iLL_R| = " << maxAbsLR_LL);
+    CHECK (maxAbsLL_LR < 1e-12);   // tilt is vertical — preserves x-mirror exactly
+    CHECK (maxAbsLR_LL < 1e-12);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

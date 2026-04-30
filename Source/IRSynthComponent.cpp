@@ -271,6 +271,26 @@ IRSynthComponent::IRSynthComponent()
     sourceRadiationLabel.setText ("Radiation", juce::dontSendNotification);
     sourceRadiationLabel.setColour (juce::Label::textColourId, textDim);
 
+    // Source elevation tilt sliders (v2.12). Range −90°…+90°, default 0°
+    // (= bit-identical to v2.11 for any radiation kind, and totally
+    // ignored by Cardioid (legacy) regardless of value). Both sliders are
+    // greyed-out when the legacy preset is selected so the affordance
+    // matches the engine semantics.
+    for (auto* sl : { &sourceTiltLSlider, &sourceTiltRSlider })
+    {
+        sl->setRange (-90.0, 90.0, 0.5);
+        sl->setValue (0.0, juce::dontSendNotification);
+        sl->setTextValueSuffix (" \xc2\xb0");                            // " °"
+        sl->setColour (juce::Slider::textBoxTextColourId,    textDim);
+        sl->setColour (juce::Slider::textBoxOutlineColourId, juce::Colour (0));
+        sl->setColour (juce::Slider::trackColourId,          accent);
+        sl->setColour (juce::Slider::thumbColourId,          accent);
+    }
+    sourceTiltLLabel.setText ("Tilt L", juce::dontSendNotification);
+    sourceTiltRLabel.setText ("Tilt R", juce::dontSendNotification);
+    sourceTiltLLabel.setColour (juce::Label::textColourId, textDim);
+    sourceTiltRLabel.setColour (juce::Label::textColourId, textDim);
+
     // Experimental early-reflection A/B toggles.
     directMaxOrderCombo.addItem ("0 (direct only)",     1);
     directMaxOrderCombo.addItem ("1 (+ first-order)",   2);
@@ -496,6 +516,31 @@ IRSynthComponent::IRSynthComponent()
         // sidecar state and triggers a recalc on the user's next click.
         floorPlanComponent.monoSource = monoSourceButton.getToggleState();
         floorPlanComponent.repaint();
+        // Auto-link tilts: in mono-source mode the engine drops R-source
+        // calcRefs entirely (rRL := rLL), so the R-tilt is moot. Mirror
+        // the L value into R to keep the UI consistent with the engine
+        // and to grey out the now-redundant R slider.
+        if (monoSourceButton.getToggleState())
+            sourceTiltRSlider.setValue (sourceTiltLSlider.getValue(),
+                                        juce::dontSendNotification);
+        sourceTiltRSlider.setEnabled (! monoSourceButton.getToggleState()
+                                      && sourceTiltLSlider.isEnabled());
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+
+    // Tilt sliders (v2.12). The L slider always notifies; the R slider
+    // only notifies when its value differs from L (auto-link suppressed).
+    // Both notify through the same param-changed pipeline so a Calculate
+    // IR prompt comes up the same way as for the existing Options.
+    sourceTiltLSlider.onValueChange = [this]
+    {
+        if (monoSourceButton.getToggleState())
+            sourceTiltRSlider.setValue (sourceTiltLSlider.getValue(),
+                                        juce::dontSendNotification);
+        if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
+    };
+    sourceTiltRSlider.onValueChange = [this]
+    {
         if (! suppressingParamNotifications && onParamModifiedFn) onParamModifiedFn();
     };
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
@@ -624,6 +669,10 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (micPatternLabel);
     addAndMakeVisible (sourceRadiationCombo);
     addAndMakeVisible (sourceRadiationLabel);
+    addAndMakeVisible (sourceTiltLSlider);
+    addAndMakeVisible (sourceTiltRSlider);
+    addAndMakeVisible (sourceTiltLLabel);
+    addAndMakeVisible (sourceTiltRLabel);
     addAndMakeVisible (directMaxOrderCombo);
     addAndMakeVisible (directMaxOrderLabel);
     addAndMakeVisible (lambertScatterButton);
@@ -1127,6 +1176,21 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
         sourceRadiationLabel.setBounds (x0,                    y, radLblW, rowH);
         sourceRadiationCombo.setBounds (x0 + radLblW + gap,    y,
                                         ctrlW - radLblW - gap, rowH);
+        y += rowH + 2;
+    }
+    // Row 5b: Source elevation tilt sliders (v2.12). Two stacked sliders,
+    // L on top, R on bottom. Greyed-out when Cardioid (legacy) is the
+    // active preset; the R slider is also greyed when Mono Source is on
+    // (R-source is dropped by the engine in mono mode).
+    {
+        const int tltLblW = 70;
+        sourceTiltLLabel .setBounds (x0,                    y, tltLblW, rowH);
+        sourceTiltLSlider.setBounds (x0 + tltLblW + gap,    y,
+                                     ctrlW - tltLblW - gap, rowH);
+        y += rowH + 2;
+        sourceTiltRLabel .setBounds (x0,                    y, tltLblW, rowH);
+        sourceTiltRSlider.setBounds (x0 + tltLblW + gap,    y,
+                                     ctrlW - tltLblW - gap, rowH);
         y += rowH + secGap;
     }
 
@@ -1436,6 +1500,16 @@ IRSynthParams IRSynthComponent::getParams() const
         const int    idx  = juce::jlimit (0, (int) list.size() - 1, id - 1);
         p.source_radiation = SourceRadiation::byPreset (list[(size_t) idx]);
     }
+    // Source elevation tilt (v2.12): convert UI degrees → engine radians.
+    // Auto-link L→R when Mono Source is on (the UI keeps the R slider
+    // greyed out and force-mirrored, but we re-mirror here as belt-and-
+    // braces in case state was loaded mid-edit).
+    {
+        const double degToRad = M_PI / 180.0;
+        p.spkl_tilt = sourceTiltLSlider.getValue() * degToRad;
+        p.spkr_tilt = (monoSourceButton.getToggleState() ? sourceTiltLSlider.getValue()
+                                                         : sourceTiltRSlider.getValue()) * degToRad;
+    }
 
     // Decca Tree capture mode (see IRSynthEngine.h). The toggle is a UI-level
     // switch; the tree centre position and angle are stored on the floor
@@ -1572,6 +1646,20 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
             if (saved.equalsIgnoreCase (juce::String (names[(size_t) i])))
             { matchId = i + 1; break; }
         sourceRadiationCombo.setSelectedId (matchId, juce::dontSendNotification);
+    }
+    // Source elevation tilt — convert engine radians → UI degrees. Reflect
+    // the tilt-active state of the loaded radiation preset on the slider
+    // enabled/disabled state so the affordance lines up with the engine.
+    {
+        const double radToDeg = 180.0 / M_PI;
+        sourceTiltLSlider.setValue (juce::jlimit (-90.0, 90.0, p.spkl_tilt * radToDeg),
+                                    juce::dontSendNotification);
+        sourceTiltRSlider.setValue (juce::jlimit (-90.0, 90.0, p.spkr_tilt * radToDeg),
+                                    juce::dontSendNotification);
+        const bool tiltActive =
+            (p.source_radiation.kind != SourceRadiation::Kind::LegacyCardioid);
+        sourceTiltLSlider.setEnabled (tiltActive);
+        sourceTiltRSlider.setEnabled (tiltActive && ! p.mono_source);
     }
     erOnlyButton.setToggleState (p.er_only, juce::dontSendNotification);
     // p.sample_rate is no longer surfaced in the UI (v2.8.x removal of the
@@ -1750,6 +1838,28 @@ void IRSynthComponent::comboBoxChanged (juce::ComboBox* combo)
             updateShapeProportionVisibility();
             floorPlanComponent.repaint();
             resized();
+        }
+        else if (combo == &sourceRadiationCombo)
+        {
+            // Auto-populate the tilt sliders with the new preset's
+            // defaultTiltDeg, then grey them out if Legacy was selected
+            // (the engine ignores tilt for LegacyCardioid). This is the
+            // "auto" choice from the v2.12 design discussion — fully
+            // overriding the current value so users get a sensible
+            // starting point per preset.
+            const int    id  = sourceRadiationCombo.getSelectedId();
+            const auto&  ls  = SourceRadiation::presetNames();
+            const int    idx = juce::jlimit (0, (int) ls.size() - 1, id - 1);
+            const auto   sr  = SourceRadiation::byPreset (ls[(size_t) idx]);
+            const double tilt = juce::jlimit (-90.0, 90.0, sr.defaultTiltDeg);
+            sourceTiltLSlider.setValue (tilt, juce::dontSendNotification);
+            if (monoSourceButton.getToggleState())
+                sourceTiltRSlider.setValue (tilt, juce::dontSendNotification);
+            else
+                sourceTiltRSlider.setValue (tilt, juce::dontSendNotification);
+            const bool tiltActive = (sr.kind != SourceRadiation::Kind::LegacyCardioid);
+            sourceTiltLSlider.setEnabled (tiltActive);
+            sourceTiltRSlider.setEnabled (tiltActive && ! monoSourceButton.getToggleState());
         }
         onParamModifiedFn();
     }
@@ -1971,6 +2081,15 @@ void IRSynthComponent::setInteractionLocked (bool locked)
     spkDirFullButton    .setEnabled (e);
     monoSourceButton    .setEnabled (e);
     sourceRadiationCombo.setEnabled (e);
+    // Tilt sliders track the global enabled flag, but their effective
+    // enabled state is also gated by the active radiation kind (legacy
+    // ⇒ both off) and Mono Source (R off). When the global enable goes
+    // false everything is off; when it goes true the per-kind/per-mono
+    // logic in setParams / the combo+mono onChange handlers re-applies.
+    sourceTiltLSlider   .setEnabled (e);
+    sourceTiltRSlider   .setEnabled (e);
+    sourceTiltLLabel    .setEnabled (e);
+    sourceTiltRLabel    .setEnabled (e);
 
     // Mic-path enables + Decca + aux controls + tilts
     directEnableButton   .setEnabled (e);

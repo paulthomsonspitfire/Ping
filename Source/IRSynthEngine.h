@@ -51,12 +51,13 @@
  * to every Kind identically (full=true → no fade; full=false → pattern at
  * orders 0–1, 50/50 with omni at order 2, omni at order 3+).
  *
- * This struct is intentionally extensible: future engine work can add
- * vertical-axis tilt (for upward-radiating strings/voice), asymmetric
- * rear-lobe coefficients, or full spherical-harmonic coefficients without
- * a further IRSynthParams refactor — the existing fields stay layout-
- * compatible because new optional members are appended at the end with
- * harmless defaults.
+ * This struct is intentionally extensible: v2.12 added per-source
+ * vertical tilt (see `IRSynthParams::spkl_tilt` / `spkr_tilt` and
+ * `defaultTiltDeg` below). Future work can append asymmetric rear-lobe
+ * coefficients or full spherical-harmonic coefficients without a further
+ * IRSynthParams refactor — the existing fields stay layout-compatible
+ * because new optional members are appended at the end with harmless
+ * defaults.
  */
 struct SourceRadiation
 {
@@ -79,6 +80,17 @@ struct SourceRadiation
     // load time, so coefficient drift in a preset's tuning does NOT
     // invalidate older sidecars.
     std::string presetName;
+
+    // Suggested vertical tilt in DEGREES for this preset (0 = horizontal
+    // forward, +90 = straight up, −90 = straight down). Purely advisory:
+    // the actual per-source tilt lives on IRSynthParams::spkl_tilt /
+    // spkr_tilt and is always under user control. The UI uses this value
+    // to auto-populate the tilt slider when a preset is picked (e.g.
+    // strings/voice default to a slight upward tilt; brass defaults to 0
+    // because the bell is usually pointed at the listener). Set to 0 for
+    // all built-in v2.11 presets so loading an existing scene does not
+    // change behaviour.
+    double defaultTiltDeg = 0.0;
 
     // ── Built-in preset factories ────────────────────────────────────────
     // Each returns a fully populated SourceRadiation. byPreset() does a
@@ -193,6 +205,23 @@ struct IRSynthParams
     double spkr_angle = 1.57079632679;
     double micl_angle = -2.35619449019;  // -3π/4 up-left
     double micr_angle = -0.785398163397; // -π/4 up-right
+
+    // Source elevation tilt (radians, v2.12): 0 = horizontal forward,
+    // +π/2 = aimed straight up (e.g. violin bell upward), −π/2 = down.
+    // When the source_radiation kind is non-Legacy, calcRefs and
+    // calcRefsPolygon use the full 3D directivityCos (azimuth + elevation
+    // + tilt) for the speaker pattern, so a tilted violin/voice now
+    // correctly attenuates listeners behind/below the instrument.
+    //
+    // Bit-identity: when both tilts are 0 *and* the radiation kind is
+    // LegacyCardioid, the inline scalar `sg` path is unchanged and the
+    // engine output remains bit-identical to v2.11 (IR_11/IR_14/IR_32/
+    // IR_33 stay green). LegacyCardioid intentionally does NOT consume
+    // tilt — the UI greys the tilt slider out for that preset and the
+    // documented promise is "Cardioid (legacy) is bit-identical to the
+    // pre-v2.11 engine, including ignoring tilt".
+    double spkl_tilt = 0.0;
+    double spkr_tilt = 0.0;
 
     // Mic elevation tilt (radians): 0 = horizontal, +π/2 = straight up,
     // -π/2 = straight down. Acts as the elevation component of each mic's
@@ -516,7 +545,8 @@ private:
         double maxRefDist,
         double minJitterMs = 0.0,
         double highOrderJitterMs = 0.0,   // jitter for order 2+ (when close, breaks periodic echo)
-        double micFaceTilt = 0.0);        // mic elevation tilt in radians (0 = horizontal); see directivityCos
+        double micFaceTilt = 0.0,         // mic elevation tilt in radians (0 = horizontal); see directivityCos
+        double spkFaceTilt = 0.0);        // source elevation tilt (v2.12); only consumed when source_radiation kind != LegacyCardioid
 
     // calcRefsPolygon — polygon image-source method for non-rectangular shapes.
     // Structurally mirrors calcRefs parameter-for-parameter so the two can be
@@ -542,7 +572,8 @@ private:
         double maxRefDist,
         double minJitterMs = 0.0,
         double highOrderJitterMs = 0.0,
-        double micFaceTilt = 0.0);
+        double micFaceTilt = 0.0,
+        double spkFaceTilt = 0.0);
 
     static std::vector<double> bpF  (const std::vector<double>& buf, double fc, int sr);
     static std::vector<double> bpFQ (const std::vector<double>& buf, double fc, double Q, int sr);

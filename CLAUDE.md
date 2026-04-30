@@ -125,8 +125,11 @@ g++ -std=c++17 -O2 \
 | IR_11 | Golden regression lock — 30 samples from onset at index 583, locked to 17 sig-fig |
 | IR_32 | Rectangular x-mirror symmetry of the ER region (v2.10 mirror-symmetric jitter — see "Mirror-symmetric ER jitter" section) |
 | IR_33 | Polygon (Cathedral) x-mirror symmetry of the ER region |
-| IR_34 | SourceRadiation Parametric (exp=1, floor=0) reproduces LegacyCardioid bit-equivalent — see "Source radiation models (v2.11)" section |
+| IR_34 | SourceRadiation Parametric (exp=1, floor=0) reproduces LegacyCardioid within 0.5 % of peak (v2.12 relaxed from bit-equiv: Parametric is now 3D, Legacy is still 2D) |
 | IR_35 | Phase 1 source radiation preset coefficients are pinned (catches accidental drift in `SourceRadiation::*()` factories) |
+| IR_36 | LegacyCardioid ignores `spkl_tilt`/`spkr_tilt` — IR is bit-identical even when tilt is set to a nonsense value (v2.11 sidecars still load bit-identical in v2.12) |
+| IR_37 | Parametric radiation honours source tilt — tilt = +π/4 produces an IR that differs from tilt = 0 by ≥ 1 % of peak (catches a forgotten `spkTilt` in any of the three `refsDispatch` lambdas) |
+| IR_38 | Source tilt preserves x-mirror symmetry — tilt is purely vertical, so a tilted Parametric scene is still bit-mirror-symmetric in the ER region (1e-12 tolerance) |
 | IR_12 | FDN LFO rates have no rational beat frequencies (p,q ≤ 6 check across all 120 pairs) |
 | IR_13 | IR end-of-buffer is near-silent — last 500 ms below −60 dB of peak (silence-trim precondition) |
 
@@ -1255,18 +1258,105 @@ the `.ping` sidecar XML as the `srcRad` attribute (sibling of `micPat`).
 Older sidecars without `srcRad` resolve to `Cardioid (legacy)` — preserves
 bit-identity for existing user content.
 
-**3D vertical tilt is NOT yet implemented.** Strings/voice presets that
-should radiate upward in 3D are approximated as broader 2D patterns with
-high floors. Adding per-source elevation tilt is a future engine extension
-(would reuse the same `directivityCos` machinery already used for mics);
-the `SourceRadiation` struct reserves field-layout space at the end so
-adding tilt later won't require a struct refactor.
+**3D vertical tilt is implemented in v2.12** (see "Source elevation tilt
+(v2.12)" below). The Strings/Voice/Wind presets ship with sensible
+upward `defaultTiltDeg` values; the UI auto-populates the tilt slider
+when a preset is picked.
 
 **Diagnostic probe:** `Tools/source_radiation_probe.cpp` — prints per-band
 per-angle gain tables for each model, runs the engine across three aim
 modes (forward / 90° lateral / 180° rear) showing how much the model
 matters in each, and writes 12 listening-A/B WAVs to `listening-ab/`. Use
 this to validate new presets / data files before shipping.
+
+### Source elevation tilt (v2.12)
+
+Real instruments don't all radiate horizontally: violin/viola/cello f-
+holes face the ceiling, tubas point straight up, voices project slightly
+above horizontal. v2.12 adds a per-source elevation tilt knob so the
+non-Legacy radiation kinds use the full 3D `directivityCos` cone instead
+of the previous 2D `cos(spkAz - faceAz)` formula.
+
+**Engine wiring** — `IRSynthParams` gains two fields:
+
+```cpp
+double spkl_tilt = 0.0;   // radians; 0 = horizontal, +π/2 = up, −π/2 = down
+double spkr_tilt = 0.0;
+```
+
+`calcRefs` and `calcRefsPolygon` branch on `source_radiation.kind`:
+
+  * `LegacyCardioid` keeps the inline scalar 2D formula
+    (`spkG(faceAngle, spkAz)`) — **bit-identical to v2.11 regardless of
+    the tilt value**. The UI greys the tilt slider out for this preset
+    so the affordance matches the engine semantics. IR_36 enforces
+    this contract.
+  * `Parametric` and `Omni` use the full 3D
+    `directivityCos(spkAz, elSrc, spkFaceAngle, spkFaceTilt)` where
+    `elSrc = atan2(rz - sz, hDistSrcReal)`. With `spkFaceTilt = 0` and
+    source/receiver at the same height, this reduces to the v2.11 2D
+    formula; otherwise it correctly modulates per-band gain by
+    elevation.
+
+**`SourceRadiation::defaultTiltDeg`** is a per-preset hint (not used by
+the engine — purely a UI affordance). Picking a preset auto-populates
+the tilt slider:
+
+| Preset                    | defaultTiltDeg | Rationale                               |
+|---------------------------|---------------:|-----------------------------------------|
+| Cardioid (legacy)         |   0°           | preset ignores tilt anyway              |
+| Omni                      |   0°           | invariant to tilt                       |
+| Generic instrument        |   0°           | conservative — user picks               |
+| Brass (forward)           |   0°           | bell aimed at listener                  |
+| Voice                     |  +10°          | mouth slightly above horizontal         |
+| Strings (broad)           |  +30°          | violin/cello body faces ceiling         |
+| Wind / reed               |  +15°          | clarinet/oboe held semi-vertically      |
+| Tuba (JSON)               |  +90°          | bell points straight up                 |
+| Violin (JSON)             |  +30°          | upward radiation lobe                   |
+| Cello (JSON)              |  +20°          | front of body angled up                 |
+| Voice (alto/tenor) (JSON) |  +10°          | as above                                |
+| Clarinet (JSON)           |  +20°          | held away from body                     |
+| Oboe (JSON)               |  +15°          | as above                                |
+
+The JSON schema gains an optional `defaultTiltDeg` field (clamped to
+[-90, +90]). Missing → 0, so v2.11 JSON files behave bit-identically.
+
+**UI** — two sliders ("Tilt L" / "Tilt R") in the IR Synth Options group
+just below the Radiation dropdown, range -90°…+90°, step 0.5°:
+
+  * Greyed out when the active preset is Cardioid (legacy).
+  * Tilt R is greyed out when Mono Source is on (engine drops R-source
+    calcRefs in mono mode anyway). The L slider's value is mirrored into
+    R while mono is on, so toggling mono off doesn't leave a stale R.
+  * Picking a Radiation preset auto-overrides both sliders to the
+    preset's `defaultTiltDeg` — chosen explicitly because this is the
+    "auto" choice from the v2.12 design discussion (matches the way
+    most users will reach for tilt: via the preset).
+
+**XML round-trip** — two new IR-sidecar attributes `srcTiltL` /
+`srcTiltR` (siblings of `srcRad`/`micPat`). Old sidecars without them
+default both to 0 → bit-identical to v2.11 even for non-Legacy preset
+choices that came along in v2.11.
+
+**Bit-identity guarantees** (verified by IR_11 / IR_14 / IR_32 / IR_33 /
+IR_36 in CI):
+
+  1. v2.11 sidecars (no srcTilt attrs, no srcRad attr) load with both
+     tilts = 0 and `Cardioid (legacy)` → engine output bit-identical to
+     v2.11 (Legacy path is unchanged).
+  2. v2.11 sidecars that DO have `srcRad="Cardioid (legacy)"` round-
+     trip identically — Legacy ignores tilt regardless.
+  3. Even if a v2.12 user manually sets `srcTiltL=π/2` while keeping
+     `srcRad="Cardioid (legacy)"`, the IR is bit-identical to tilt=0
+     (IR_36 explicitly tests this).
+
+**Diagnostic probe:** `Tools/source_tilt_probe.cpp` renders the same
+small Decca scene under 12 (preset, tilt) combinations, prints per-band
+RMS at the L outer mic, and writes WAVs to `listening-ab/tilt-*.wav` for
+blind A/B. Confirms that legacy ignores tilt, parametric responds with
+clear per-band changes (~3 dB at HF for 45° tilt), and the strings/voice
+preset defaults visibly lift HF energy when the source is tipped up
+toward the elevated Decca array.
 
 ### Close / coincident speaker handling
 

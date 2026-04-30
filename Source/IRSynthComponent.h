@@ -214,6 +214,17 @@ private:
     juce::ComboBox sourceRadiationCombo;
     juce::Label    sourceRadiationLabel;
 
+    // Source elevation tilt (v2.12). Per-source so L and R can be tipped
+    // independently; auto-linked when monoSourceButton is on (R slider
+    // mirrors L). Picking a Radiation preset auto-populates both sliders
+    // with the preset's defaultTiltDeg. The sliders are greyed-out when
+    // the selected radiation kind is Cardioid (legacy), since the legacy
+    // path intentionally ignores tilt to preserve v2.11 bit-identity.
+    juce::Slider sourceTiltLSlider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+    juce::Slider sourceTiltRSlider { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
+    juce::Label  sourceTiltLLabel;
+    juce::Label  sourceTiltRLabel;
+
     // ── Experimental early-reflection A/B toggles ────────────────────────────
     // directMaxOrderCombo drives IRSynthParams::direct_max_order (0 / 1 / 2).
     // lambertScatterButton drives IRSynthParams::lambert_scatter_enabled.

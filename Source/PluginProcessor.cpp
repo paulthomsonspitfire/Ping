@@ -72,6 +72,10 @@ static void loadInstrumentRadiationJson()
             r.bandExp  [(size_t) i] = (double) (*expArr)  [i];
             r.bandFloor[(size_t) i] = juce::jlimit (0.0, 1.0, (double) (*floorArr)[i]);
         }
+        // Optional v2.12 field — falls back to 0 (no tilt) if missing,
+        // which keeps v2.11 JSON files behaving exactly the same.
+        r.defaultTiltDeg = juce::jlimit (-90.0, 90.0,
+            (double) entry.getProperty ("defaultTiltDeg", 0.0));
         SourceRadiation::registerLoadedPreset (r);
         ++loaded;
     }
@@ -3024,6 +3028,11 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     // re-resolves through SourceRadiation::byPreset() at read time, falling
     // back to "Cardioid (legacy)" if the named preset isn't known.
     ir->setAttribute ("srcRad", juce::String (p.source_radiation.presetName));
+    // Source elevation tilt (v2.12+). Per-source so L and R can be tilted
+    // independently. Defaults to 0 if missing — see XML loader for the
+    // bit-identity guarantee for v2.11 sidecars.
+    ir->setAttribute ("srcTiltL", p.spkl_tilt);
+    ir->setAttribute ("srcTiltR", p.spkr_tilt);
     ir->setAttribute ("erOnly", p.er_only);
     ir->setAttribute ("sr", p.sample_rate);
     ir->setAttribute ("bakeERTail", p.bake_er_tail_balance);
@@ -3192,6 +3201,12 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
         const juce::String srcRadName = ir->getStringAttribute ("srcRad", "Cardioid (legacy)");
         p.source_radiation = SourceRadiation::byPreset (srcRadName.toStdString());
     }
+    // Older sidecars (pre-v2.12) lack srcTiltL/srcTiltR → both default to
+    // 0 which keeps engine output bit-identical to v2.11 even for non-
+    // Legacy radiation kinds (cosThSpk == cos(2D-az-diff) when tilt = 0
+    // and source/receiver are at the same height).
+    p.spkl_tilt = ir->getDoubleAttribute ("srcTiltL", 0.0);
+    p.spkr_tilt = ir->getDoubleAttribute ("srcTiltR", 0.0);
     p.er_only        = ir->getBoolAttribute ("erOnly", false);
     p.sample_rate    = ir->getIntAttribute ("sr", 48000);
     p.bake_er_tail_balance = ir->getBoolAttribute ("bakeERTail", false);

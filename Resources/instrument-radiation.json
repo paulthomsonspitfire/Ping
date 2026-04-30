@@ -19,6 +19,13 @@
     "startup (PluginProcessor::loadInstrumentRadiationJson) and appears in",
     "the radiation dropdown in the source panel.",
     "",
+    "Optional 'defaultTiltDeg' (v2.12+, default 0): the typical playing",
+    "elevation the source is held at, in degrees. Positive = aimed upward",
+    "(e.g. violin/viola = +30, tuba = +90, voice = +10, brass forward = 0).",
+    "Used by the UI to auto-populate the tilt slider when a preset is",
+    "picked; the actual per-source tilt always lives on IRSynthParams::",
+    "spkl_tilt / spkr_tilt and is fully under user control.",
+    "",
     "To add a new instrument: add an entry below, save the file, rebuild",
     "(BinaryData regenerates from Resources/) — no engine code changes."
   ],
@@ -49,35 +56,43 @@
       "name": "Tuba",
       "_source": "Meyer 2009, fig 5.16 (BB-flat tuba, upward-firing bell)",
       "_notes": [
-        "Tuba is upward-firing in 3D — modelled here as a broad pattern in",
-        "2D since the engine is 2D-only in v2.11. Rear floor is high",
-        "because the bell points UP, not forward; a 2D engine sees ~uniform",
-        "horizontal radiation. Add 3D tilt support later for accuracy."
+        "Tuba bell points UP. v2.12 defaults the source tilt to +90° so",
+        "the bell radiates straight up by default. The bandExp/bandFloor",
+        "values describe the cardioid-shaped lobe relative to the BELL'S",
+        "axis (not horizontal); combined with tilt = +90° this puts the",
+        "narrowing at the ceiling. Users wanting the v2.11 2D-broad",
+        "approximation can drag the tilt back to 0°."
       ],
       "bandExp":   [0.0, 0.0, 0.2, 0.6, 1.2, 1.8, 2.4, 3.0],
-      "bandFloor": [1.00, 0.95, 0.75, 0.55, 0.40, 0.30, 0.25, 0.20]
+      "bandFloor": [1.00, 0.95, 0.75, 0.55, 0.40, 0.30, 0.25, 0.20],
+      "defaultTiltDeg": 90.0
     },
     {
       "name": "Violin",
       "_source": "Meyer 2009, fig 4.13 (violin horizontal-plane polar)",
       "_notes": [
         "Real violin radiation is highly upward-tilted (instrument body",
-        "faces ceiling). In 2D this maps to a relatively broad horizontal",
-        "lobe with high rear floor. Above 2 kHz, characteristic 'pin-",
-        "cushion' lobing — collapsed to a smooth narrowing curve here."
+        "faces ceiling). With v2.12 tilt, the front-of-body axis points",
+        "+30° upward by default (typical playing posture). The horizontal",
+        "lobe shape (bandExp/bandFloor) is then re-aimed up via tilt so",
+        "ceiling-direction reflections are emphasised."
       ],
       "bandExp":   [0.0, 0.0, 0.1, 0.4, 0.9, 1.4, 1.8, 2.2],
-      "bandFloor": [1.00, 0.90, 0.60, 0.45, 0.35, 0.25, 0.20, 0.20]
+      "bandFloor": [1.00, 0.90, 0.60, 0.45, 0.35, 0.25, 0.20, 0.20],
+      "defaultTiltDeg": 30.0
     },
     {
       "name": "Cello",
       "_source": "Meyer 2009, fig 4.21 (cello horizontal-plane polar)",
       "_notes": [
-        "Body radiates forward and somewhat downward. Pattern broader",
-        "than violin at LF (larger body), narrowing similarly at HF."
+        "Body radiates forward and somewhat upward (the front is angled",
+        "up about 20° in normal playing posture). v2.12 defaults to +20°.",
+        "Pattern broader than violin at LF (larger body), narrowing",
+        "similarly at HF."
       ],
       "bandExp":   [0.0, 0.0, 0.2, 0.5, 1.0, 1.5, 2.0, 2.4],
-      "bandFloor": [1.00, 0.90, 0.55, 0.40, 0.30, 0.22, 0.18, 0.18]
+      "bandFloor": [1.00, 0.90, 0.55, 0.40, 0.30, 0.22, 0.18, 0.18],
+      "defaultTiltDeg": 20.0
     },
     {
       "name": "Voice (alto)",
@@ -85,10 +100,13 @@
       "_notes": [
         "Forward bias above ~700 Hz (formant region). LF is omni due to",
         "throat radiation. Floor stays relatively high — singers radiate",
-        "audibly behind themselves. Slightly broader than 'Voice' generic."
+        "audibly behind themselves. Slightly broader than 'Voice' generic.",
+        "v2.12 defaults to +10° tilt (mouth angled slightly up when",
+        "projecting)."
       ],
       "bandExp":   [0.0, 0.1, 0.3, 0.7, 1.2, 1.8, 2.4, 2.8],
-      "bandFloor": [1.00, 0.80, 0.50, 0.30, 0.20, 0.15, 0.12, 0.12]
+      "bandFloor": [1.00, 0.80, 0.50, 0.30, 0.20, 0.15, 0.12, 0.12],
+      "defaultTiltDeg": 10.0
     },
     {
       "name": "Voice (tenor)",
@@ -98,7 +116,8 @@
         "energy travelling further; HF narrowing similar."
       ],
       "bandExp":   [0.0, 0.1, 0.4, 0.9, 1.4, 2.0, 2.6, 3.0],
-      "bandFloor": [1.00, 0.75, 0.45, 0.25, 0.15, 0.12, 0.10, 0.10]
+      "bandFloor": [1.00, 0.75, 0.45, 0.25, 0.15, 0.12, 0.10, 0.10],
+      "defaultTiltDeg": 10.0
     },
     {
       "name": "Flute",
@@ -116,11 +135,12 @@
       "_source": "Meyer 2009, fig 6.13 (B-flat clarinet polar)",
       "_notes": [
         "Bell-radiating reed, narrower than flute but broader than brass.",
-        "Cylindrical bore gives an unusual harmonic distribution but the",
-        "polar shape itself is fairly conventional."
+        "Held at ~45° from vertical in playing posture; v2.12 defaults",
+        "tilt to +20° to capture this."
       ],
       "bandExp":   [0.0, 0.1, 0.3, 0.7, 1.2, 1.8, 2.5, 3.0],
-      "bandFloor": [1.00, 0.85, 0.55, 0.30, 0.18, 0.15, 0.12, 0.12]
+      "bandFloor": [1.00, 0.85, 0.55, 0.30, 0.18, 0.15, 0.12, 0.12],
+      "defaultTiltDeg": 20.0
     },
     {
       "name": "Oboe",
@@ -128,10 +148,11 @@
       "_notes": [
         "Conical reed, narrower polar than clarinet at HF due to small bell.",
         "Broader at LF. Generally very forward-projecting in concert-hall",
-        "use which is why it carries so well."
+        "use which is why it carries so well. Held at ~30° from vertical."
       ],
       "bandExp":   [0.0, 0.1, 0.4, 0.9, 1.5, 2.2, 3.0, 3.6],
-      "bandFloor": [1.00, 0.80, 0.45, 0.25, 0.15, 0.12, 0.10, 0.10]
+      "bandFloor": [1.00, 0.80, 0.45, 0.25, 0.15, 0.12, 0.10, 0.10],
+      "defaultTiltDeg": 15.0
     }
   ]
 }
