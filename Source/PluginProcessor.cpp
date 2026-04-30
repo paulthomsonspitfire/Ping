@@ -1,6 +1,83 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "PingBinaryData.h"
 #include <sys/stat.h>
+
+// ── Source-radiation JSON loader (Phase 2 measured-instrument data) ───────
+// Loads Resources/instrument-radiation.json (bundled via BinaryData) and
+// registers each entry into the SourceRadiation preset registry. Called
+// once from the PingProcessor constructor.
+//
+// JSON schema (see Resources/instrument-radiation.json for inline docs):
+//   { "instruments": [
+//       { "name": "Trumpet",
+//         "bandExp":   [..8 numbers..],
+//         "bandFloor": [..8 numbers..] },
+//       ...] }
+//
+// Failures (parse errors, missing fields, wrong-length arrays) are logged
+// but non-fatal: the plugin still loads with the built-in Phase 1 presets.
+static void loadInstrumentRadiationJson()
+{
+    const char* dataPtr = nullptr;
+    int         dataLen = 0;
+    for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
+    {
+        if (juce::String (BinaryData::originalFilenames[i]) == "instrument-radiation.json")
+        {
+            dataPtr = BinaryData::getNamedResource (BinaryData::namedResourceList[i], dataLen);
+            break;
+        }
+    }
+    if (dataPtr == nullptr || dataLen <= 0)
+    {
+        DBG ("instrument-radiation.json not found in BinaryData; Phase 2 presets unavailable");
+        return;
+    }
+
+    const juce::String jsonText (dataPtr, (size_t) dataLen);
+    juce::var root = juce::JSON::parse (jsonText);
+    if (! root.isObject())
+    {
+        DBG ("instrument-radiation.json: parse failed (not an object)");
+        return;
+    }
+
+    auto* arr = root.getProperty ("instruments", juce::var()).getArray();
+    if (arr == nullptr)
+    {
+        DBG ("instrument-radiation.json: 'instruments' missing or not an array");
+        return;
+    }
+
+    int loaded = 0, skipped = 0;
+    for (const auto& entry : *arr)
+    {
+        if (! entry.isObject()) { ++skipped; continue; }
+        const juce::String name = entry.getProperty ("name", "").toString();
+        auto* expArr   = entry.getProperty ("bandExp",   juce::var()).getArray();
+        auto* floorArr = entry.getProperty ("bandFloor", juce::var()).getArray();
+        if (name.isEmpty() || expArr == nullptr || floorArr == nullptr
+            || expArr->size() != 8 || floorArr->size() != 8)
+        {
+            DBG ("instrument-radiation.json: skipping invalid entry '" + name + "'");
+            ++skipped;
+            continue;
+        }
+        SourceRadiation r;
+        r.kind = SourceRadiation::Kind::Parametric;
+        r.presetName = name.toStdString();
+        for (int i = 0; i < 8; ++i)
+        {
+            r.bandExp  [(size_t) i] = (double) (*expArr)  [i];
+            r.bandFloor[(size_t) i] = juce::jlimit (0.0, 1.0, (double) (*floorArr)[i]);
+        }
+        SourceRadiation::registerLoadedPreset (r);
+        ++loaded;
+    }
+    DBG ("instrument-radiation.json: loaded " + juce::String (loaded)
+         + " presets (" + juce::String (skipped) + " skipped)");
+}
 
 static void writeIRSynthParamsSidecar (const juce::File& wavFile, const IRSynthParams& p,
                                        const PingProcessor::MixerGateState* gates = nullptr);
@@ -307,6 +384,10 @@ PingProcessor::PingProcessor()
         param->addListener (this);
     irManager.refresh();
     loadStoredLicence();
+
+    // Load measured-instrument radiation profiles (Phase 2). Idempotent on
+    // name across repeated PluginProcessor instances within one process.
+    loadInstrumentRadiationJson();
 }
 
 PingProcessor::~PingProcessor()
@@ -2938,6 +3019,11 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     ir->setAttribute ("micl", p.micl_angle);
     ir->setAttribute ("micr", p.micr_angle);
     ir->setAttribute ("micPat", juce::String (p.mic_pattern));
+    // Source radiation preset (v2.11+). Stored by name so coefficient
+    // tweaks inside the plugin don't invalidate older sidecars: the loader
+    // re-resolves through SourceRadiation::byPreset() at read time, falling
+    // back to "Cardioid (legacy)" if the named preset isn't known.
+    ir->setAttribute ("srcRad", juce::String (p.source_radiation.presetName));
     ir->setAttribute ("erOnly", p.er_only);
     ir->setAttribute ("sr", p.sample_rate);
     ir->setAttribute ("bakeERTail", p.bake_er_tail_balance);
@@ -3100,6 +3186,12 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.micl_angle     = ir->getDoubleAttribute ("micl", -2.35619449019);
     p.micr_angle     = ir->getDoubleAttribute ("micr", -0.785398163397);
     p.mic_pattern    = ir->getStringAttribute ("micPat", "cardioid").toStdString();
+    {
+        // Older sidecars (pre-v2.11) lack "srcRad" → resolve to the legacy
+        // cardioid (bit-identical to pre-v2.11 engine).
+        const juce::String srcRadName = ir->getStringAttribute ("srcRad", "Cardioid (legacy)");
+        p.source_radiation = SourceRadiation::byPreset (srcRadName.toStdString());
+    }
     p.er_only        = ir->getBoolAttribute ("erOnly", false);
     p.sample_rate    = ir->getIntAttribute ("sr", 48000);
     p.bake_er_tail_balance = ir->getBoolAttribute ("bakeERTail", false);

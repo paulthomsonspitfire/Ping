@@ -1,0 +1,137 @@
+{
+  "_comment": [
+    "Per-instrument source radiation profiles (Phase 2).",
+    "",
+    "These are hand-digitised approximations of polar plots from Meyer,",
+    "'Acoustics and the Performance of Music' (Springer, 2009 English ed.,",
+    "ch. 4-7), and Pollow et al. (Aachen 2012) where the published 1/3-",
+    "octave data could be averaged into our 8 octave bands.",
+    "",
+    "The model is a per-band cosine-power formula:",
+    "    g(θ, b) = floor[b] + (1 - floor[b]) * max(0, 0.5 + 0.5*cos(θ))^exp[b]",
+    "exp[b] controls how quickly the polar pattern narrows with frequency;",
+    "floor[b] sets the rear-radiation floor (a true cardioid would be 0;",
+    "real instruments have a non-zero floor, typically -15..-25 dB).",
+    "",
+    "Bands: [125, 250, 500, 1000, 2000, 4000, 8000, 16000] Hz.",
+    "",
+    "Each entry is loaded into the SourceRadiation registry at plugin",
+    "startup (PluginProcessor::loadInstrumentRadiationJson) and appears in",
+    "the radiation dropdown in the source panel.",
+    "",
+    "To add a new instrument: add an entry below, save the file, rebuild",
+    "(BinaryData regenerates from Resources/) — no engine code changes."
+  ],
+
+  "instruments": [
+    {
+      "name": "Trumpet",
+      "_source": "Meyer 2009, fig 5.5 (B-flat trumpet, polar diagrams)",
+      "_notes": [
+        "LF below ~500 Hz omni; bell narrows aggressively above 1 kHz.",
+        "Rear floor decreases sharply with frequency (small bell vs",
+        "wavelength). At 4 kHz the back is ~25 dB down from front."
+      ],
+      "bandExp":   [0.0, 0.1, 0.5, 1.4, 2.8, 4.5, 6.0, 7.5],
+      "bandFloor": [1.00, 0.85, 0.40, 0.15, 0.06, 0.05, 0.05, 0.05]
+    },
+    {
+      "name": "Trombone",
+      "_source": "Meyer 2009, fig 5.10 (tenor trombone, slide-out polar diagrams)",
+      "_notes": [
+        "Similar to trumpet but slightly broader lobe at HF (larger bell).",
+        "LF behaviour very similar; HF ~10% wider main lobe."
+      ],
+      "bandExp":   [0.0, 0.1, 0.4, 1.2, 2.4, 3.8, 5.0, 6.0],
+      "bandFloor": [1.00, 0.85, 0.45, 0.20, 0.08, 0.05, 0.05, 0.05]
+    },
+    {
+      "name": "Tuba",
+      "_source": "Meyer 2009, fig 5.16 (BB-flat tuba, upward-firing bell)",
+      "_notes": [
+        "Tuba is upward-firing in 3D — modelled here as a broad pattern in",
+        "2D since the engine is 2D-only in v2.11. Rear floor is high",
+        "because the bell points UP, not forward; a 2D engine sees ~uniform",
+        "horizontal radiation. Add 3D tilt support later for accuracy."
+      ],
+      "bandExp":   [0.0, 0.0, 0.2, 0.6, 1.2, 1.8, 2.4, 3.0],
+      "bandFloor": [1.00, 0.95, 0.75, 0.55, 0.40, 0.30, 0.25, 0.20]
+    },
+    {
+      "name": "Violin",
+      "_source": "Meyer 2009, fig 4.13 (violin horizontal-plane polar)",
+      "_notes": [
+        "Real violin radiation is highly upward-tilted (instrument body",
+        "faces ceiling). In 2D this maps to a relatively broad horizontal",
+        "lobe with high rear floor. Above 2 kHz, characteristic 'pin-",
+        "cushion' lobing — collapsed to a smooth narrowing curve here."
+      ],
+      "bandExp":   [0.0, 0.0, 0.1, 0.4, 0.9, 1.4, 1.8, 2.2],
+      "bandFloor": [1.00, 0.90, 0.60, 0.45, 0.35, 0.25, 0.20, 0.20]
+    },
+    {
+      "name": "Cello",
+      "_source": "Meyer 2009, fig 4.21 (cello horizontal-plane polar)",
+      "_notes": [
+        "Body radiates forward and somewhat downward. Pattern broader",
+        "than violin at LF (larger body), narrowing similarly at HF."
+      ],
+      "bandExp":   [0.0, 0.0, 0.2, 0.5, 1.0, 1.5, 2.0, 2.4],
+      "bandFloor": [1.00, 0.90, 0.55, 0.40, 0.30, 0.22, 0.18, 0.18]
+    },
+    {
+      "name": "Voice (alto)",
+      "_source": "Meyer 2009, fig 7.12 (female voice, 'a' vowel polar)",
+      "_notes": [
+        "Forward bias above ~700 Hz (formant region). LF is omni due to",
+        "throat radiation. Floor stays relatively high — singers radiate",
+        "audibly behind themselves. Slightly broader than 'Voice' generic."
+      ],
+      "bandExp":   [0.0, 0.1, 0.3, 0.7, 1.2, 1.8, 2.4, 2.8],
+      "bandFloor": [1.00, 0.80, 0.50, 0.30, 0.20, 0.15, 0.12, 0.12]
+    },
+    {
+      "name": "Voice (tenor)",
+      "_source": "Meyer 2009, fig 7.10 (male voice, 'a' vowel polar)",
+      "_notes": [
+        "Slightly more forward-projecting than alto due to lower-formant",
+        "energy travelling further; HF narrowing similar."
+      ],
+      "bandExp":   [0.0, 0.1, 0.4, 0.9, 1.4, 2.0, 2.6, 3.0],
+      "bandFloor": [1.00, 0.75, 0.45, 0.25, 0.15, 0.12, 0.10, 0.10]
+    },
+    {
+      "name": "Flute",
+      "_source": "Meyer 2009, fig 6.4 (Boehm flute polar)",
+      "_notes": [
+        "Bidirectional (lengthwise) at LF — modelled as fairly broad with",
+        "high rear floor since the head joint and foot joint both radiate.",
+        "Narrows somewhat at HF; never as narrow as brass."
+      ],
+      "bandExp":   [0.0, 0.0, 0.2, 0.5, 0.9, 1.3, 1.7, 2.0],
+      "bandFloor": [1.00, 0.95, 0.70, 0.55, 0.40, 0.30, 0.25, 0.20]
+    },
+    {
+      "name": "Clarinet",
+      "_source": "Meyer 2009, fig 6.13 (B-flat clarinet polar)",
+      "_notes": [
+        "Bell-radiating reed, narrower than flute but broader than brass.",
+        "Cylindrical bore gives an unusual harmonic distribution but the",
+        "polar shape itself is fairly conventional."
+      ],
+      "bandExp":   [0.0, 0.1, 0.3, 0.7, 1.2, 1.8, 2.5, 3.0],
+      "bandFloor": [1.00, 0.85, 0.55, 0.30, 0.18, 0.15, 0.12, 0.12]
+    },
+    {
+      "name": "Oboe",
+      "_source": "Meyer 2009, fig 6.20 (oboe polar)",
+      "_notes": [
+        "Conical reed, narrower polar than clarinet at HF due to small bell.",
+        "Broader at LF. Generally very forward-projecting in concert-hall",
+        "use which is why it carries so well."
+      ],
+      "bandExp":   [0.0, 0.1, 0.4, 0.9, 1.5, 2.2, 3.0, 3.6],
+      "bandFloor": [1.00, 0.80, 0.45, 0.25, 0.15, 0.12, 0.10, 0.10]
+    }
+  ]
+}

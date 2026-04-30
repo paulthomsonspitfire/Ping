@@ -207,6 +207,13 @@ private:
     juce::TextButton bakeBalanceButton { "Bake ER/Tail Bal" };
     juce::Label micPatternLabel;
 
+    // Source radiation preset (instrument directivity model). Populated
+    // from the SourceRadiation registry (built-in Phase 1 + JSON Phase 2).
+    // Drives IRSynthParams::source_radiation. Default = Cardioid (legacy)
+    // which is bit-identical to pre-v2.11 behaviour.
+    juce::ComboBox sourceRadiationCombo;
+    juce::Label    sourceRadiationLabel;
+
     // ── Experimental early-reflection A/B toggles ────────────────────────────
     // directMaxOrderCombo drives IRSynthParams::direct_max_order (0 / 1 / 2).
     // lambertScatterButton drives IRSynthParams::lambert_scatter_enabled.

@@ -258,6 +258,19 @@ IRSynthComponent::IRSynthComponent()
     bakeBalanceButton.setColour (juce::TextButton::textColourOffId, textDim);
     micPatternLabel.setText ("Pattern", juce::dontSendNotification);
 
+    // Source radiation preset combo. Populated from the SourceRadiation
+    // registry (built-in Phase 1 + JSON-loaded Phase 2). Default is
+    // "Cardioid (legacy)" — bit-identical to pre-v2.11 behaviour.
+    sourceRadiationCombo.clear();
+    {
+        const auto& names = SourceRadiation::presetNames();
+        for (int i = 0; i < (int) names.size(); ++i)
+            sourceRadiationCombo.addItem (juce::String (names[(size_t) i]), i + 1);
+        sourceRadiationCombo.setSelectedId (1, juce::dontSendNotification); // first = Cardioid (legacy)
+    }
+    sourceRadiationLabel.setText ("Radiation", juce::dontSendNotification);
+    sourceRadiationLabel.setColour (juce::Label::textColourId, textDim);
+
     // Experimental early-reflection A/B toggles.
     directMaxOrderCombo.addItem ("0 (direct only)",     1);
     directMaxOrderCombo.addItem ("1 (+ first-order)",   2);
@@ -487,7 +500,8 @@ IRSynthComponent::IRSynthComponent()
     };
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
                       &vaultCombo, &micPatternCombo,
-                      &outrigPatternCombo, &ambientPatternCombo, &directMaxOrderCombo })
+                      &outrigPatternCombo, &ambientPatternCombo, &directMaxOrderCombo,
+                      &sourceRadiationCombo })
         cb->addListener (this);
 
     // Mic-path toggles: flip FloorPlan visibility for OUTRIG/AMBIENT so the
@@ -608,6 +622,8 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (erOnlyButton);
     addAndMakeVisible (bakeBalanceButton);
     addAndMakeVisible (micPatternLabel);
+    addAndMakeVisible (sourceRadiationCombo);
+    addAndMakeVisible (sourceRadiationLabel);
     addAndMakeVisible (directMaxOrderCombo);
     addAndMakeVisible (directMaxOrderLabel);
     addAndMakeVisible (lambertScatterButton);
@@ -727,7 +743,8 @@ IRSynthComponent::IRSynthComponent()
     // visually match the main-page preset combo (0x30ffffff = 19 % opaque white).
     for (auto* cb : { &shapeCombo, &floorCombo, &ceilingCombo, &wallCombo,
                       &vaultCombo, &micPatternCombo,
-                      &outrigPatternCombo, &ambientPatternCombo })
+                      &outrigPatternCombo, &ambientPatternCombo,
+                      &sourceRadiationCombo })
     {
         cb->setColour (juce::ComboBox::backgroundColourId, juce::Colour (0x1effffff));
         cb->setColour (juce::ComboBox::textColourId, textDim);
@@ -1098,6 +1115,18 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
         lambertScatterButton.setBounds (x0,                          y, thirdW, rowH);
         spkDirFullButton    .setBounds (x0 + thirdW + gap,           y, thirdW, rowH);
         monoSourceButton    .setBounds (x0 + 2 * (thirdW + gap),     y, thirdW, rowH);
+        y += rowH + 2;
+    }
+
+    // Row 5: Source radiation preset — instrument directivity model. The
+    // dropdown is populated from the SourceRadiation registry (built-in
+    // Phase 1 + JSON-loaded Phase 2). Default = "Cardioid (legacy)" which
+    // is bit-identical to pre-v2.11 behaviour.
+    {
+        const int radLblW = 70;
+        sourceRadiationLabel.setBounds (x0,                    y, radLblW, rowH);
+        sourceRadiationCombo.setBounds (x0 + radLblW + gap,    y,
+                                        ctrlW - radLblW - gap, rowH);
         y += rowH + secGap;
     }
 
@@ -1398,6 +1427,16 @@ IRSynthParams IRSynthComponent::getParams() const
     p.micr_tilt = t.tilt[3];
     p.mic_pattern = comboSelection (micPatternCombo, micOptions, 7).toStdString();
 
+    // Source radiation preset → SourceRadiation struct via the registry.
+    // The dropdown stores the canonical preset name; byPreset() resolves
+    // it back to coefficients (or to legacyCardioid() if unknown).
+    {
+        const int    id   = sourceRadiationCombo.getSelectedId();
+        const auto&  list = SourceRadiation::presetNames();
+        const int    idx  = juce::jlimit (0, (int) list.size() - 1, id - 1);
+        p.source_radiation = SourceRadiation::byPreset (list[(size_t) idx]);
+    }
+
     // Decca Tree capture mode (see IRSynthEngine.h). The toggle is a UI-level
     // switch; the tree centre position and angle are stored on the floor
     // plan's TransducerState so they travel with mic-layout preset data.
@@ -1520,6 +1559,20 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     setComboTo (micPatternCombo,     migratePattern (p.mic_pattern),     micOptions, 7);
     setComboTo (outrigPatternCombo,  migratePattern (p.outrig_pattern),  micOptions, 7);
     setComboTo (ambientPatternCombo, migratePattern (p.ambient_pattern), micOptions, 7);
+
+    // Source radiation preset — find by name, fall back to "Cardioid
+    // (legacy)" (item 1) if the saved name isn't currently in the
+    // registry. Comparison is case-insensitive to match SourceRadiation::
+    // byPreset().
+    {
+        const auto& names = SourceRadiation::presetNames();
+        int matchId = 1;
+        const juce::String saved = juce::String (p.source_radiation.presetName);
+        for (int i = 0; i < (int) names.size(); ++i)
+            if (saved.equalsIgnoreCase (juce::String (names[(size_t) i])))
+            { matchId = i + 1; break; }
+        sourceRadiationCombo.setSelectedId (matchId, juce::dontSendNotification);
+    }
     erOnlyButton.setToggleState (p.er_only, juce::dontSendNotification);
     // p.sample_rate is no longer surfaced in the UI (v2.8.x removal of the
     // Sample Rate picker). Value is preserved on the params struct for XML
@@ -1917,6 +1970,7 @@ void IRSynthComponent::setInteractionLocked (bool locked)
     lambertScatterButton.setEnabled (e);
     spkDirFullButton    .setEnabled (e);
     monoSourceButton    .setEnabled (e);
+    sourceRadiationCombo.setEnabled (e);
 
     // Mic-path enables + Decca + aux controls + tilts
     directEnableButton   .setEnabled (e);

@@ -1,4 +1,5 @@
 #include "IRSynthEngine.h"
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -461,6 +462,226 @@ double IRSynthEngine::spkG (double faceAngle, double azToReceiver)
     return std::max(0.0, 0.5 + 0.5 * std::cos(azToReceiver - faceAngle));
 }
 
+// ── Source radiation directivity (calcRefs / calcRefsPolygon backend) ──────
+//
+// fillSpkBandGainsParametric computes the per-band speaker directivity gains
+// for SourceRadiation::Kind::Parametric. The LegacyCardioid kind is handled
+// inline at each call site (in calcRefs / calcRefsPolygon) using the pre-
+// existing scalar `sg` path so default output stays bit-identical to the
+// pre-v2.11 engine.
+//
+// The Parametric formula is, per band b:
+//   g(θ, b) = floor[b] + (1 − floor[b]) · max(0, 0.5 + 0.5·cos(θ))^exp[b]
+// With exp[b] = 1 and floor[b] = 0 the formula reproduces a pure cardioid;
+// IR_34 verifies this equivalence.
+//
+// The order-dependent fade-to-omni from `spk_directivity_full` is applied
+// identically to every Kind so reflection-order behaviour stays consistent
+// across radiation models.
+static void fillSpkBandGainsParametric (const SourceRadiation& s,
+                                        double cosThSpk,         // = cos(spkAz - spkFaceAngle)
+                                        int totalBounces,
+                                        bool spkFull,
+                                        std::array<double, 8>& out)
+{
+    double fade;
+    if (spkFull)                fade = 1.0;
+    else if (totalBounces <= 1) fade = 1.0;
+    else if (totalBounces == 2) fade = 0.5;
+    else                        fade = 0.0;
+
+    if (s.kind == SourceRadiation::Kind::Omni)
+    {
+        out.fill (1.0);
+        return;
+    }
+
+    const double card = std::max (0.0, 0.5 + 0.5 * cosThSpk);
+    for (int b = 0; b < 8; ++b)
+    {
+        const double e   = s.bandExp  [(size_t) b];
+        const double f   = s.bandFloor[(size_t) b];
+        const double pat = f + (1.0 - f) * std::pow (card, e);
+        out[(size_t) b]  = fade * pat + (1.0 - fade) * 1.0;
+    }
+}
+
+// ── SourceRadiation preset factories and registry (Phase 1) ────────────────
+//
+// Phase 1 ships eight built-in shape-based presets covering the common
+// cases. Phase 2 (in PluginProcessor::loadInstrumentRadiationJson) appends
+// hand-digitised Meyer real-instrument profiles to this same registry.
+// Coefficients are tuned by ear/eye against published polar plots; the
+// IR_35 test pins their digests so accidental edits get caught.
+
+SourceRadiation SourceRadiation::legacyCardioid()
+{
+    SourceRadiation r;
+    r.kind = Kind::LegacyCardioid;
+    r.bandExp.fill (1.0);
+    r.bandFloor.fill (0.0);
+    r.presetName = "Cardioid (legacy)";
+    return r;
+}
+
+SourceRadiation SourceRadiation::cardioidExperimental()
+{
+    // Same shape as legacyCardioid, but in the Parametric branch — used by
+    // IR_34 to verify the parametric formula reproduces the legacy formula.
+    SourceRadiation r = legacyCardioid();
+    r.kind = Kind::Parametric;
+    r.presetName = "Cardioid (parametric)";
+    return r;
+}
+
+SourceRadiation SourceRadiation::omni()
+{
+    SourceRadiation r;
+    r.kind = Kind::Omni;
+    r.bandExp.fill (0.0);
+    r.bandFloor.fill (1.0);
+    r.presetName = "Omni";
+    return r;
+}
+
+SourceRadiation SourceRadiation::supercardioidWithFloor()
+{
+    // Frequency-flat supercardioid (≈ narrower forward lobe than cardioid)
+    // with a 0.10 floor. Coefficients chosen so the −6 dB point is at
+    // ≈ 70° (vs cardioid's ≈ 90°). exp ≈ 1.45 + floor 0.10 gives a curve
+    // close to the textbook 0.378 + 0.622·cos(θ) supercardioid.
+    SourceRadiation r;
+    r.kind = Kind::Parametric;
+    r.bandExp.fill   (1.45);
+    r.bandFloor.fill (0.10);
+    r.presetName = "Supercardioid";
+    return r;
+}
+
+SourceRadiation SourceRadiation::genericInstrument()
+{
+    // The default "M1" of the radiation probe — nearly omni at LF, narrow
+    // at HF, 0.10 floor. Good first stop for users choosing "I have an
+    // acoustic instrument but I don't know which".
+    SourceRadiation r;
+    r.kind = Kind::Parametric;
+    r.bandExp   = { { 0.0, 0.1, 0.3, 0.7, 1.2, 2.0, 3.0, 4.0 } };
+    r.bandFloor = { { 1.0, 0.50, 0.30, 0.15, 0.10, 0.10, 0.10, 0.10 } };
+    r.presetName = "Generic instrument";
+    return r;
+}
+
+SourceRadiation SourceRadiation::brassForward()
+{
+    // Brass-like: very omni at LF, very narrow at HF (bell radiation),
+    // small rear floor. Fits trumpet/trombone/tuba shape (Meyer ch. 5).
+    SourceRadiation r;
+    r.kind = Kind::Parametric;
+    r.bandExp   = { { 0.0, 0.0, 0.4, 1.2, 2.5, 4.0, 5.5, 7.0 } };
+    r.bandFloor = { { 1.0, 0.80, 0.30, 0.10, 0.05, 0.05, 0.05, 0.05 } };
+    r.presetName = "Brass (forward)";
+    return r;
+}
+
+SourceRadiation SourceRadiation::voice()
+{
+    // Voice: forward bias at HF, gentle narrowing, moderate rear floor —
+    // singers radiate audibly behind themselves but with HF roll-off.
+    SourceRadiation r;
+    r.kind = Kind::Parametric;
+    r.bandExp   = { { 0.0, 0.1, 0.4, 0.8, 1.4, 2.2, 3.0, 3.5 } };
+    r.bandFloor = { { 1.0, 0.70, 0.40, 0.25, 0.15, 0.10, 0.10, 0.10 } };
+    r.presetName = "Voice";
+    return r;
+}
+
+SourceRadiation SourceRadiation::stringsBroad()
+{
+    // Strings: complex pattern, mostly upward in real life, but in the 2D
+    // engine we model it as a broad forward lobe with high rear floor (the
+    // off-axis level varies less than for voice/brass). Tilt-aware version
+    // is a future extension when the engine grows a vertical-radiation
+    // axis.
+    SourceRadiation r;
+    r.kind = Kind::Parametric;
+    r.bandExp   = { { 0.0, 0.0, 0.2, 0.5, 1.0, 1.5, 2.0, 2.5 } };
+    r.bandFloor = { { 1.0, 0.80, 0.50, 0.40, 0.30, 0.25, 0.20, 0.20 } };
+    r.presetName = "Strings (broad)";
+    return r;
+}
+
+SourceRadiation SourceRadiation::windReed()
+{
+    // Wind / reed (clarinet, oboe, bassoon): moderate forward bias,
+    // moderate rear floor, narrower than strings but broader than brass.
+    SourceRadiation r;
+    r.kind = Kind::Parametric;
+    r.bandExp   = { { 0.0, 0.1, 0.3, 0.6, 1.0, 1.6, 2.4, 3.0 } };
+    r.bandFloor = { { 1.0, 0.70, 0.40, 0.25, 0.15, 0.15, 0.15, 0.15 } };
+    r.presetName = "Wind / reed";
+    return r;
+}
+
+namespace
+{
+    // Built-in registry. Vector (not map) so the UI can iterate in
+    // dropdown order. Initialised lazily on first registry access.
+    std::vector<SourceRadiation>& mutableRegistry()
+    {
+        static std::vector<SourceRadiation> reg = {
+            SourceRadiation::legacyCardioid(),
+            SourceRadiation::omni(),
+            SourceRadiation::genericInstrument(),
+            SourceRadiation::brassForward(),
+            SourceRadiation::voice(),
+            SourceRadiation::stringsBroad(),
+            SourceRadiation::windReed(),
+            SourceRadiation::supercardioidWithFloor(),
+        };
+        return reg;
+    }
+
+    bool iEqual (const std::string& a, const std::string& b)
+    {
+        if (a.size() != b.size()) return false;
+        for (std::size_t i = 0; i < a.size(); ++i)
+            if (std::tolower ((unsigned char) a[i]) != std::tolower ((unsigned char) b[i]))
+                return false;
+        return true;
+    }
+}
+
+SourceRadiation SourceRadiation::byPreset (const std::string& name)
+{
+    if (name.empty()) return legacyCardioid();
+    for (const auto& r : mutableRegistry())
+        if (iEqual (r.presetName, name))
+            return r;
+    return legacyCardioid();
+}
+
+const std::vector<std::string>& SourceRadiation::presetNames()
+{
+    static std::vector<std::string> cached;
+    cached.clear();
+    cached.reserve (mutableRegistry().size());
+    for (const auto& r : mutableRegistry())
+        cached.push_back (r.presetName);
+    return cached;
+}
+
+void SourceRadiation::registerLoadedPreset (const SourceRadiation& r)
+{
+    auto& reg = mutableRegistry();
+    for (auto& existing : reg)
+        if (iEqual (existing.presetName, r.presetName))
+        {
+            existing = r;
+            return;
+        }
+    reg.push_back (r);
+}
+
 // ── RNG — verbatim from JS mkRng ───────────────────────────────────────────
 IRSynthEngine::Rng IRSynthEngine::mkRng (uint32_t seed) { return { seed & 0xFFFFFFFFu }; }
 double IRSynthEngine::Rng::next()
@@ -774,16 +995,32 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                 // an A/B knob for testing whether early-reflection directional
                 // cues are being lost to the fade.
                 double spkAz = std::atan2(ry - sy, rx - sx);
-                double sgDir = spkG(spkFaceAngle, spkAz);
-                double sg;
-                if (p.spk_directivity_full)
-                    sg = sgDir;
-                else if (totalBounces <= 1)
-                    sg = sgDir;
-                else if (totalBounces == 2)
-                    sg = 0.5 * sgDir + 0.5;
+                std::array<double, 8> sgBand;
+                if (p.source_radiation.kind == SourceRadiation::Kind::LegacyCardioid)
+                {
+                    // Legacy path — preserve bit-identical output to the
+                    // pre-v2.11 engine. Same scalar `sg` is broadcast to
+                    // every band; per-band multiplication below is
+                    // numerically identical to the original `* sg *`.
+                    double sgDir = spkG(spkFaceAngle, spkAz);
+                    double sg;
+                    if (p.spk_directivity_full)
+                        sg = sgDir;
+                    else if (totalBounces <= 1)
+                        sg = sgDir;
+                    else if (totalBounces == 2)
+                        sg = 0.5 * sgDir + 0.5;
+                    else
+                        sg = 1.0;
+                    sgBand.fill(sg);
+                }
                 else
-                    sg = 1.0;
+                {
+                    const double cosThSpk = std::cos(spkAz - spkFaceAngle);
+                    fillSpkBandGainsParametric(p.source_radiation, cosThSpk,
+                                               totalBounces, p.spk_directivity_full,
+                                               sgBand);
+                }
                 double polarity = (totalBounces % 2 == 0) ? 1.0 : -1.0;
 
                 std::array<double,8> amps;
@@ -795,7 +1032,7 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                     a *= std::pow(rW[b], std::abs(nx) + std::abs(ny));
                     if (std::abs(ny) > 0) a *= std::pow(oF, std::abs(ny));
                     if (std::abs(nz) > 0) a *= std::pow(1.0 - vHfA * std::min(b / 3.0, 1.0), std::abs(nz));
-                    amps[b] = a * std::pow(10.0, -AIR[b] * dist / 20.0) * micG(b, micPat, cosTh3D) * sg * polarity;
+                    amps[b] = a * std::pow(10.0, -AIR[b] * dist / 20.0) * micG(b, micPat, cosTh3D) * sgBand[b] * polarity;
                 }
                 refs.push_back({ t, amps, az });
 
@@ -1190,17 +1427,32 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
             // Speaker directivity — same fade-to-omni schedule as calcRefs.
             // spkAz is the angle from the (real) source to the receiver in
             // screen space; high-order reflections fade to omnidirectional.
+            // For non-legacy radiation models the per-band gain replaces
+            // the legacy scalar `sg`; LegacyCardioid fills sgBand with the
+            // legacy scalar so bit-identity is preserved.
             const double spkAz = std::atan2 (ry - sy, rx - sx);
-            const double sgDir = spkG (spkFaceAngle, spkAz);
-            double sg;
-            if (p.spk_directivity_full)
-                sg = sgDir;
-            else if (totalBounces <= 1)
-                sg = sgDir;
-            else if (totalBounces == 2)
-                sg = 0.5 * sgDir + 0.5;
+            std::array<double, 8> sgBand;
+            if (p.source_radiation.kind == SourceRadiation::Kind::LegacyCardioid)
+            {
+                const double sgDir = spkG (spkFaceAngle, spkAz);
+                double sg;
+                if (p.spk_directivity_full)
+                    sg = sgDir;
+                else if (totalBounces <= 1)
+                    sg = sgDir;
+                else if (totalBounces == 2)
+                    sg = 0.5 * sgDir + 0.5;
+                else
+                    sg = 1.0;
+                sgBand.fill (sg);
+            }
             else
-                sg = 1.0;
+            {
+                const double cosThSpk = std::cos (spkAz - spkFaceAngle);
+                fillSpkBandGainsParametric (p.source_radiation, cosThSpk,
+                                            totalBounces, p.spk_directivity_full,
+                                            sgBand);
+            }
 
             const double polarity = (totalBounces % 2 == 0) ? 1.0 : -1.0;
 
@@ -1223,7 +1475,7 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
                 if (is.order > 0)
                     a *= std::pow (oF, is.order);
                 amps[(size_t) b] = a * std::pow (10.0, -AIR[b] * dist / 20.0)
-                                   * micG (b, micPat, cosTh3D) * sg * polarity;
+                                   * micG (b, micPat, cosTh3D) * sgBand[(size_t) b] * polarity;
             }
             refs.push_back ({ t, amps, az });
 

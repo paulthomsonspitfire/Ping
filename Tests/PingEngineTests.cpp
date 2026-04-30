@@ -654,6 +654,146 @@ TEST_CASE("IR_33: polygon (Cathedral) x-mirror symmetry over the ER region",
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// IR_34 — SourceRadiation::Parametric with cardioid params reproduces legacy
+// ─────────────────────────────────────────────────────────────────────────────
+// Verifies that SourceRadiation::cardioidExperimental() (Parametric kind with
+// bandExp = [1,1,...] and bandFloor = [0,0,...]) produces an output that
+// matches LegacyCardioid to within floating-point precision. This protects
+// the parametric formula's correctness: any future change to
+// fillSpkBandGainsParametric() that breaks the cardioid identity will be
+// caught by this test even if it doesn't break the IR_11 / IR_14 byte-
+// identity locks (because LegacyCardioid keeps the inline scalar `sg`
+// path).
+//
+// We compare a small Decca-tree scene with both kinds in the same room.
+// Tolerance is 1e-12 (essentially FP precision); the parametric path
+// computes max(0, 0.5+0.5*cosTh)^1 which simplifies to the cardioid
+// expression, with one extra multiplication by (1-floor)+floor=1 — so the
+// result is bit-equal except for FP rounding from the std::pow(_, 1.0)
+// call.
+TEST_CASE("IR_34: SourceRadiation Parametric with cardioid params equals LegacyCardioid",
+          "[engine][source-radiation]")
+{
+    IRSynthParams pA = smallRoomParams();
+    pA.diffusion = 0.55;
+    pA.organ_case = 0.40;
+    pA.balconies  = 0.60;
+    pA.spkl_angle = 1.5707963267948966;
+    pA.spkr_angle = 1.5707963267948966;
+    pA.mono_source = true;
+    pA.main_decca_enabled = true;
+    pA.decca_cx = 0.5;  pA.decca_cy = 0.65;
+    pA.decca_angle = -1.5707963267948966;
+    pA.source_lx = 0.30; pA.source_ly = 0.50;
+    pA.source_rx = 0.30; pA.source_ry = 0.50;
+    // Default source_radiation is LegacyCardioid.
+
+    IRSynthParams pB = pA;
+    pB.source_radiation = SourceRadiation::cardioidExperimental();   // Parametric, exp=1, floor=0
+
+    auto noop = [](double, const std::string&) {};
+    auto rA = IRSynthEngine::synthIR (pA, noop);
+    auto rB = IRSynthEngine::synthIR (pB, noop);
+    REQUIRE (rA.success);
+    REQUIRE (rB.success);
+    REQUIRE (rA.irLen == rB.irLen);
+
+    double maxDiff = 0.0;
+    double peak = 0.0;
+    for (int i = 0; i < rA.irLen; ++i)
+    {
+        const double dLL = std::fabs (rA.iLL[(size_t) i] - rB.iLL[(size_t) i]);
+        const double dRL = std::fabs (rA.iRL[(size_t) i] - rB.iRL[(size_t) i]);
+        const double dLR = std::fabs (rA.iLR[(size_t) i] - rB.iLR[(size_t) i]);
+        const double dRR = std::fabs (rA.iRR[(size_t) i] - rB.iRR[(size_t) i]);
+        maxDiff = std::max ({ maxDiff, dLL, dRL, dLR, dRR });
+        peak = std::max ({ peak, std::fabs (rA.iLL[(size_t) i]), std::fabs (rA.iLR[(size_t) i]) });
+    }
+
+    INFO ("peak: " << peak << "   max |Parametric − LegacyCardioid|: " << maxDiff);
+    CHECK (maxDiff < 1e-12);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IR_35 — Source radiation preset coefficient stability
+// ─────────────────────────────────────────────────────────────────────────────
+// Pins the Phase 1 built-in preset coefficients so that accidental edits to
+// fillSpkBandGainsParametric() or the preset factory functions get caught
+// in CI. The expected values are the documented design points; if you
+// genuinely need to retune a preset, capture new values via
+// IR_35_CAPTURE (printf one-liner below the test) and update them here.
+TEST_CASE("IR_35: Phase 1 source radiation presets have expected coefficients",
+          "[engine][source-radiation]")
+{
+    auto check = [] (const SourceRadiation& r,
+                     const std::array<double, 8>& expExp,
+                     const std::array<double, 8>& expFloor)
+    {
+        for (int b = 0; b < 8; ++b)
+        {
+            CHECK (r.bandExp  [(size_t) b] == Catch::Approx (expExp  [(size_t) b]).margin (1e-12));
+            CHECK (r.bandFloor[(size_t) b] == Catch::Approx (expFloor[(size_t) b]).margin (1e-12));
+        }
+    };
+
+    // legacyCardioid — kind LegacyCardioid; coefficients are unused but
+    // pinned so they stay sensible if anyone wires the parametric branch.
+    {
+        const auto r = SourceRadiation::legacyCardioid();
+        CHECK (r.kind == SourceRadiation::Kind::LegacyCardioid);
+        check (r, {1,1,1,1,1,1,1,1}, {0,0,0,0,0,0,0,0});
+    }
+    {
+        const auto r = SourceRadiation::omni();
+        CHECK (r.kind == SourceRadiation::Kind::Omni);
+        check (r, {0,0,0,0,0,0,0,0}, {1,1,1,1,1,1,1,1});
+    }
+    {
+        const auto r = SourceRadiation::genericInstrument();
+        CHECK (r.kind == SourceRadiation::Kind::Parametric);
+        check (r,
+               {0.0, 0.1, 0.3, 0.7, 1.2, 2.0, 3.0, 4.0},
+               {1.0, 0.50, 0.30, 0.15, 0.10, 0.10, 0.10, 0.10});
+    }
+    {
+        const auto r = SourceRadiation::brassForward();
+        check (r,
+               {0.0, 0.0, 0.4, 1.2, 2.5, 4.0, 5.5, 7.0},
+               {1.0, 0.80, 0.30, 0.10, 0.05, 0.05, 0.05, 0.05});
+    }
+    {
+        const auto r = SourceRadiation::voice();
+        check (r,
+               {0.0, 0.1, 0.4, 0.8, 1.4, 2.2, 3.0, 3.5},
+               {1.0, 0.70, 0.40, 0.25, 0.15, 0.10, 0.10, 0.10});
+    }
+    {
+        const auto r = SourceRadiation::stringsBroad();
+        check (r,
+               {0.0, 0.0, 0.2, 0.5, 1.0, 1.5, 2.0, 2.5},
+               {1.0, 0.80, 0.50, 0.40, 0.30, 0.25, 0.20, 0.20});
+    }
+    {
+        const auto r = SourceRadiation::windReed();
+        check (r,
+               {0.0, 0.1, 0.3, 0.6, 1.0, 1.6, 2.4, 3.0},
+               {1.0, 0.70, 0.40, 0.25, 0.15, 0.15, 0.15, 0.15});
+    }
+
+    // Registry round-trip — every built-in name must resolve back to the
+    // right kind, and unknown names must fall back to LegacyCardioid.
+    CHECK (SourceRadiation::byPreset ("Cardioid (legacy)").kind == SourceRadiation::Kind::LegacyCardioid);
+    CHECK (SourceRadiation::byPreset ("Omni").kind             == SourceRadiation::Kind::Omni);
+    CHECK (SourceRadiation::byPreset ("Generic instrument").kind == SourceRadiation::Kind::Parametric);
+    CHECK (SourceRadiation::byPreset ("Brass (forward)").kind  == SourceRadiation::Kind::Parametric);
+    CHECK (SourceRadiation::byPreset ("does not exist").kind   == SourceRadiation::Kind::LegacyCardioid);
+
+    // Case-insensitive lookup is part of the contract.
+    CHECK (SourceRadiation::byPreset ("CARDIOID (LEGACY)").kind == SourceRadiation::Kind::LegacyCardioid);
+    CHECK (SourceRadiation::byPreset ("voice").kind            == SourceRadiation::Kind::Parametric);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TEST_IR_GOLDEN_CAPTURE — Helper to print golden values
 // ─────────────────────────────────────────────────────────────────────────────
 // Run this test once to get the values to paste into TEST_IR_11.

@@ -125,6 +125,8 @@ g++ -std=c++17 -O2 \
 | IR_11 | Golden regression lock — 30 samples from onset at index 583, locked to 17 sig-fig |
 | IR_32 | Rectangular x-mirror symmetry of the ER region (v2.10 mirror-symmetric jitter — see "Mirror-symmetric ER jitter" section) |
 | IR_33 | Polygon (Cathedral) x-mirror symmetry of the ER region |
+| IR_34 | SourceRadiation Parametric (exp=1, floor=0) reproduces LegacyCardioid bit-equivalent — see "Source radiation models (v2.11)" section |
+| IR_35 | Phase 1 source radiation preset coefficients are pinned (catches accidental drift in `SourceRadiation::*()` factories) |
 | IR_12 | FDN LFO rates have no rational beat frequencies (p,q ≤ 6 check across all 120 pairs) |
 | IR_13 | IR end-of-buffer is near-silent — last 500 ms below −60 dB of peak (silence-trim precondition) |
 
@@ -1166,6 +1168,105 @@ for blind A/B comparison between branches.
 **Diagnostic probe:** `Tools/symmetry_probe.cpp` numerically demonstrates
 the symmetry property end-to-end (Vienna geometry + small-room geometry,
 ER-only and full-engine, jitter on and off).
+
+### Source radiation models (v2.11)
+
+The engine's source directivity used to be a frequency-flat pure cardioid
+(`spkG = max(0, 0.5 + 0.5·cos(θ))`). That works for sources aimed at the
+listener but is unrealistic at off-axis angles, especially behind: real
+acoustic instruments radiate ~ −15 to −25 dB at 180°, never the cardioid's
+hard zero. v2.11 introduces the `SourceRadiation` model so different
+instruments can use frequency-dependent, non-zero-rear directivity.
+
+**`SourceRadiation` struct** (`Source/IRSynthEngine.h`):
+
+```cpp
+struct SourceRadiation {
+    enum class Kind { LegacyCardioid = 0, Parametric = 1, Omni = 2 };
+    Kind kind = Kind::LegacyCardioid;
+    std::array<double, 8> bandExp;     // per-octave-band cardioid exponent
+    std::array<double, 8> bandFloor;   // per-octave-band rear floor [0..1]
+    std::string presetName;            // round-trip identifier
+};
+```
+
+The Parametric formula (`fillSpkBandGainsParametric` in `IRSynthEngine.cpp`):
+
+```
+g(θ, b) = floor[b] + (1 − floor[b]) · max(0, 0.5 + 0.5·cos(θ))^exp[b]
+```
+
+`exp[b] = 1, floor[b] = 0` reproduces a pure cardioid bit-equivalent — verified
+by `IR_34`. `exp[b]` increasing with frequency narrows the HF lobe; `floor[b]`
+sets the rear floor (0 = cardioid-like; 0.10 ≈ −20 dB rear, typical for
+measured instruments; 1.0 = omni).
+
+**Bit-identity:** `Kind::LegacyCardioid` (default) keeps the inline scalar
+`sg` path in `calcRefs` and `calcRefsPolygon` unchanged, so the engine output
+is bit-identical to the pre-v2.11 build. `IR_11`/`IR_14`/`IR_32`/`IR_33`
+remain green.
+
+**Order fade-to-omni** is applied identically to every Kind: when
+`spk_directivity_full` is false, the per-band pattern fades to omni at order
+2 (50/50) and order 3+ (full omni). When true, every order uses the pattern
+as-is.
+
+**Phase 1 built-in presets** (defined as static factory functions on
+`SourceRadiation`, registered into the global registry in
+`IRSynthEngine.cpp::mutableRegistry()`):
+
+| Preset                | Kind       | Notes                                                    |
+|-----------------------|------------|----------------------------------------------------------|
+| `Cardioid (legacy)`   | Legacy     | default; bit-identical to pre-v2.11 engine               |
+| `Omni`                | Omni       | flat 1.0 everywhere                                      |
+| `Generic instrument`  | Parametric | omni at LF, narrow at HF, 0.10 floor — sensible default  |
+| `Brass (forward)`     | Parametric | very narrow HF (bell radiation), low floor               |
+| `Voice`               | Parametric | forward HF bias, moderate floor                          |
+| `Strings (broad)`     | Parametric | broad lobe, high floor — 2D approximation of 3D pattern  |
+| `Wind / reed`         | Parametric | between voice and brass                                  |
+| `Supercardioid`       | Parametric | narrower forward lobe, frequency-flat                    |
+
+`IR_35` pins the coefficients of these presets (catches accidental drift).
+
+**Phase 2 measured-instrument presets** are loaded at plugin startup from
+`Resources/instrument-radiation.json` (bundled via JUCE `BinaryData`). The
+JSON file is human-editable; adding a new instrument requires no engine
+recompile, just a rebuild of `BinaryData`. Schema:
+
+```json
+{ "instruments": [
+    { "name": "Trumpet",
+      "bandExp":   [0.0, 0.1, 0.5, 1.4, 2.8, 4.5, 6.0, 7.5],
+      "bandFloor": [1.00, 0.85, 0.40, 0.15, 0.06, 0.05, 0.05, 0.05] },
+    ...
+]}
+```
+
+`PluginProcessor::loadInstrumentRadiationJson()` parses the file once in
+the constructor and registers each entry via
+`SourceRadiation::registerLoadedPreset()`. Currently bundled instruments:
+Trumpet, Trombone, Tuba, Violin, Cello, Voice (alto/tenor), Flute, Clarinet,
+Oboe — coefficients hand-digitised from Meyer 2009 polar plots.
+
+**UI:** the IR Synth Options group has a `Radiation` dropdown populated
+from `SourceRadiation::presetNames()` (built-in + JSON, in registry order).
+Default selection is `Cardioid (legacy)`. The choice round-trips through
+the `.ping` sidecar XML as the `srcRad` attribute (sibling of `micPat`).
+Older sidecars without `srcRad` resolve to `Cardioid (legacy)` — preserves
+bit-identity for existing user content.
+
+**3D vertical tilt is NOT yet implemented.** Strings/voice presets that
+should radiate upward in 3D are approximated as broader 2D patterns with
+high floors. Adding per-source elevation tilt is a future engine extension
+(would reuse the same `directivityCos` machinery already used for mics);
+the `SourceRadiation` struct reserves field-layout space at the end so
+adding tilt later won't require a struct refactor.
+
+**Diagnostic probe:** `Tools/source_radiation_probe.cpp` — prints per-band
+per-angle gain tables for each model, runs the engine across three aim
+modes (forward / 90° lateral / 180° rear) showing how much the model
+matters in each, and writes 12 listening-A/B WAVs to `listening-ab/`. Use
+this to validate new presets / data files before shipping.
 
 ### Close / coincident speaker handling
 

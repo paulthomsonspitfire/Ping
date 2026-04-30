@@ -18,6 +18,98 @@
   #include <array>
 #endif
 
+/**
+ * Source radiation pattern (instrument directivity) — per-octave-band model.
+ *
+ * Replaces the original frequency-flat pure-cardioid `spkG` formula with a
+ * frequency-dependent pattern that better models real acoustic instruments:
+ * nearly omni at low frequencies (where instrument size ≪ wavelength), and
+ * progressively narrower toward HF — with a non-zero rear floor (real
+ * instruments still radiate ~ −15 to −25 dB behind themselves; a true
+ * cardioid's hard zero at 180° is a measurement artefact, not a real
+ * instrument property).
+ *
+ * Three kinds, in order of complexity:
+ *
+ *   LegacyCardioid (default, 0)
+ *     Frequency-flat 0.5 + 0.5·cos(θ). Bit-identical to the pre-v2.11
+ *     engine; the `bandExp` and `bandFloor` arrays are ignored. Selected
+ *     so existing presets and the IR_11/IR_14 regression locks are
+ *     preserved exactly.
+ *
+ *   Parametric (1)
+ *     Per-band gain = floor[b] + (1 − floor[b]) · max(0, 0.5 + 0.5·cos(θ))^exp[b].
+ *     `exp[b] = 1, floor[b] = 0` reproduces a pure cardioid (verified by
+ *     IR_34). `exp[b]` increasing with frequency narrows the HF lobe;
+ *     `floor[b]` raises the rear gain toward published instrument data.
+ *
+ *   Omni (2)
+ *     Flat 1.0 everywhere. Equivalent to Parametric with exp=0, floor=1
+ *     but kept as a separate Kind so the UI/preset semantics are explicit.
+ *
+ * The order-dependent fade-to-omni from `spk_directivity_full` applies
+ * to every Kind identically (full=true → no fade; full=false → pattern at
+ * orders 0–1, 50/50 with omni at order 2, omni at order 3+).
+ *
+ * This struct is intentionally extensible: future engine work can add
+ * vertical-axis tilt (for upward-radiating strings/voice), asymmetric
+ * rear-lobe coefficients, or full spherical-harmonic coefficients without
+ * a further IRSynthParams refactor — the existing fields stay layout-
+ * compatible because new optional members are appended at the end with
+ * harmless defaults.
+ */
+struct SourceRadiation
+{
+    enum class Kind : int { LegacyCardioid = 0, Parametric = 1, Omni = 2 };
+
+    Kind kind = Kind::LegacyCardioid;
+
+    // Per-octave-band cardioid exponent. Bands [125, 250, 500, 1k, 2k, 4k, 8k, 16k].
+    // Used only when kind == Parametric.
+    std::array<double, 8> bandExp { { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 } };
+
+    // Per-octave-band rear floor in [0, 1]. Same band layout as bandExp.
+    // 0 = hard zero behind (cardioid-like); 0.10 ≈ −20 dB rear (typical for
+    // measured instruments); 1.0 = omni.
+    std::array<double, 8> bandFloor { { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 } };
+
+    // Identifier used to round-trip the choice through .ping XML and to
+    // present a human-readable label in the UI. Empty for ad-hoc/default.
+    // The plugin reads this back and re-resolves it through byPreset() at
+    // load time, so coefficient drift in a preset's tuning does NOT
+    // invalidate older sidecars.
+    std::string presetName;
+
+    // ── Built-in preset factories ────────────────────────────────────────
+    // Each returns a fully populated SourceRadiation. byPreset() does a
+    // case-insensitive lookup against presetNames(); unknown names map to
+    // legacyCardioid() so unknown XML tags from the future degrade safely.
+    static SourceRadiation legacyCardioid();
+    static SourceRadiation cardioidExperimental();   // Parametric equivalent of legacy (for IR_34)
+    static SourceRadiation omni();
+    static SourceRadiation supercardioidWithFloor();
+    static SourceRadiation genericInstrument();
+    static SourceRadiation brassForward();
+    static SourceRadiation voice();
+    static SourceRadiation stringsBroad();
+    static SourceRadiation windReed();
+
+    // Lookup the canonical built-in / loaded preset by name. Returns
+    // legacyCardioid() if not found. Used both by the UI dropdown and by
+    // .ping preset XML loading.
+    static SourceRadiation byPreset (const std::string& name);
+
+    // Names of all built-in presets, in the order they should appear in
+    // the UI dropdown. JSON-loaded measured-instrument presets are appended
+    // to this list at runtime via registerLoadedPreset().
+    static const std::vector<std::string>& presetNames();
+
+    // Append a runtime-loaded preset (e.g. parsed from
+    // Resources/instrument-radiation.json) to the registry. Idempotent on
+    // name. Called once at plugin startup.
+    static void registerLoadedPreset (const SourceRadiation& r);
+};
+
 /** All parameters for one IR synthesis run. */
 struct IRSynthParams
 {
@@ -193,6 +285,14 @@ struct IRSynthParams
     // whether early-reflection directional cues are being lost to the fade.
     bool        lambert_scatter_enabled = true;
     bool        spk_directivity_full    = false;
+
+    // ── Source radiation model (instrument directivity) ───────────────────
+    // See struct SourceRadiation defined above. Default value reproduces
+    // the legacy frequency-flat pure cardioid bit-exactly, so existing
+    // presets and IR_11/IR_14/IR_32/IR_33 regression locks are unaffected.
+    // Selecting a non-default preset via the UI changes the per-octave-band
+    // directivity used by calcRefs / calcRefsPolygon.
+    SourceRadiation source_radiation {};
 
     // ── Decca Tree capture mode (MAIN + DIRECT paths only) ───────────────────
     // When enabled, MAIN and DIRECT synthesis use a 3-mic L/C/R array rigidly
