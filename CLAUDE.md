@@ -122,7 +122,9 @@ g++ -std=c++17 -O2 \
 | IR_08 | Full-reverb tail has energy after ER crossover (FDN seed check) |
 | IR_09 | No NaN/Inf with extreme parameters (tiny room, coincident speakers, high diffusion) |
 | IR_10 | Measured RT60 within 2× of Eyring-predicted value (lower bound 0.4×, upper 2×) |
-| IR_11 | Golden regression lock — 30 samples from onset at index 482, locked to 17 sig-fig |
+| IR_11 | Golden regression lock — 30 samples from onset at index 583, locked to 17 sig-fig |
+| IR_32 | Rectangular x-mirror symmetry of the ER region (v2.10 mirror-symmetric jitter — see "Mirror-symmetric ER jitter" section) |
+| IR_33 | Polygon (Cathedral) x-mirror symmetry of the ER region |
 | IR_12 | FDN LFO rates have no rational beat frequencies (p,q ≤ 6 check across all 120 pairs) |
 | IR_13 | IR end-of-buffer is near-silent — last 500 ms below −60 dB of peak (silence-trim precondition) |
 
@@ -147,7 +149,7 @@ g++ -std=c++17 -O2 \
 
 ### Golden regression lock (IR_11)
 
-IR_11 locks 30 samples of `iLL` starting at the first non-silent sample (onset index 482 for the 10×8×5 m small-room params). To update after a deliberate engine change:
+IR_11 locks 30 samples of `iLL` starting at the first non-silent sample (onset index 583 for the 10×8×5 m small-room params under the v2.10 hash-keyed jitter). To update after a deliberate engine change:
 
 ```bash
 ./PingTests "[capture]" -s    # prints new onset index + 30 sample values
@@ -1098,6 +1100,72 @@ Pipeline:
 7. **Post-process** — LP@18kHz, HP@20Hz, 500ms cosine end fade. **No peak normalisation** — amplitude scales naturally with the 1/r law (proximity effect preserved).
 8. **Output level trim (+15 dB)** — After all processing, a fixed `+15 dB` gain (`pow(10, 15/20) ≈ 5.6234`) is applied to all four channels. This corrects for the observed ~15 dB shortfall in synthesised IR output level without touching any synthesis calculations. Applied as the very last step in `synthIR()`, immediately before moving results into `IRSynthResult`.
 9. **`makeWav` writes WAVE_FORMAT_EXTENSIBLE (`0xFFFE`)** — The 4-channel WAV output uses a 40-byte extended `fmt` chunk with format tag `0xFFFE`, `cbSize=22`, `wValidBitsPerSample=24`, `dwChannelMask=0x33` (FL+FR+BL+BR quadraphonic), and the PCM SubFormat GUID `{00000001-0000-0010-8000-00AA00389B71}`. JUCE's `WavAudioFormat` silently refuses to create a reader for 4-channel files that use the plain PCM tag (`0x0001` with a 16-byte `fmt` chunk) — `createReaderFor` returns nullptr and the IR load fails without any error. `dwChannelMask=0` (unspecified) causes macOS QuickTime and CoreAudio to reject the file as incompatible, which also prevents the plugin from loading it on macOS. Always use `dwChannelMask=0x33` to match JUCE's own WAV writer. Do not revert to a minimal 16-byte `fmt` chunk or `dwChannelMask=0` for multichannel output.
+
+### Mirror-symmetric ER jitter (v2.10)
+
+`calcRefs` and `calcRefsPolygon` previously consumed a sequential `mkRng/rU`
+RNG stream keyed on a per-(speaker, mic) seed (rLL=42, rLR=44, rLC=46, etc.).
+That broke L/R mirror symmetry: mirroring the source position kept the same
+per-mic seed but presented different geometry, so the L mic's jitter
+realisation never matched the R mic's mirror-equivalent realisation. The
+audible result was clearer localisation on one side than the other (see the
+investigation in `Docs/Plan-Mirror-Symmetric-Jitter.md`).
+
+The fix replaces the sequential RNG with a deterministic hash keyed on
+**image-source identity + per-speaker salt + roll-kind**. The same image
+source observed by any mic from the same speaker now produces the same
+jitter — which is also more physically correct (surface scatter is a
+property of the wall, not of which mic catches it).
+
+**Image-source identity:**
+- Rectangular: `mix64(|nx|, ny, nz)`. `|nx|` is mirror-invariant under
+  x-flip — under x→W−x the lattice index `nx` flips sign, so absolute
+  value is needed for mirror-pair reflections to hash the same.
+- Polygon: `mix64(wallId(W_p[0]), wallId(W_p[1]), …, nz)` where
+  `wallId(W)` hashes the wall's mirror-invariant + direction-agnostic
+  geometric features (`midY`, `|midX − W/2|`, `length`, `|dx|`, `|dy|`)
+  quantised to 1 µm. Direction-agnostic so a wall and its x-mirror
+  partner — which are traversed in opposite directions in the CCW wall
+  list — produce the same identity.
+
+**Roll-kind enumeration** (stable across `calcRefs` and `calcRefsPolygon`):
+| kind     | use                                                |
+|----------|----------------------------------------------------|
+| 0        | `ts`-driven scatter time jitter (when `ts > 0.05`) |
+| 1        | order-dependent close-source jitter (when active)  |
+| 2 + 2k   | Lambert scatter[k] azimuth                         |
+| 3 + 2k   | Lambert scatter[k] time                            |
+
+**Per-speaker salt convention** (all mics from the same speaker share its salt):
+| path    | L speaker | R speaker |
+|---------|-----------|-----------|
+| MAIN    | 42        | 43        |
+| OUTRIG  | 52        | 53        |
+| AMBIENT | 62        | 63        |
+| DIRECT  | 72        | 73        |
+
+This collapses the previous 22 distinct per-(spk,mic) seeds (incl. centre-
+mic seeds 46/47 and direct path seeds 72–77) to 8 per-speaker salts.
+
+**FDN seeds 100/101 are NOT touched.** The FDN tail uses independent L/R
+seeds intentionally — diffuse-field decorrelation between channels is a
+desired property of the late tail, not a defect. The mirror invariance
+applies only to the ER region.
+
+**Test coverage:**
+- `IR_32` (`PingEngineTests.cpp`) — rectangular x-mirror symmetry over
+  the full ER-only IR. Tolerance 1e-12 (bit-exact at FP precision).
+- `IR_33` (`PingEngineTests.cpp`) — polygon (Cathedral) x-mirror symmetry.
+  Tolerance 1e-9 (slightly looser to accommodate polygon ISM line-line
+  intersection FP noise; in practice runs at ~5e-14 in the probe).
+
+**Listening A/B helper:** `Tools/jitter_ab_render.cpp` renders the
+small-room-Decca configuration to `listening-ab/{prefix}-{left,right}.wav`
+for blind A/B comparison between branches.
+
+**Diagnostic probe:** `Tools/symmetry_probe.cpp` numerically demonstrates
+the symmetry property end-to-end (Vienna geometry + small-room geometry,
+ER-only and full-engine, jitter on and off).
 
 ### Close / coincident speaker handling
 

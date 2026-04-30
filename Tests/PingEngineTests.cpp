@@ -348,14 +348,23 @@ TEST_CASE("IR_11: golden output regression lock", "[engine][golden]")
     // source plane — sample values shift accordingly. Onset stays at 482
     // because speaker/mic positions and the band-pass topology are unchanged;
     // only the per-reflection mic gain factor differs.
-    static const int    onset_offset  = 482;   // first non-zero sample in small room (10×8×5 m)
+    //
+    // Updated v2.10 (mirror-symmetric ER jitter): the per-reflection time
+    // jitter and Lambert scatter rolls are now keyed on a deterministic
+    // image-source hash (see "Image-source-keyed deterministic jitter" comment
+    // block in IRSynthEngine.cpp) instead of a sequential per-(spk,mic) RNG.
+    // This makes the engine x-mirror-symmetric (IR_32 / IR_33 enforce it) at
+    // the cost of a one-time golden-value shift. The onset moved 482 → 583
+    // because the new ts-jitter realisation positions the first non-silent
+    // sample slightly later in this small-room geometry.
+    static const int    onset_offset  = 583;   // first non-zero sample in small room (10×8×5 m)
     static const double golden_iLL[30] = {
-        0.0053103628336124125, 0.025951972418170221, 0.099364509746994734, 0.25693582437955276, 0.46423011303955547,
-        0.55956713054916707, 0.39165639964778937, 0.26316081568217503, 0.30404028140963585, -0.15569795146155802,
-        -0.59938918887092929, -0.12458707971306646, 0.10594211036249691, -0.053053723892049313, 0.10295731002713726,
-        -0.014265888464209788, -0.10891557463290184, 0.030914058101983978, -0.024157533914721373, -0.035364762539943029,
-        -0.0081281029224852513, -0.054808470716043757, -0.031380347987497989, -0.006081492344561984, -0.011825838364927411,
-        0.0040179168208423948, 0.0024629284758383718, -0.006903438098086352, -0.0052263217665323878, -0.012708190403467698
+        0.0053103628336124125, 0.025951972418170221, 0.099364509746994734, 0.34575922714712365, 0.59737973033764191,
+        0.47736999193957497, 0.20049205124463174, 0.06446861068508894, 0.093461609101059093, 0.23320015383652948,
+        -0.12966337023993985, -0.52387477592044185, -0.042621036635842734, 0.17120315493303981, -0.021592415135256275,
+        0.10273226840075216, -0.037126411497255839, -0.14135940975734926, 0.0013641545460207031, -0.0430017096037663,
+        -0.04048574937002801, -0.0046907528499669981, -0.057338788289126301, -0.078314927903586282, -0.15383971188800094,
+        -0.29215014612894791, -0.33974976905713555, -0.24402174131041965, -0.17589551348703159, -0.19345862373054867
     };
 
     static const bool goldenCaptured = true;    // captured by IR_GOLDEN_CAPTURE — do not change without a reason
@@ -481,6 +490,167 @@ TEST_CASE("IR_13: IR end-of-buffer is near-silent (trim precondition)", "[engine
     // Must be below −60 dB.  The trim threshold is −80 dB, so this is conservative:
     // passing this test is a necessary (not sufficient) condition for a useful trim.
     CHECK(tailPeak < peak * 1e-3);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEST_IR_32 — Rectangular x-mirror symmetry of the ER region
+// ─────────────────────────────────────────────────────────────────────────────
+// Engine-wide invariant introduced in v2.10. With:
+//   • rectangular room (mirror-symmetric across x = W/2)
+//   • mono speaker source (so only one speaker is in play, no L/R speaker
+//     asymmetry)
+//   • forward-facing speaker (spkl_angle = π/2 = straight down) so the
+//     speaker's cardioid pattern is itself x-symmetric
+//   • Decca tree centred at decca_cx = 0.5 with decca_angle = -π/2 (forward)
+// the L mic IR for a source at (sx, sy) MUST equal the R mic IR for a source
+// at the mirrored position (W − sx, sy) sample-for-sample within numerical
+// precision over the early-reflection region.
+//
+// The fix that enables this is the hash-keyed jitter scheme in
+// IRSynthEngine.cpp (calcRefs / calcRefsPolygon): per-image-source ts-jitter
+// and Lambert scatter rolls are now deterministic functions of the image
+// source identity, not of a per-(speaker, mic) RNG seed. See the comment
+// block above calcRT60 for the full rationale.
+//
+// The FDN tail uses its own independent seeds (100 / 101) and is therefore
+// NOT mirror-symmetric — that's a separate, perceptually-minor issue.
+// The test asserts ER-region symmetry only.
+TEST_CASE("IR_32: rectangular x-mirror symmetry over the ER region",
+          "[engine][symmetry]")
+{
+    // ER-only mode: no FDN tail (which uses independent seeds 100/101 and
+    // is therefore intentionally NOT mirror-symmetric — diffuse-field
+    // decorrelation is a feature, not a bug). The pre-fix asymmetry was
+    // entirely in the early-reflection cluster, so testing the ER region
+    // is what protects the perceptual fix.
+    IRSynthParams pA = smallRoomParams();
+    pA.diffusion = 0.55;     // ts > 0.05 — guarantees jitter is active
+    pA.organ_case = 0.40;
+    pA.balconies  = 0.60;
+    pA.er_only = true;
+    pA.spkl_angle = 1.5707963267948966;   // π/2 — forward, no rotation
+    pA.spkr_angle = 1.5707963267948966;
+    pA.mono_source = true;
+    pA.main_decca_enabled = true;
+    pA.decca_cx = 0.5;       // centred — required for mirror symmetry
+    pA.decca_cy = 0.65;
+    pA.decca_angle = -1.5707963267948966; // forward
+    pA.source_lx = 0.30; pA.source_ly = 0.50;
+    pA.source_rx = 0.30; pA.source_ry = 0.50; // unused in mono
+
+    IRSynthParams pB = pA;
+    pB.source_lx = 0.70; pB.source_ly = 0.50;  // mirror across x = 0.5
+    pB.source_rx = 0.70; pB.source_ry = 0.50;
+
+    auto noop = [](double, const std::string&) {};
+    auto rA = IRSynthEngine::synthIR (pA, noop);
+    auto rB = IRSynthEngine::synthIR (pB, noop);
+
+    REQUIRE (rA.success);
+    REQUIRE (rB.success);
+    REQUIRE (rA.irLen == rB.irLen);
+
+    // Under x-mirror, scene B's L speaker → R mic IR equals scene A's
+    // L speaker → L mic IR. (And iLR(A) = iLL(B) by the same argument.)
+    // Compare the entire ER-only output (the FDN does not run).
+    double maxAbs_LL_vs_LR = 0.0, maxAbs_LR_vs_LL = 0.0;
+    double peak = 0.0;
+    for (int i = 0; i < rA.irLen; ++i)
+    {
+        maxAbs_LL_vs_LR = std::max (maxAbs_LL_vs_LR, std::fabs (rA.iLL[(size_t) i] - rB.iLR[(size_t) i]));
+        maxAbs_LR_vs_LL = std::max (maxAbs_LR_vs_LL, std::fabs (rA.iLR[(size_t) i] - rB.iLL[(size_t) i]));
+        peak = std::max (peak, std::fabs (rA.iLL[(size_t) i]));
+    }
+
+    INFO ("irLen: " << rA.irLen
+          << "   peak |iLL_A| = " << peak
+          << "   maxAbs(iLL_A − iLR_B) = " << maxAbs_LL_vs_LR
+          << "   maxAbs(iLR_A − iLL_B) = " << maxAbs_LR_vs_LL);
+
+    // Mirror equality is bit-exact for the rectangular path: every operation
+    // in the chain (image-source loop, polar pattern, distance, hash-keyed
+    // jitter, renderCh's per-band buffer + bandpass, |sin(az)| late-tilt
+    // factor, Decca centre-fill combine) is x-mirror-invariant.
+    CHECK (maxAbs_LL_vs_LR < 1e-12);
+    CHECK (maxAbs_LR_vs_LL < 1e-12);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TEST_IR_33 — Polygon x-mirror symmetry of the ER region (Cathedral)
+// ─────────────────────────────────────────────────────────────────────────────
+// Same invariant as IR_32 but on the polygon image-source path. Polygon
+// rooms (Cathedral cruciform here) are themselves x-symmetric in their
+// generated geometry, and the v2.10 jitter scheme uses MIRROR-INVARIANT
+// wall identities (geometric features that survive an x-flip) when hashing
+// each image source's wallPath. So the same physical reflection event in
+// scene A and its mirror counterpart in scene B hash to the same value and
+// receive the same per-image-source jitter.
+//
+// Notes:
+//   • renderCh's diffuser allpass introduces a small per-channel state
+//     dependency on early sample timing; we accept up to 1e-9 tolerance.
+//   • A larger room is used than IR_32 so the polygon order cap doesn't
+//     trim asymmetrically (kPolygonAcceptedBudget = 20000 should be
+//     comfortably below the budget).
+TEST_CASE("IR_33: polygon (Cathedral) x-mirror symmetry over the ER region",
+          "[engine][symmetry][polygon]")
+{
+    IRSynthParams pA = smallRoomParams();
+    pA.shape = "Cathedral";
+    pA.shapeNavePct = 0.35;
+    pA.shapeTrptPct = 0.30;
+    pA.diffusion = 0.55;
+    pA.organ_case = 0.40;
+    pA.balconies  = 0.60;
+    pA.er_only = true;
+    pA.spkl_angle = 1.5707963267948966;
+    pA.spkr_angle = 1.5707963267948966;
+    pA.mono_source = true;
+    pA.main_decca_enabled = true;
+    pA.decca_cx = 0.5;
+    pA.decca_cy = 0.65;
+    pA.decca_angle = -1.5707963267948966;
+    pA.source_lx = 0.30; pA.source_ly = 0.50;
+    pA.source_rx = 0.30; pA.source_ry = 0.50;
+
+    IRSynthParams pB = pA;
+    pB.source_lx = 0.70; pB.source_ly = 0.50;
+    pB.source_rx = 0.70; pB.source_ry = 0.50;
+
+    auto noop = [](double, const std::string&) {};
+    auto rA = IRSynthEngine::synthIR (pA, noop);
+    auto rB = IRSynthEngine::synthIR (pB, noop);
+
+    REQUIRE (rA.success);
+    REQUIRE (rB.success);
+    REQUIRE (rA.irLen == rB.irLen);
+
+    double maxAbs_LL_vs_LR = 0.0, maxAbs_LR_vs_LL = 0.0;
+    double peak = 0.0;
+    for (int i = 0; i < rA.irLen; ++i)
+    {
+        maxAbs_LL_vs_LR = std::max (maxAbs_LL_vs_LR, std::fabs (rA.iLL[(size_t) i] - rB.iLR[(size_t) i]));
+        maxAbs_LR_vs_LL = std::max (maxAbs_LR_vs_LL, std::fabs (rA.iLR[(size_t) i] - rB.iLL[(size_t) i]));
+        peak = std::max (peak, std::fabs (rA.iLL[(size_t) i]));
+    }
+
+    INFO ("irLen: " << rA.irLen
+          << "   peak |iLL_A| = " << peak
+          << "   maxAbs(iLL_A − iLR_B) = " << maxAbs_LL_vs_LR
+          << "   maxAbs(iLR_A − iLL_B) = " << maxAbs_LR_vs_LL);
+
+    // Polygon mirror equality: the wall-identity hash uses ONLY mirror-
+    // invariant geometric features (midY, |midX − W/2|, length, |dx|, dy),
+    // so a wall and its x-mirror partner produce the same identity. Plus
+    // makeWalls2D builds a left-right-symmetric polygon whose CCW wall list
+    // is itself a mirror permutation under x-flip. Combined, this makes the
+    // jitter identical for mirror-pair image sources, and the rest of the
+    // chain (renderCh, polar pattern, distance) is x-mirror-invariant.
+    // Tolerance is wider than IR_32 because the polygon ISM uses more
+    // floating-point math (line-line intersections, polygon point-inside)
+    // than the rectangular lattice walk.
+    CHECK (maxAbs_LL_vs_LR < 1e-9);
+    CHECK (maxAbs_LR_vs_LL < 1e-9);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

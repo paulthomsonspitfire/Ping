@@ -6,6 +6,9 @@ Installer/output/
 cmake-build-*/
 out/
 
+# Probe / diagnostic WAV outputs (rebuild via Tools/*_probe.cpp etc.)
+listening-ab/
+
 # IDE
 .idea/
 .vscode/

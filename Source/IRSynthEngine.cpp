@@ -473,6 +473,162 @@ double IRSynthEngine::Rng::next()
 }
 double IRSynthEngine::rU (Rng& rng, double lo, double hi) { return lo + rng.next() * (hi - lo); }
 
+// ── Image-source-keyed deterministic jitter (v2.10) ───────────────────────
+//
+// The early-reflection time jitter and Lambert scatter rolls in calcRefs and
+// calcRefsPolygon used to come from a sequential mkRng/rU stream keyed on a
+// per-(speaker, mic) seed (rLL=42, rLR=44, etc.). That broke L/R mirror
+// symmetry: mirroring the source position kept the same per-mic seed but
+// presented different geometry, so the L mic's jitter realisation never
+// matched the R mic's mirror-equivalent realisation. The audible result was
+// clearer localisation on one side than the other (see the 2026-04-29
+// investigation and Docs/Plan-Mirror-Symmetric-Jitter.md).
+//
+// The fix: replace the sequential RNG with a deterministic hash keyed on the
+// IMAGE SOURCE IDENTITY plus a per-speaker SALT and a roll-INDEX (kind).
+// The same image source observed by any mic from the same speaker produces
+// the same jitter — which is also more physically correct (surface scatter
+// is a property of the wall, not of which mic catches it).
+//
+// Roll-kind enumeration (stable across calcRefs and calcRefsPolygon):
+//   kind 0  — ts-driven scatter time jitter        (active when ts > 0.05)
+//   kind 1  — order-dependent close-source jitter  (active when jitterMs > 0)
+//   kind 2  — Lambert scatter[0] azimuth
+//   kind 3  — Lambert scatter[0] time
+//   kind 4  — Lambert scatter[1] azimuth
+//   kind 5  — Lambert scatter[1] time
+//   ... (kind 2 + 2k = scatter[k] az, kind 3 + 2k = scatter[k] time)
+//
+// Salt convention (per-speaker, SHARED across all mics from that speaker):
+//   MAIN    : L spk = 42, R spk = 43
+//   OUTRIG  : L spk = seedBase+0=52, R spk = seedBase+1=53
+//   AMBIENT : L spk = seedBase+0=62, R spk = seedBase+1=63
+//   DIRECT  : L spk = 72, R spk = 73
+//
+// Image-source identity:
+//   Rectangular: 64-bit hash of (nx, ny, nz). Mirror-invariant: x→W−x leaves
+//                (nx, ny, nz) unchanged (the lattice index points to the
+//                mirrored position automatically).
+//   Polygon:     64-bit hash of (wall identity sequence, nz), where each
+//                wall's identity is computed from MIRROR-INVARIANT geometric
+//                features (midY, |midX − W/2|, length, |dx|, dy) so that a
+//                wall and its x-mirror partner produce the same identity.
+//                This gives polygon mirror invariance without restructuring
+//                the index-based traversal in generateIS2D.
+
+namespace
+{
+    // SplitMix64 avalanche mixer.
+    inline uint64_t mix64 (uint64_t x) noexcept
+    {
+        x ^= x >> 33;
+        x *= 0xff51afd7ed558ccdULL;
+        x ^= x >> 33;
+        x *= 0xc4ceb9fe1a85ec53ULL;
+        x ^= x >> 33;
+        return x;
+    }
+
+    // Combine an image-source identity with a salt and a roll-kind, return
+    // a uniform double in [0, 1).
+    inline double hashU01 (uint64_t isHash, uint32_t salt, uint32_t kind) noexcept
+    {
+        uint64_t h = isHash;
+        h = mix64 (h ^ ((uint64_t) salt << 32));
+        h = mix64 (h ^ (uint64_t) kind);
+        return (double) (h >> 11) * (1.0 / (double) (1ULL << 53));
+    }
+
+    inline double hashRange (uint64_t isHash, uint32_t salt, uint32_t kind,
+                             double lo, double hi) noexcept
+    {
+        return lo + (hi - lo) * hashU01 (isHash, salt, kind);
+    }
+
+    // Rectangular image-source identity from the (nx, ny, nz) lattice index.
+    //
+    // Mirror invariance under x-flip: reflecting the source position across
+    // x = W/2 maps each image at lattice index (nx, ny, nz) to its mirror
+    // partner at (−nx, ny, nz). For mirror-pair reflections to hash the
+    // same — which is the whole point of the v2.10 jitter scheme — we
+    // therefore use |nx| in the hash. ny and nz are already mirror-invariant
+    // because the x-flip leaves y and z untouched.
+    //
+    // Side effect: within a single scene, reflections at (nx, ny, nz) and
+    // (−nx, ny, nz) — i.e. mirror-pair reflections inside the SAME scene
+    // — also share their jitter realisation. This is fine perceptually
+    // because those two reflections have different base arrival times
+    // (different distances to the receiver), so they don't fold onto each
+    // other; the shared jitter just produces a small correlated time
+    // offset between them rather than two independent random offsets.
+    inline uint64_t isIdentityRect (int nx, int ny, int nz) noexcept
+    {
+        const uint32_t absNx = (uint32_t) std::abs (nx);
+        return mix64 (((uint64_t) absNx)
+                    ^ ((uint64_t) (uint32_t) ny << 21)
+                    ^ ((uint64_t) (uint32_t) nz << 42));
+    }
+
+    // Mirror-invariant + direction-agnostic identity of a single Wall2D.
+    // Uses geometric features that survive an x-flip (x → W − x) AND that
+    // do not depend on the wall's CCW traversal direction:
+    //   midY              (unchanged by x-flip; direction-agnostic)
+    //   |midX − W/2|      (unchanged by x-flip; direction-agnostic)
+    //   length            (unchanged; direction-agnostic)
+    //   |dx|              (unchanged by x-flip; direction-agnostic)
+    //   |dy|              (unchanged by x-flip; direction-agnostic)
+    //
+    // Direction-agnosticism matters because in a CCW-traversed simple
+    // polygon, two mirror-partner walls appear in OPPOSITE traversal
+    // directions in the wall list. e.g. in the Cathedral cruciform, the
+    // right-nave-top wall W_1 goes (cx+hw, 0) → (cx+hw, cy−ht) while its
+    // mirror partner W_11 on the left goes (cx−hw, cy−ht) → (cx−hw, 0).
+    // As DIRECTED segments they have opposite dy, but as line SEGMENTS
+    // they're geometric mirror partners — the hash must treat them as
+    // equivalent for the engine to be polygon-mirror-symmetric.
+    //
+    // Coordinates are quantised to 1 µm (1e-6) before hashing to absorb
+    // floating-point noise from polygon vertex math (room dimensions are
+    // user-specified to 0.1 m).
+    inline uint64_t wallIdentity (double x1, double y1,
+                                  double x2, double y2,
+                                  double roomWidth) noexcept
+    {
+        const double midX  = (x1 + x2) * 0.5;
+        const double midY  = (y1 + y2) * 0.5;
+        const double dx    = x2 - x1;
+        const double dy    = y2 - y1;
+        const double len   = std::sqrt (dx * dx + dy * dy);
+        const double absDX = std::fabs (dx);
+        const double absDY = std::fabs (dy);
+        const double offX  = std::fabs (midX - roomWidth * 0.5);
+
+        auto q = [] (double v) -> uint64_t {
+            return (uint64_t) (int64_t) std::llround (v * 1.0e6);
+        };
+
+        uint64_t h = 0xcbf29ce484222325ULL;
+        h = mix64 (h ^ q (midY));
+        h = mix64 (h ^ q (offX));
+        h = mix64 (h ^ q (len));
+        h = mix64 (h ^ q (absDX));
+        h = mix64 (h ^ q (absDY));
+        return h;
+    }
+
+    // Polygon image-source identity: combine the chain of wall identities
+    // (in reflection order) with the vertical lattice index nz.
+    inline uint64_t isIdentityPoly (const std::vector<uint64_t>& wallIds,
+                                    const std::vector<int>& wallPath,
+                                    int nz) noexcept
+    {
+        uint64_t h = 0xcbf29ce484222325ULL;
+        for (int wi : wallPath)
+            h = mix64 (h ^ wallIds[(size_t) wi]);
+        return mix64 (h ^ ((uint64_t) (uint32_t) nz << 32));
+    }
+}
+
 // ── calcRT60 — verbatim from JS ────────────────────────────────────────────
 std::vector<double> IRSynthEngine::calcRT60 (const IRSynthParams& p)
 {
@@ -558,7 +714,12 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
     double micFaceTilt)
 {
     double W = p.width, D = p.depth;
-    Rng rng = mkRng(seed);
+    // `seed` is now the per-speaker SALT in the hash-keyed jitter scheme
+    // (see "Image-source-keyed deterministic jitter" comment block above).
+    // The per-image-source rolls (ts-jitter, close-source jitter, Lambert
+    // scatter) are deterministic functions of (image-source identity, salt,
+    // kind) — no sequential RNG state is consumed inside this loop.
+    const uint32_t saltSrc = seed;
     std::vector<Ref> refs;
 
     for (int nx = -mo; nx <= mo; ++nx)
@@ -576,13 +737,15 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
                 // sources that are actually distinct from diffuse reverberation.
                 if (dist > maxRefDist) continue;
 
+                const uint64_t isHash = isIdentityRect (nx, ny, nz);
+
                 int t = (int)std::floor(dist / SPEED * sr);
-                if (ts > 0.05) t = std::max(1, t + (int)std::floor(rU(rng, -ts * 4.0, ts * 4.0) * sr / 1000.0));
+                if (ts > 0.05) t = std::max(1, t + (int)std::floor(hashRange(isHash, saltSrc, 0, -ts * 4.0, ts * 4.0) * sr / 1000.0));
                 // Order-dependent jitter when sources are close: keep direct and first-order
                 // tight (small jitter); scramble order 2+ to break the periodic decaying echo
                 // that comes from repeated bounces (e.g. floor-ceiling at 2*H/c).
                 double jitterMs = (totalBounces >= 2) ? highOrderJitterMs : minJitterMs;
-                if (jitterMs > 0.0) t = std::max(1, t + (int)std::floor(rU(rng, -jitterMs, jitterMs) * sr / 1000.0));
+                if (jitterMs > 0.0) t = std::max(1, t + (int)std::floor(hashRange(isHash, saltSrc, 1, -jitterMs, jitterMs) * sr / 1000.0));
                 // In ER-only mode, skip image sources that arrive at or beyond the ER
                 // window boundary.  In full-reverb mode keep all sources — late ones seed
                 // the FDN (ef=0 after ecFdn prevents them appearing in the ER output).
@@ -638,16 +801,18 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefs (
 
                 // Feature A — Lambert diffuse scattering: add N_SCATTER secondary refs per
                 // bounce at orders 1–3 so the space between specular spikes is filled.
-                // Runtime-toggleable via IRSynthParams::lambert_scatter_enabled (default true
-                // preserves bit-identity with pre-experiment builds).
+                // Runtime-toggleable via IRSynthParams::lambert_scatter_enabled.
+                //
+                // Hash-keyed jitter: scatter[s] uses kinds (2 + 2s) for azimuth and
+                // (3 + 2s) for time. With N_SCATTER = 2 this consumes kinds 2..5.
                 const int N_SCATTER = 2;
                 if (p.lambert_scatter_enabled && ts > 0.05 && totalBounces >= 1 && totalBounces <= 3)
                 {
                     double scatterWeight = (ts * 0.08) / (double)N_SCATTER * std::pow(0.6, totalBounces - 1);
                     for (int s = 0; s < N_SCATTER; ++s)
                     {
-                        double scatterAz = rU(rng, -3.141592653589793, 3.141592653589793);
-                        int scatterT = t + (int)std::round(rU(rng, 0.0, 4.0) * sr / 1000.0);
+                        double scatterAz = hashRange(isHash, saltSrc, (uint32_t)(2 + 2*s), -3.141592653589793, 3.141592653589793);
+                        int scatterT = t + (int)std::round(hashRange(isHash, saltSrc, (uint32_t)(3 + 2*s), 0.0, 4.0) * sr / 1000.0);
                         scatterT = std::max(1, scatterT);
                         // Gate scatter refs beyond the ER window in ER-only mode.
                         // Parent t < ec, but the +0–4 ms scatter offset could push it over.
@@ -891,7 +1056,13 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
     double highOrderJitterMs,
     double micFaceTilt)
 {
-    Rng rng = mkRng (seed);
+    // `seed` is now the per-speaker SALT in the hash-keyed jitter scheme
+    // (see "Image-source-keyed deterministic jitter" comment block above
+    // calcRT60). Image-source identity for the polygon path is built from
+    // the wall-path's MIRROR-INVARIANT wall identities plus nz, so the same
+    // physical reflection event hashes the same in the original and mirror
+    // rooms.
+    const uint32_t saltSrc = seed;
     std::vector<Ref> refs;
 
     // Build the 2D wall list from the room shape. Per-band wall reflection
@@ -928,6 +1099,16 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
     const auto walls = makeWalls2D (p, p.width, p.depth, rWPerBand);
     if (walls.size() < 3)
         return refs;  // degenerate room — no reflections possible
+
+    // Precompute mirror-invariant wall identities once per call. Each entry
+    // is a 64-bit hash derived from geometric features that survive an
+    // x-flip; mirror-partner walls produce the same identity, so an image
+    // source's wallPath and its mirror counterpart hash to the same value.
+    std::vector<uint64_t> wallIds (walls.size());
+    for (size_t i = 0; i < walls.size(); ++i)
+        wallIds[i] = wallIdentity (walls[i].x1, walls[i].y1,
+                                   walls[i].x2, walls[i].y2,
+                                   p.width);
 
     // Horizontal order cap: clamp the rectangular RT60-based mo by the per-
     // shape hard cap to keep worst-case cost bounded.
@@ -987,12 +1168,14 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
             // Total reflection count = horizontal hops + vertical hops.
             const int totalBounces = is.order + std::abs (nz);
 
+            const uint64_t isHash = isIdentityPoly (wallIds, is.wallPath, nz);
+
             int t = (int) std::floor (dist / SPEED * sr);
             if (ts > 0.05)
-                t = std::max (1, t + (int) std::floor (rU (rng, -ts * 4.0, ts * 4.0) * sr / 1000.0));
+                t = std::max (1, t + (int) std::floor (hashRange (isHash, saltSrc, 0, -ts * 4.0, ts * 4.0) * sr / 1000.0));
             const double jitterMs = (totalBounces >= 2) ? highOrderJitterMs : minJitterMs;
             if (jitterMs > 0.0)
-                t = std::max (1, t + (int) std::floor (rU (rng, -jitterMs, jitterMs) * sr / 1000.0));
+                t = std::max (1, t + (int) std::floor (hashRange (isHash, saltSrc, 1, -jitterMs, jitterMs) * sr / 1000.0));
 
             // ER gate: in ER-only mode skip sources that arrive at or beyond
             // the ER window boundary. Same logic as calcRefs.
@@ -1052,6 +1235,9 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
             // truncated polygon order range (per-scatter-ray amplitude is
             // normalised by N_SCATTER so total diffuse energy roughly doubles
             // vs the rectangular 2-ray version, which is the intent).
+            // Hash-keyed jitter: scatter[s] uses kinds (2 + 2s) for azimuth
+            // and (3 + 2s) for time. With N_SCATTER = 4 this consumes
+            // kinds 2..9.
             const int N_SCATTER = 4;
             if (p.lambert_scatter_enabled && ts > 0.05
                 && totalBounces >= 1 && totalBounces <= 5)
@@ -1060,8 +1246,10 @@ std::vector<IRSynthEngine::Ref> IRSynthEngine::calcRefsPolygon (
                     (ts * 0.08) / (double) N_SCATTER * std::pow (0.75, totalBounces - 1);
                 for (int s = 0; s < N_SCATTER; ++s)
                 {
-                    const double scatterAz = rU (rng, -3.141592653589793, 3.141592653589793);
-                    int scatterT = t + (int) std::round (rU (rng, 0.0, 4.0) * sr / 1000.0);
+                    const double scatterAz = hashRange (isHash, saltSrc, (uint32_t) (2 + 2*s),
+                                                        -3.141592653589793, 3.141592653589793);
+                    int scatterT = t + (int) std::round (hashRange (isHash, saltSrc, (uint32_t) (3 + 2*s),
+                                                                    0.0, 4.0) * sr / 1000.0);
                     scatterT = std::max (1, scatterT);
                     if (eo && scatterT >= ec) continue;
                     std::array<double, 8> scatterAmps;
@@ -1973,7 +2161,19 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
             return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pat, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt);
     };
 
-    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, 42, mainMicPattern, p.spkl_angle, faceL, tiltL);
+    // Per-speaker salts (hash-keyed jitter scheme — see "Image-source-keyed
+    // deterministic jitter" comment block above calcRT60). All MIC paths
+    // from a given speaker share that speaker's salt, so the L-mic and R-mic
+    // IRs see the SAME per-image-source jitter realisation. This is what
+    // makes the engine x-mirror-symmetric (IR_22) and is also more physically
+    // correct (surface scatter is a property of the wall, not of which mic
+    // catches it).
+    //
+    // MAIN salts: L speaker = 42, R speaker = 43.
+    constexpr uint32_t kMainSaltL = 42u;
+    constexpr uint32_t kMainSaltR = 43u;
+
+    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, kMainSaltL, mainMicPattern, p.spkl_angle, faceL, tiltL);
     // Mono mode: rRL is identical to rLL (same speaker drives both convolver
     // input slots), so skip the redundant calcRefs call and copy. By
     // linearity of convolution the existing 4-conv mixer then produces
@@ -1981,22 +2181,21 @@ IRSynthResult IRSynthEngine::synthMainPath (const IRSynthParams& p, IRSynthProgr
     // which is exactly equivalent to mono-summing the input and feeding a
     // single-speaker IR — eliminating inter-speaker comb filtering.
     std::vector<Ref> rRL = p.mono_source ? rLL
-                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, 43, mainMicPattern, p.spkr_angle, faceL, tiltL);
-    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, 44, mainMicPattern, p.spkl_angle, faceR, tiltR);
+                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, kMainSaltR, mainMicPattern, p.spkr_angle, faceL, tiltL);
+    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, kMainSaltL, mainMicPattern, p.spkl_angle, faceR, tiltR);
     std::vector<Ref> rRR = p.mono_source ? rLR
-                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, 45, mainMicPattern, p.spkr_angle, faceR, tiltR);
+                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, kMainSaltR, mainMicPattern, p.spkr_angle, faceR, tiltR);
 
-    // Centre-mic rays (Decca only). Seed offsets 46/47 are unique across the
-    // dispatcher (MAIN=42+, OUTRIG=52+, AMBIENT=62+, DIRECT=72+), so parallel
-    // aux-path synthesis never collides with these. Mono mode: same rule
-    // as above — the R-source centre ray is identical to the L-source one
-    // because srx/sry were aliased to slx/sly above.
+    // Centre-mic rays (Decca only) share the MAIN per-speaker salts. The
+    // centre mic from L speaker uses kMainSaltL (same as L outer + R outer
+    // from L speaker), so all three mics see the same jitter realisation per
+    // image source.
     std::vector<Ref> rLC, rRC;
     if (p.main_decca_enabled)
     {
-        rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, 46, mainMicPattern, p.spkl_angle, faceC, tiltC);
+        rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, kMainSaltL, mainMicPattern, p.spkl_angle, faceC, tiltC);
         rRC = p.mono_source ? rLC
-                            : refsDispatch(rcx, rcy, rz, srx, sry, sz, 47, mainMicPattern, p.spkr_angle, faceC, tiltC);
+                            : refsDispatch(rcx, rcy, rz, srx, sry, sz, kMainSaltR, mainMicPattern, p.spkr_angle, faceC, tiltC);
     }
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size() + rLC.size() + rRC.size()) + " reflections…");
@@ -2523,14 +2722,19 @@ MicIRChannels IRSynthEngine::synthExtraPath (const IRSynthParams& p,
             return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, pattern, spkAng, micAng, maxRefDist, jitterOrder01Ms, jitterOrder2PlusMs, micTilt);
     };
 
-    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, seedBase + 0, p.spkl_angle, langle, ltilt);
+    // Per-speaker salts (hash-keyed jitter scheme; see calcRT60 comment block).
+    // OUTRIG seedBase=52 → L=52, R=53. AMBIENT seedBase=62 → L=62, R=63.
+    const uint32_t saltL = seedBase + 0;
+    const uint32_t saltR = seedBase + 1;
+
+    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, saltL, p.spkl_angle, langle, ltilt);
     // Mono mode: rRL := rLL and rRR := rLR — see synthMainPath for the
     // full rationale (linearity of convolution gives outL = IR_LL ⊛ (inL+inR)).
     std::vector<Ref> rRL = p.mono_source ? rLL
-                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, seedBase + 1, p.spkr_angle, langle, ltilt);
-    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, seedBase + 2, p.spkl_angle, rangle, rtilt);
+                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, saltR, p.spkr_angle, langle, ltilt);
+    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, saltL, p.spkl_angle, rangle, rtilt);
     std::vector<Ref> rRR = p.mono_source ? rLR
-                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, seedBase + 3, p.spkr_angle, rangle, rtilt);
+                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, saltR, p.spkr_angle, rangle, rtilt);
 
     report(0.30, "Rendering " + std::to_string(rLL.size() + rRL.size() + rLR.size() + rRR.size()) + " reflections…");
 
@@ -2957,20 +3161,25 @@ MicIRChannels IRSynthEngine::synthDirectPath (const IRSynthParams& p)
             return calcRefsPolygon (rxL, ryL, rzL, sxL, syL, szL, p, He, mo, rF, rC, rW, oF, vHfA, ts, eo, ec, sr, seed, mainMicPattern, spkAng, micAng, maxRefDist, jitter01, jitter2, micTilt);
     };
 
-    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, 72, p.spkl_angle, faceL, tiltL);
+    // Per-speaker salts (hash-keyed jitter scheme; see calcRT60 comment block).
+    // DIRECT salts: L speaker = 72, R speaker = 73.
+    constexpr uint32_t kDirectSaltL = 72u;
+    constexpr uint32_t kDirectSaltR = 73u;
+
+    std::vector<Ref> rLL = refsDispatch(rlx, rly, rz, slx, sly, sz, kDirectSaltL, p.spkl_angle, faceL, tiltL);
     // Mono mode: rRL := rLL and rRR := rLR — see synthMainPath for the rationale.
     std::vector<Ref> rRL = p.mono_source ? rLL
-                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, 73, p.spkr_angle, faceL, tiltL);
-    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, 74, p.spkl_angle, faceR, tiltR);
+                                          : refsDispatch(rlx, rly, rz, srx, sry, sz, kDirectSaltR, p.spkr_angle, faceL, tiltL);
+    std::vector<Ref> rLR = refsDispatch(rrx, rry, rz, slx, sly, sz, kDirectSaltL, p.spkl_angle, faceR, tiltR);
     std::vector<Ref> rRR = p.mono_source ? rLR
-                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, 75, p.spkr_angle, faceR, tiltR);
+                                          : refsDispatch(rrx, rry, rz, srx, sry, sz, kDirectSaltR, p.spkr_angle, faceR, tiltR);
 
     std::vector<Ref> rLC, rRC;
     if (p.main_decca_enabled)
     {
-        rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, 76, p.spkl_angle, faceC, tiltC);
+        rLC = refsDispatch(rcx, rcy, rz, slx, sly, sz, kDirectSaltL, p.spkl_angle, faceC, tiltC);
         rRC = p.mono_source ? rLC
-                            : refsDispatch(rcx, rcy, rz, srx, sry, sz, 77, p.spkr_angle, faceC, tiltC);
+                            : refsDispatch(rcx, rcy, rz, srx, sry, sz, kDirectSaltR, p.spkr_angle, faceC, tiltC);
     }
 
     // No diffusion, no frequency scatter, no reflection spread — just the bpF cascade.

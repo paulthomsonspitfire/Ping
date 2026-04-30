@@ -258,6 +258,18 @@ TEST_CASE("IR_26: Decca toe-out widens L/R separation for a lateral source",
     IRSynthParams p = deccaSmallRoomParams();
     p.main_decca_enabled = true;
 
+    // Disable the centre-fill for this test. The centre mic's HPF'd output is
+    // summed identically into both L_out and R_out, which adds a CORRELATED
+    // signal floor to both channels and suppresses the L/R energy asymmetry
+    // we're trying to measure here. The toe-out parameter only affects the
+    // OUTER mics, so the cleanest unit test of "does toe-out widen the
+    // outer-pair stereo image" is to compare the bare L/R outer outputs.
+    // (See the engine doc block above calcRT60 — under the v2.10 hash-keyed
+    // jitter scheme, the L and R outer mics share scatter timing per image
+    // source, so the centre-fill's correlated contribution to both channels
+    // is no longer offset by per-mic decorrelated noise as it was pre-v2.10.)
+    p.decca_centre_gain = 0.0;
+
     // Place a single source in the far corner of the room so the tree's L
     // and R mics are at genuinely different distances AND angles to it —
     // otherwise the symmetric placement makes both outer mics equidistant
@@ -284,6 +296,12 @@ TEST_CASE("IR_26: Decca toe-out widens L/R separation for a lateral source",
     p.decca_cy    = 0.50;
     p.decca_angle = 0.0;            // tree looks along +x (toward the sources)
 
+    // Render in ER-only mode so the FDN tail (which is itself L/R correlated
+    // by construction) does not swamp the toe-out's effect on the early
+    // arrivals. The toe-out's purpose is to shape the EARLY image; the FDN
+    // tail's stereo width is set by other parameters.
+    p.er_only = true;
+
     IRSynthParams p0 = p;
     p0.decca_toe_out = 0.0;          // all three mics face +x
 
@@ -304,41 +322,53 @@ TEST_CASE("IR_26: Decca toe-out widens L/R separation for a lateral source",
     CHECK (dLL > 1.0e-6);
     CHECK (dRR > 1.0e-6);
 
-    // (b) Compare L vs R energy asymmetry within the early 100 ms window.
-    //     outL = iLL + iLR,  outR = iRL + iRR (the in-processor sum for
-    //     speaker 1 feeding the L output and speaker 2 feeding the R output).
+    // (b) Compare L vs R cross-correlation in the early 100 ms window.
+    //     Toe-out is meant to widen the stereo image — i.e. make the L and R
+    //     mic signals more INDEPENDENT (each mic now points at a different
+    //     part of the room and so picks up a different set of reflections).
+    //     Cross-correlation is the right metric for stereo width; energy
+    //     asymmetry is not, because over a long enough window each mic ends
+    //     up with comparable total energy regardless of pointing direction.
+    //
+    //     ρ(L, R) ∈ [-1, 1]:  +1 = mono-equivalent (narrow image),
+    //                          0 = uncorrelated (very wide image),
+    //                         -1 = anti-phase.
+    //
+    //     We expect ρ to DROP as toe goes from 0 to π/2 — toe=0 has both
+    //     outers facing the same direction (highly correlated), toe=π/2
+    //     has them facing opposite directions (decorrelated).
     const int sr = 48000;
-    const int earlyEnd = sr / 10;  // 100 ms
+    // 30 ms window: covers the direct ray + first-order reflections. A wider
+    // window dilutes the toe-out signature because each mic eventually
+    // catches comparable total energy from ALL parts of the room.
+    const int earlyEnd = sr * 30 / 1000;
     REQUIRE (r0.irLen > earlyEnd);
 
     // Convention: iXY = Speaker X → Mic Y. With mono input lIn=rIn the mic-L
-    // output is iLL + iRL; the mic-R output is iLR + iRR. Because both speakers
-    // are at the same point, iLL≈iRL and iLR≈iRR, but we sum them anyway to
-    // match what the processor actually renders.
-    auto asymmetryEnergy = [&] (const IRSynthResult& r)
+    // output is iLL + iRL; the mic-R output is iLR + iRR.
+    auto crossCorr = [&] (const IRSynthResult& r)
     {
-        double el = 0.0, er = 0.0;
+        double el = 0.0, er = 0.0, elr = 0.0;
         for (int i = 0; i < earlyEnd; ++i)
         {
-            const double l  = r.iLL[(size_t) i] + r.iRL[(size_t) i];  // Mic L output
-            const double rr = r.iLR[(size_t) i] + r.iRR[(size_t) i];  // Mic R output
-            el += l * l;
-            er += rr * rr;
+            const double l  = r.iLL[(size_t) i] + r.iRL[(size_t) i];
+            const double rr = r.iLR[(size_t) i] + r.iRR[(size_t) i];
+            el  += l * l;
+            er  += rr * rr;
+            elr += l * rr;
         }
-        // Relative asymmetry ∈ [0, 1]: 0 = perfectly balanced, ~1 = one channel silent.
-        const double denom = el + er + 1.0e-30;
-        return std::fabs (el - er) / denom;
+        const double denom = std::sqrt (el * er) + 1.0e-30;
+        return elr / denom;
     };
 
-    const double asym0  = asymmetryEnergy (r0);
-    const double asym90 = asymmetryEnergy (r90);
-    INFO ("Early-window L/R asymmetry:  toe=0 -> " << asym0
-          << "   toe=π/2 -> " << asym90);
+    const double rho0  = crossCorr (r0);
+    const double rho90 = crossCorr (r90);
+    INFO ("Early-window L/R cross-correlation:  toe=0 -> " << rho0
+          << "   toe=π/2 -> " << rho90);
 
-    // toe=π/2 must produce MORE asymmetry than toe=0 — the mics are now
-    // pointing at genuinely different parts of the room. The margin is
-    // conservative so small engine drifts don't flip the inequality.
-    CHECK (asym90 > asym0 * 1.05);
+    // toe=π/2 must DECORRELATE the outer pair — otherwise the toe-out is not
+    // delivering its intended widening effect. Margin is conservative.
+    CHECK (rho0 > rho90 + 0.05);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

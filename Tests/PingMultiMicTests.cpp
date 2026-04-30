@@ -128,13 +128,21 @@ TEST_CASE("IR_14: MAIN path full-IR bit-identity regression lock",
     // mic gain factor changes for every reflection — all four channel
     // digests flip. irLen is unchanged because no length-affecting
     // parameter (room size, RT60, FDN topology) is touched.
+    //
+    // Updated v2.10 (mirror-symmetric ER jitter): per-reflection ts-jitter
+    // and Lambert scatter rolls now come from a deterministic image-source
+    // hash instead of a sequential per-(spk,mic) RNG. See the comment block
+    // above calcRT60 in IRSynthEngine.cpp. Every channel flips because the
+    // jitter realisation is different; irLen is unchanged because the FDN
+    // and room geometry are untouched. IR_32 / IR_33 enforce the new
+    // mirror-symmetry property.
     static const int         golden_irLen = 813146;
-    static const std::string golden_iLL   = "5d50b767e97a82d9";
-    static const std::string golden_iRL   = "c0b941904b9cd51d";
-    static const std::string golden_iLR   = "9cbf0b51f4e087ad";
-    static const std::string golden_iRR   = "3e4f471a33168215";
+    static const std::string golden_iLL   = "d1b755224b398703";
+    static const std::string golden_iRL   = "9f435b9b8f0cfcb2";
+    static const std::string golden_iLR   = "765b28e78b21159d";
+    static const std::string golden_iRR   = "285158bd53c10787";
 
-    static const bool goldenCaptured = true;   // recaptured for v2.7.6 3D mic tilt (IRSynthParams *_tilt = -π/6 default)
+    static const bool goldenCaptured = true;   // recaptured for v2.10 mirror-symmetric ER jitter
     if (! goldenCaptured)
     {
         SUCCEED("IR_14 golden digests not yet captured — run [capture14] first.");
