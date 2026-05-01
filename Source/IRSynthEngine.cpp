@@ -2154,14 +2154,96 @@ static double shapeDen (const std::string& shape)
 //     MIN across active paths (i.e. "we're waiting for the slowest path").
 //   • MAIN is authoritative for res.rt60 / res.irLen / res.sampleRate /
 //     res.success. Extras only populate res.direct / res.outrig / res.ambient.
+// ── Output safety gain (v2.14.2) ─────────────────────────────────────────
+// Helper: peak across one channel buffer. Defined here rather than as a
+// member to keep the class API stable.
+namespace {
+    inline double peakAbs (const std::vector<double>& v)
+    {
+        double m = 0.0;
+        for (double x : v) { double a = std::fabs (x); if (a > m) m = a; }
+        return m;
+    }
+
+    inline double peakAcrossPaths (const IRSynthResult& r)
+    {
+        double m = 0.0;
+        m = std::max ({ m, peakAbs (r.iLL), peakAbs (r.iRL),
+                           peakAbs (r.iLR), peakAbs (r.iRR) });
+        for (const MicIRChannels* ch : { &r.direct, &r.outrig, &r.ambient })
+            if (ch->synthesised)
+                m = std::max ({ m, peakAbs (ch->LL), peakAbs (ch->RL),
+                                   peakAbs (ch->LR), peakAbs (ch->RR) });
+        return m;
+    }
+
+    inline void scaleChannels (std::vector<double>& v, double g)
+    {
+        for (double& x : v) x *= g;
+    }
+
+    inline void scaleAllPaths (IRSynthResult& r, double g)
+    {
+        scaleChannels (r.iLL, g); scaleChannels (r.iRL, g);
+        scaleChannels (r.iLR, g); scaleChannels (r.iRR, g);
+        for (MicIRChannels* ch : { &r.direct, &r.outrig, &r.ambient })
+            if (ch->synthesised) {
+                scaleChannels (ch->LL, g); scaleChannels (ch->RL, g);
+                scaleChannels (ch->LR, g); scaleChannels (ch->RR, g);
+            }
+    }
+
+    // Computes & applies the post-synthesis safety / manual gain. Populates
+    // res.measured_peak_dbfs and res.applied_gain_db so the UI can display
+    // them. Bit-identity guarantee: when synth_gain_auto=true with
+    // peak ≤ 1.0 AND synth_gain_db == 0, applied_gain == 1.0 exactly, no
+    // multiplication runs through any sample, and the result is byte-
+    // identical to the pre-v2.14.2 engine.
+    void applyOutputGain (IRSynthResult& res, const IRSynthParams& p)
+    {
+        const double peak = peakAcrossPaths (res);
+        // Sentinel: negligible peak → leave applied_gain at 0 dB and let
+        // measured_peak go as low as -120 dB (matches the IRSynthResult
+        // default). Avoids log(0) and a divide-by-zero in the auto branch.
+        constexpr double kSilenceFloor = 1e-12;  // -240 dBFS
+        res.measured_peak_dbfs = (peak > kSilenceFloor)
+                                  ? 20.0 * std::log10 (peak)
+                                  : -120.0;
+
+        // Auto trim: bring peaks > 0 dBFS down to exactly -1 dBFS. Why -1
+        // and not 0: leaves 1 dB of summation headroom for downstream
+        // mixing in the DAW. The threshold uses peak > 1.0 (strictly
+        // greater than 0 dBFS) so any IR that already has ≥1 dB of
+        // headroom is bit-identical to v2.14.1.
+        constexpr double kHeadroomLinear = 0.8912509381337456;  // 10^(-1/20)
+        double autoTrim = 1.0;
+        if (p.synth_gain_auto && peak > 1.0)
+            autoTrim = kHeadroomLinear / peak;
+
+        const double manualGain = std::pow (10.0, p.synth_gain_db / 20.0);
+        const double total      = autoTrim * manualGain;
+
+        if (total != 1.0)
+            scaleAllPaths (res, total);
+
+        res.applied_gain_db = 20.0 * std::log10 (total);
+    }
+}
+
 IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn cb)
 {
     const bool anyExtra = p.outrig_enabled || p.ambient_enabled || p.direct_enabled;
 
     // Fast path: no extras → straight synchronous call. Guarantees bit-identity
     // with the pre-C5 behaviour for every existing session, preset and test.
+    // The output-gain pass below still runs, but is a no-op when peak ≤ 0 dBFS
+    // and synth_gain_db == 0 (the default for every legacy IR / fixture).
     if (! anyExtra)
-        return synthMainPath (p, cb);
+    {
+        IRSynthResult res = synthMainPath (p, cb);
+        if (res.success) applyOutputGain (res, p);
+        return res;
+    }
 
     // Warm up static maps on this thread before fanning out — their lazy init
     // is not thread-safe. After this call the maps are fully populated and
@@ -2227,6 +2309,8 @@ IRSynthResult IRSynthEngine::synthIR (const IRSynthParams& p, IRSynthProgressFn 
     if (outrigFut.valid())  res.outrig  = outrigFut.get();
     if (ambientFut.valid()) res.ambient = ambientFut.get();
     if (directFut.valid())  res.direct  = directFut.get();
+
+    if (res.success) applyOutputGain (res, p);
 
     if (cb) cb (1.0, "Done.");
     return res;

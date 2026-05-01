@@ -3056,6 +3056,17 @@ static void irSynthParamsToXml (const IRSynthParams& p, juce::XmlElement& parent
     // → defaults to false (preserves historical dual-speaker rendering).
     ir->setAttribute ("monoSrc",        p.mono_source);
 
+    // Output safety gain (v2.14.2). Two-state convention used both here
+    // and in the rebake_factory_irs tool: write the synthGain attribute
+    // ONLY when auto-trim is OFF or a non-zero manual gain has been set.
+    // An absent synthGain attribute therefore means "auto-trim ON,
+    // 0 dB manual" — the engine default. Loader maps presence of the
+    // attribute to synth_gain_auto = false. Keeping a single source of
+    // truth (the attribute) avoids the inconsistent state where Auto is
+    // ON but a non-zero manual gain is also active.
+    if (! p.synth_gain_auto || std::abs (p.synth_gain_db) > 0.0001)
+        ir->setAttribute ("synthGain", p.synth_gain_db);
+
     ir->setAttribute ("outrigLx",     p.outrig_lx);
     ir->setAttribute ("outrigLy",     p.outrig_ly);
     ir->setAttribute ("outrigRx",     p.outrig_rx);
@@ -3224,6 +3235,23 @@ static IRSynthParams irSynthParamsFromXml (const juce::XmlElement* ir)
     p.lambert_scatter_enabled  = ir->getBoolAttribute ("lambertScatter", defaults.lambert_scatter_enabled);
     p.spk_directivity_full     = ir->getBoolAttribute ("spkDirFull",     defaults.spk_directivity_full);
     p.mono_source              = ir->getBoolAttribute ("monoSrc",        defaults.mono_source);
+
+    // Output safety gain (v2.14.2). Two-state convention:
+    //   attribute present → user/factory has locked a manual gain (auto OFF)
+    //   attribute absent  → engine default (auto ON, 0 dB manual)
+    // Older sidecars (pre-v2.14.2) lack the attribute and so behave as
+    // auto=ON, which is bit-identical to the v2.14.1 engine for any IR
+    // whose internal peak is ≤ 0 dBFS.
+    if (ir->hasAttribute ("synthGain"))
+    {
+        p.synth_gain_db   = ir->getDoubleAttribute ("synthGain", 0.0);
+        p.synth_gain_auto = false;
+    }
+    else
+    {
+        p.synth_gain_db   = defaults.synth_gain_db;
+        p.synth_gain_auto = defaults.synth_gain_auto;
+    }
 
     p.outrig_lx      = ir->getDoubleAttribute ("outrigLx",     defaults.outrig_lx);
     p.outrig_ly      = ir->getDoubleAttribute ("outrigLy",     defaults.outrig_ly);

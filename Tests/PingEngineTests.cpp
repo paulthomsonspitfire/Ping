@@ -970,6 +970,146 @@ TEST_CASE("IR_38: source tilt preserves x-mirror symmetry", "[engine][source-til
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// TEST_IR_39 / 40 / 41 — Output safety gain (v2.14.2)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Three orthogonal aspects to lock:
+//   IR_39: bit-identity guarantee — when synth_gain_auto=true and the
+//          internal peak is ≤ 0 dBFS, no scaling is applied (applied_gain
+//          == 0 dB exactly) and the output is byte-identical to v2.14.1.
+//          Uses smallRoomParams() (a moderate room with comfortable
+//          headroom — same fixture as IR_01 and friends, so locking it
+//          here doubles as a guard that the auto-trim path doesn't perturb
+//          the existing regression locks).
+//
+//   IR_40: auto-trim engagement — a deliberately-hot fixture (small,
+//          highly reflective, high audience, no diffusion) drives the
+//          internal peak above 0 dBFS. With auto on, the post-trim peak
+//          must be exactly −1.0 dBFS (within float-arithmetic tolerance).
+//          With auto off, the peak stays above 0 dBFS.
+//
+//   IR_41: telemetry round-trip — measured_peak_dbfs reflects the peak
+//          BEFORE any scaling, applied_gain_db reflects what was actually
+//          multiplied in. Their sum must equal the resulting buffer peak.
+
+namespace {
+    double maxAbs (const std::vector<double>& v)
+    {
+        double m = 0.0;
+        for (double x : v) { double a = std::fabs (x); if (a > m) m = a; }
+        return m;
+    }
+    double peakAcrossPathsTest (const IRSynthResult& r)
+    {
+        double m = std::max ({ maxAbs (r.iLL), maxAbs (r.iRL),
+                                maxAbs (r.iLR), maxAbs (r.iRR) });
+        for (const MicIRChannels* ch : { &r.direct, &r.outrig, &r.ambient })
+            if (ch->synthesised)
+                m = std::max ({ m, maxAbs (ch->LL), maxAbs (ch->RL),
+                                   maxAbs (ch->LR), maxAbs (ch->RR) });
+        return m;
+    }
+
+    // A small, highly reflective room with no diffusion / no Lambert
+    // scatter / Decca off — engineered to push the engine's internal
+    // peak above 0 dBFS so the auto-trim is exercised. The exact
+    // settings here matter less than the resulting peak being > 1.0;
+    // if a future engine change cools this fixture down, the IR_40
+    // assertion below will tell us so.
+    IRSynthParams hotRoomParams()
+    {
+        IRSynthParams p;
+        p.width  = 3.0; p.depth = 2.5; p.height = 2.5;  // shower room scale
+        p.diffusion = 0.0;
+        p.audience  = 0.0;
+        p.lambert_scatter_enabled = false;
+        p.spk_directivity_full    = false;
+        return p;
+    }
+}
+
+TEST_CASE("IR_39: auto-trim is a no-op when internal peak ≤ 0 dBFS",
+          "[engine][output-gain]")
+{
+    IRSynthParams p = smallRoomParams();
+    p.synth_gain_auto = true;
+    p.synth_gain_db   = 0.0;
+    auto noop = [](double, const std::string&) {};
+    auto r = IRSynthEngine::synthIR (p, noop);
+    REQUIRE (r.success);
+
+    const double peak = peakAcrossPathsTest (r);
+    INFO ("smallRoomParams peak = " << peak << " linear  ("
+          << (peak > 0 ? 20.0 * std::log10 (peak) : -120.0) << " dBFS)");
+    REQUIRE (peak <= 1.0);  // sanity — fixture chosen to fit in 0 dBFS
+
+    // applied_gain_db must be exactly 0 — no multiplication ran.
+    CHECK (r.applied_gain_db == 0.0);
+
+    // Bit-identity vs auto=false: same output.
+    IRSynthParams p2 = p;
+    p2.synth_gain_auto = false;
+    auto r2 = IRSynthEngine::synthIR (p2, noop);
+    REQUIRE (r2.success);
+    REQUIRE (r2.iLL == r.iLL);
+    REQUIRE (r2.iRL == r.iRL);
+    REQUIRE (r2.iLR == r.iLR);
+    REQUIRE (r2.iRR == r.iRR);
+}
+
+TEST_CASE("IR_40: auto-trim brings clipping IRs to exactly -1 dBFS",
+          "[engine][output-gain]")
+{
+    IRSynthParams pHot = hotRoomParams();
+    pHot.synth_gain_auto = false;  // first measure raw peak
+    pHot.synth_gain_db   = 0.0;
+    auto noop = [](double, const std::string&) {};
+    auto rRaw = IRSynthEngine::synthIR (pHot, noop);
+    REQUIRE (rRaw.success);
+
+    const double rawPeak = peakAcrossPathsTest (rRaw);
+    INFO ("hotRoomParams raw peak = " << rawPeak << " linear  ("
+          << 20.0 * std::log10 (rawPeak) << " dBFS)");
+    REQUIRE (rawPeak > 1.0);  // fixture is hot enough to clip
+    CHECK (rRaw.applied_gain_db == 0.0);
+
+    // Now with auto on: the engine should bring peak down to −1 dBFS.
+    pHot.synth_gain_auto = true;
+    auto rTrimmed = IRSynthEngine::synthIR (pHot, noop);
+    REQUIRE (rTrimmed.success);
+
+    const double trimmedPeak = peakAcrossPathsTest (rTrimmed);
+    constexpr double kTargetLinear = 0.8912509381337456;  // -1 dBFS
+    INFO ("trimmed peak = " << trimmedPeak << " linear (target "
+          << kTargetLinear << ")");
+    CHECK (std::fabs (trimmedPeak - kTargetLinear) < 1e-9);
+
+    // applied_gain_db should be negative and equal to −1 − rawPeakDb
+    // (modulo float-arithmetic noise from the multi-path peak agg).
+    const double rawDb = 20.0 * std::log10 (rawPeak);
+    CHECK (std::fabs (rTrimmed.applied_gain_db - (-1.0 - rawDb)) < 1e-6);
+}
+
+TEST_CASE("IR_41: measured_peak_dbfs + applied_gain_db = post-trim peak",
+          "[engine][output-gain]")
+{
+    IRSynthParams p = hotRoomParams();
+    p.synth_gain_auto = true;
+    p.synth_gain_db   = 0.0;
+    auto noop = [](double, const std::string&) {};
+    auto r = IRSynthEngine::synthIR (p, noop);
+    REQUIRE (r.success);
+
+    const double finalPeak    = peakAcrossPathsTest (r);
+    const double finalPeakDb  = 20.0 * std::log10 (finalPeak);
+    const double reconstructed = r.measured_peak_dbfs + r.applied_gain_db;
+    INFO ("measured=" << r.measured_peak_dbfs
+          << " applied=" << r.applied_gain_db
+          << " final=" << finalPeakDb);
+    CHECK (std::fabs (reconstructed - finalPeakDb) < 1e-6);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TEST_IR_GOLDEN_CAPTURE — Helper to print golden values
 // ─────────────────────────────────────────────────────────────────────────────
 // Run this test once to get the values to paste into TEST_IR_11.

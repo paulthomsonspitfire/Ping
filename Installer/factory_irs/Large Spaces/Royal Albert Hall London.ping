@@ -12,7 +12,7 @@
                  micl="-2.35619449019" micr="-0.785398163397" micPat="wide cardioid (MK21)"
                  erOnly="0" sr="48000" bakeERTail="0" bakedERGain="1.0" bakedTailGain="1.0"
                  directOn="1" outrigOn="1" ambientOn="1" directMaxOrder="1" lambertScatter="0"
-                 spkDirFull="1" outrigLx="0.2885714285714286" outrigLy="0.7285714285714285"
+                 spkDirFull="0" outrigLx="0.2885714285714286" outrigLy="0.7285714285714285"
                  outrigRx="0.7114285714285714" outrigRy="0.7285714285714285" outrigLang="-1.22173047639"
                  outrigRang="-1.91986217719" outrigHeight="3.0" outrigPat="wide cardioid (MK21)"
                  outrigLtilt="-0.5235987755980001" outrigRtilt="-0.5235987755980001"

@@ -301,7 +301,8 @@ IRSynthComponent::IRSynthComponent()
     directMaxOrderCombo.setSelectedId (2, juce::dontSendNotification); // default 1
     directMaxOrderLabel.setText ("DIRECT reach", juce::dontSendNotification);
     directMaxOrderLabel.setColour (juce::Label::textColourId, textDim);
-    for (auto* b : { &lambertScatterButton, &spkDirFullButton, &monoSourceButton })
+    for (auto* b : { &lambertScatterButton, &spkDirFullButton, &monoSourceButton,
+                     &synthGainAutoButton })
     {
         b->setColour (juce::ToggleButton::textColourId,         textDim);
         b->setColour (juce::ToggleButton::tickColourId,         accent);
@@ -310,6 +311,7 @@ IRSynthComponent::IRSynthComponent()
     lambertScatterButton.setToggleState (true,  juce::dontSendNotification);  // current default
     spkDirFullButton    .setToggleState (false, juce::dontSendNotification);  // current default
     monoSourceButton    .setToggleState (false, juce::dontSendNotification);  // off by default — preserves bit-identity
+    synthGainAutoButton .setToggleState (true,  juce::dontSendNotification);  // ON by default — safety
 
     // ── Mic path toggles + OUTRIG / AMBIENT pattern + height controls ────────
     // Defaults mirror IRSynthParams: all paths off until explicitly enabled;
@@ -511,6 +513,7 @@ IRSynthComponent::IRSynthComponent()
     erOnlyButton.onClick         = notifyParamChanged;
     lambertScatterButton.onClick = notifyParamChanged;
     spkDirFullButton.onClick     = notifyParamChanged;
+    synthGainAutoButton.onClick  = notifyParamChanged;
     monoSourceButton.onClick     = [this]
     {
         // Sync floor-plan visibility immediately so the R speaker puck
@@ -681,6 +684,7 @@ IRSynthComponent::IRSynthComponent()
     addAndMakeVisible (lambertScatterButton);
     addAndMakeVisible (spkDirFullButton);
     addAndMakeVisible (monoSourceButton);
+    addAndMakeVisible (synthGainAutoButton);
 
     addAndMakeVisible (directEnableButton);
     addAndMakeVisible (outrigEnableButton);
@@ -1160,6 +1164,17 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
         y += rowH + 2;
     }
 
+    // Row 4b: Auto-trim Output toggle (v2.14.2). Single half-width toggle
+    // on the left of its own row. Sits with the rest of the experimental /
+    // safety toggles so the user knows it falls in the same "modifies the
+    // synthesised IR" bucket. The peak / applied-trim readout is the
+    // progress label below the Calculate IR button — no extra label here.
+    {
+        const int halfW = (ctrlW - gap) / 2;
+        synthGainAutoButton.setBounds (x0, y, halfW, rowH);
+        y += rowH + 2;
+    }
+
     // Row 5: Source radiation preset — instrument directivity model. The
     // dropdown is populated from the SourceRadiation registry (built-in
     // Phase 1 + JSON-loaded Phase 2). Default = "Cardioid (legacy)" which
@@ -1530,6 +1545,12 @@ IRSynthParams IRSynthComponent::getParams() const
     p.lambert_scatter_enabled  = lambertScatterButton.getToggleState();
     p.spk_directivity_full     = spkDirFullButton    .getToggleState();
     p.mono_source              = monoSourceButton    .getToggleState();
+    // Auto-trim output (v2.14.2). The synth_gain_db field is left at the
+    // value from the loaded sidecar (or 0 if none) — the UI in this
+    // version doesn't expose a manual gain slider, only the on/off
+    // toggle. The XML save layer (PluginProcessor) writes synthGain only
+    // when auto is OFF or a non-zero manual value is present.
+    p.synth_gain_auto          = synthGainAutoButton .getToggleState();
 
     // Floor-plan Option-mirror axis (UI-only; not consumed by the synthesis
     // engine, persisted so the preference round-trips with the rest of the
@@ -1684,6 +1705,8 @@ void IRSynthComponent::setParams (const IRSynthParams& p)
     // Experimental early-reflection A/B toggles.
     directMaxOrderCombo.setSelectedId (juce::jlimit (0, 2, p.direct_max_order) + 1,
                                        juce::dontSendNotification);
+    synthGainAutoButton .setToggleState (p.synth_gain_auto,
+                                         juce::dontSendNotification);
     lambertScatterButton.setToggleState (p.lambert_scatter_enabled,
                                          juce::dontSendNotification);
     spkDirFullButton    .setToggleState (p.spk_directivity_full,
@@ -2009,7 +2032,28 @@ void IRSynthComponent::startSynthesis (bool bakeCurrentBalance)
                 return;
             }
 
-            progressLabel.setText ("Done.", juce::dontSendNotification);
+            // v2.14.2: extend the "Done." readout with the post-synthesis
+            // peak (across all populated paths) and, if the engine applied
+            // an auto-trim or manual gain, the resulting trim in dB.
+            // Format examples:
+            //   "Done. Peak: -12.0 dBFS"               (no trim, normal headroom)
+            //   "Done. Peak: -1.0 dBFS (auto-trim -3.5 dB)"
+            //   "Done. Peak: silent."                  (e.g. all paths disabled)
+            juce::String doneMsg = "Done.";
+            if (result.success && result.measured_peak_dbfs > -119.0)
+            {
+                const double rawPeak = result.measured_peak_dbfs;
+                const double trim    = result.applied_gain_db;
+                const double finalPk = rawPeak + trim;
+                doneMsg += "  Peak: " + juce::String (finalPk, 1) + " dBFS";
+                if (std::abs (trim) > 0.05)
+                    doneMsg += " (auto-trim " + juce::String (trim, 1) + " dB)";
+            }
+            else if (result.success)
+            {
+                doneMsg += "  Peak: silent.";
+            }
+            progressLabel.setText (doneMsg, juce::dontSendNotification);
             if (result.success && onComplete)
             {
                 onComplete (result);
@@ -2055,6 +2099,7 @@ void IRSynthComponent::setInteractionLocked (bool locked)
     lambertScatterButton.setEnabled (e);
     spkDirFullButton    .setEnabled (e);
     monoSourceButton    .setEnabled (e);
+    synthGainAutoButton .setEnabled (e);
     sourceRadiationCombo.setEnabled (e);
     // Tilt sliders track the global enabled flag, but their effective
     // enabled state is also gated by the active radiation kind (legacy

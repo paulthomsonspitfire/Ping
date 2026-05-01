@@ -315,6 +315,37 @@ struct IRSynthParams
     bool        lambert_scatter_enabled = true;
     bool        spk_directivity_full    = false;
 
+    // ── Output safety gain (v2.14.2) ──────────────────────────────────────
+    // Post-synthesis scalar gain applied to all four channels of every path
+    // (MAIN/DIRECT/OUTRIG/AMBIENT) before the WAV writer / convolver sees
+    // them. Exists because the 24-bit PCM path in makeWav hard-clamps to
+    // ±1.0, so an internal peak above 0 dBFS is silently turned into hard
+    // distortion. Matters for small reflective rooms where high-order
+    // reflections can summed-energy past 0 dBFS even with conservative wall
+    // materials.
+    //
+    // synth_gain_auto: when true (default), the engine measures the peak
+    // across all populated channels of all paths and, if peak > 1.0
+    // (i.e., >0 dBFS internally), automatically computes a scalar to bring
+    // the peak to exactly −1 dBFS (linear factor 10^(−1/20) ≈ 0.891). When
+    // false, no automatic measurement-driven scaling is performed and only
+    // synth_gain_db is applied. Auto mode reproduces v2.14.1 output bit-
+    // identically for any IR whose internal peak is ≤ 1.0 — i.e. every
+    // pre-existing test fixture.
+    //
+    // synth_gain_db: explicit user gain in dB, applied multiplicatively
+    // with the auto trim. 0 (default) means "no manual contribution" — the
+    // auto path is the only thing that scales output. A negative value can
+    // be combined with auto=true to add additional headroom; positive
+    // values can be combined with auto=false to deliberately drive the WAV
+    // into clipping (a creative choice for character).
+    //
+    // Combined scalar  = 10^(synth_gain_db / 20)  *  (auto_trim or 1.0)
+    // where auto_trim = (synth_gain_auto && peak > 1.0) ? 10^(-1/20) / peak
+    //                                                   : 1.0
+    bool        synth_gain_auto = true;
+    double      synth_gain_db   = 0.0;
+
     // ── Source radiation model (instrument directivity) ───────────────────
     // See struct SourceRadiation defined above. Default value reproduces
     // the legacy frequency-flat pure cardioid bit-exactly, so existing
@@ -396,6 +427,18 @@ struct IRSynthResult
     MicIRChannels direct;
     MicIRChannels outrig;
     MicIRChannels ambient;
+
+    // ── Output gain telemetry (v2.14.2) ────────────────────────────────────
+    // Populated by synthIR after all paths have rendered and the optional
+    // auto-trim / manual gain has been applied. Driving fields for the UI
+    // peak label and the auto-trim banner. measured_peak_dbfs is the peak
+    // BEFORE any scaling (so the UI can show the raw "this preset would
+    // have clipped by +X dB" number), applied_gain_db is what was actually
+    // multiplied in. With synth_gain_auto=true and an internal peak ≤
+    // 0 dBFS, applied_gain_db == 0 — bit-identical to the pre-v2.14.2
+    // engine.
+    double measured_peak_dbfs = -120.0;  // "silence" sentinel
+    double applied_gain_db    = 0.0;
 };
 
 /**

@@ -245,6 +245,21 @@ static IRSynthParams paramsFromPingAttrs(const std::map<std::string, std::string
     // historical dual-speaker rendering for old sidecars).
     p.mono_source             = getBool(a, "monoSrc",        defaults.mono_source);
 
+    // Output safety gain (v2.14.2). When the sidecar already carries a
+    // synthGain attribute, treat it as a manual lock — disable auto-trim
+    // and apply exactly that gain. Missing attribute → auto-trim enabled
+    // and 0 dB manual contribution (the engine default).
+    {
+        auto it = a.find("synthGain");
+        if (it != a.end()) {
+            try { p.synth_gain_db = std::stod(it->second); } catch (...) {}
+            p.synth_gain_auto = false;
+        } else {
+            p.synth_gain_db   = defaults.synth_gain_db;
+            p.synth_gain_auto = defaults.synth_gain_auto;
+        }
+    }
+
     // Outrigger pair. Pre-tilt sidecars (no `outrigLtilt` attr) fall back to
     // 0.0 NOT the struct default (-π/6) — same convention as the plugin.
     p.outrig_lx      = getDouble(a, "outrigLx",     defaults.outrig_lx);
@@ -294,6 +309,74 @@ static bool writeBytes(const fs::path& p, const void* data, size_t size)
     std::ofstream out(p, std::ios::binary);
     if (!out) return false;
     out.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+    return static_cast<bool>(out);
+}
+
+// ── Sidecar mutator (v2.14.2): synthGain only ────────────────────────────────
+// Surgically inject or update `synthGain="X.XX"` inside the unique
+// `<irSynthParams .../>` element of a .ping sidecar. All other bytes
+// (attribute order, whitespace, CRLF/LF line endings, the surrounding
+// <PingIRSynth> wrapper) are preserved exactly.
+//
+// This is the ONLY codepath in the entire repo that ever modifies a .ping
+// sidecar from C++. The rule "the sidecar is the user's authored source
+// of truth, the tool never touches it" still holds for every parameter
+// the user types in. synthGain is a measured/derived value (output of
+// the post-synthesis safety trim); writing it back is what makes the IR
+// reproducible at the same level next time the user clicks Calculate IR
+// in the plugin.
+//
+// Idempotent: re-running on a sidecar that already has the same value
+// is a no-op (we still rewrite the bytes but the contents are identical).
+static bool writeSynthGainToSidecar(const fs::path& pingPath, double gainDb)
+{
+    std::ifstream in(pingPath, std::ios::binary);
+    if (!in) return false;
+    std::ostringstream ss; ss << in.rdbuf();
+    std::string raw = ss.str();
+    in.close();
+
+    const std::string openTag = "<irSynthParams";
+    auto a = raw.find(openTag);
+    if (a == std::string::npos) return false;
+    auto b = raw.find("/>", a);
+    if (b == std::string::npos) return false;
+    std::string elem = raw.substr(a, (b + 2) - a);
+    std::string before = raw.substr(0, a);
+    std::string after  = raw.substr(b + 2);
+
+    // Format the gain with up to 4 decimal places, trim trailing zeros so
+    // the sidecar stays readable. Always include at least one decimal.
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.4f", gainDb);
+    std::string gainStr(buf);
+    while (gainStr.size() > 1 && gainStr.back() == '0') gainStr.pop_back();
+    if (!gainStr.empty() && gainStr.back() == '.') gainStr.push_back('0');
+    const std::string newAttr = std::string(" synthGain=\"") + gainStr + "\"";
+
+    // Look for an existing synthGain="..." attribute inside the element.
+    auto sg = elem.find("synthGain=\"");
+    if (sg != std::string::npos)
+    {
+        auto sgEnd = elem.find('"', sg + 11);
+        if (sgEnd == std::string::npos) return false;
+        // Replace just the value substring, leave " synthGain=" intact.
+        elem.replace(sg + 11, sgEnd - (sg + 11), gainStr);
+    }
+    else
+    {
+        // Inject before the trailing "/>". Preserve any whitespace that was
+        // there: strip trailing spaces, then add our own leading space.
+        // elem now ends with "/>" which is the last 2 chars.
+        std::string body = elem.substr(0, elem.size() - 2);
+        while (!body.empty() && (body.back() == ' ' || body.back() == '\t'))
+            body.pop_back();
+        elem = body + newAttr + "/>";
+    }
+
+    std::ofstream out(pingPath, std::ios::binary);
+    if (!out) return false;
+    out << before << elem << after;
     return static_cast<bool>(out);
 }
 
@@ -469,7 +552,34 @@ int main(int argc, char** argv)
                 return std::string(buf);
             };
             std::cout << "    peak (dBFS):  LL=" << db(pLL) << "  RL=" << db(pRL)
-                      << "  LR=" << db(pLR) << "  RR=" << db(pRR) << "\n";
+                      << "  LR=" << db(pLR) << "  RR=" << db(pRR);
+            // Echo the v2.14.2 telemetry: pre-trim peak (across all paths)
+            // and the auto-trim that was applied. -inf shown as "silent".
+            char gbuf[32];
+            std::snprintf(gbuf, sizeof gbuf, "%.2f", result.applied_gain_db);
+            std::cout << "   pre-trim peak=" << result.measured_peak_dbfs
+                      << " dBFS  gain=" << gbuf << " dB\n";
+        }
+
+        // If the engine applied a non-trivial auto-trim, lock that gain
+        // into the sidecar so the IR is reproducible at the same level
+        // the next time it's loaded into the plugin and re-synthesised.
+        // Threshold of 0.01 dB filters out floating-point dust (e.g. when
+        // peak is 1.0000001 and the trim is ~−0.0001 dB). Sidecar mutation
+        // is the responsibility of the user otherwise — see the comment on
+        // writeSynthGainToSidecar above.
+        if (std::fabs(result.applied_gain_db) > 0.01)
+        {
+            if (writeSynthGainToSidecar(pingPath, result.applied_gain_db))
+            {
+                if (!quiet) std::cout << "    sidecar: synthGain=\""
+                                      << result.applied_gain_db << "\" written\n";
+            }
+            else
+            {
+                std::cerr << "    WARN: failed to update synthGain in "
+                          << pingPath << "\n";
+            }
         }
 
         if (!quiet)

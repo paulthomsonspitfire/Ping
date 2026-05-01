@@ -237,6 +237,15 @@ private:
     juce::Label        directMaxOrderLabel;
     juce::ToggleButton lambertScatterButton { "Lambert Scatter" };
     juce::ToggleButton spkDirFullButton     { "Full Spkr Dir" };
+    // Auto-trim output (v2.14.2) — drives IRSynthParams::synth_gain_auto.
+    // ON (default) = engine measures post-synthesis peak across all paths
+    // and, if it would clip the 24-bit PCM WAV writer, applies a single
+    // scalar gain to bring the peak to −1 dBFS. The applied gain is also
+    // displayed in the progress label after Calculate IR. OFF = no safety
+    // trim — the IR is written as-is, hard clipping included. Toggling
+    // OFF on a sidecar that previously carried a non-zero synthGain
+    // attribute discards the auto-trim and re-renders at full level.
+    juce::ToggleButton synthGainAutoButton  { "Auto-trim Output" };
 
     // monoSourceButton drives IRSynthParams::mono_source. When ON the engine
     // renders a single speaker (positioned at the L speaker puck) for both

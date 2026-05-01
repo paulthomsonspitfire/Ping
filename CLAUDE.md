@@ -1459,6 +1459,101 @@ characteristic of that preset's geometry).
 + cosine end-fade) → installer pkg. The trim removed
 ~32 minutes of total trailing silence across 101 trimmed WAVs.
 
+### Default-off `spkDirFull` for factory data + output safety gain (v2.14.2)
+
+Two related changes. The driver was the realisation that 28 of the 43
+factory `.ping` sidecars (and the matching 28 of 40 factory preset
+XMLs) were authored before v2.11's source-radiation work and had
+`spkDirFull="1"` baked in to compensate for the missing instrument
+directivity. Now that v2.14 ships with "Generic instrument" by
+default, full speaker directivity stacks on top of source radiation and
+over-bakes high-frequency directional bias into every reflection. Flip
+to default-off everywhere so the speaker fade-to-omni at order 2+
+behaves as the engine intends.
+
+`Tools/reset_spkdirfull_in_factory.py` flips `spkDirFull="1"` →
+`spkDirFull="0"` in-place across both file kinds. Same byte-length so
+the JUCE binary state header (`'VC2!'` + LE u32 length) on the preset
+XMLs needs no recomputation. Idempotent. 28 sidecars + 28 preset XMLs
+edited (the other 15 sidecars / 12 presets either lacked the attribute
+or already had it off, both equivalent to the engine default).
+
+**Side-effect**: with `spkDirFull` off, higher-order reflections now
+contribute more energy in small reflective rooms (no fade-to-omni →
+effectively more omni at high orders). Three "Tight Spaces" presets
+crossed 0 dBFS internal peak after the flip:
+
+- Capitol Studios Echo Chamber  (+1.99 dBFS internal)
+- Damped Studio Booth           (+1.18 dBFS internal)
+- Tiled Shower Room             (+2.82 dBFS internal)
+
+The 24-bit PCM writer in `IRSynthEngine::makeWav` hard-clamps to
+±1.0, so without intervention these three would have been silently
+clipped at full-scale. v2.14.2 introduces a post-synthesis safety
+gain ("output safety gain") that handles this generally:
+
+**Engine** — new `IRSynthParams::synth_gain_auto` (default `true`) and
+`IRSynthParams::synth_gain_db` (default `0.0`). After all paths render,
+`synthIR` measures the peak across all populated channels of all
+paths. If `synth_gain_auto && peak > 1.0`, an automatic scalar is
+applied to bring the peak to exactly −1 dBFS. The engine populates
+`IRSynthResult::measured_peak_dbfs` (raw pre-trim peak) and
+`IRSynthResult::applied_gain_db` (what was actually multiplied in) for
+the UI. **Bit-identity**: when peak ≤ 1.0 with auto on, no scaling
+runs — every existing test fixture and IR_11 / IR_14 / IR_32 / IR_33
+golden lock pass without modification.
+
+**Sidecar / state schema** — single new optional attribute `synthGain`
+on `<irSynthParams>`. Two-state convention used by both the plugin
+XML and the rebake tool:
+
+- attribute *absent* → `synth_gain_auto = true`, `synth_gain_db = 0`
+  (the engine default — pre-v2.14.2 sidecars round-trip unchanged)
+- attribute *present* → `synth_gain_auto = false`, value taken as the
+  manual gain in dB (locks reproducibility)
+
+The plugin only writes `synthGain` to the saved state when auto is OFF
+or a non-zero manual gain is set, keeping a single source of truth and
+matching the rebake tool's emit logic.
+
+**Rebake tool** — `Tools/rebake_factory_irs.cpp` becomes the only
+codepath authorised to mutate `.ping` sidecars (still the user's
+authored source of truth for every other parameter). Whenever the
+engine applies a non-trivial auto-trim during rebake (`|gain| > 0.01
+dB`), the resulting gain is written back into the sidecar via a
+surgical in-place edit (`writeSynthGainToSidecar`) that preserves
+attribute order, line endings, and the surrounding `<PingIRSynth>`
+wrapper. After v2.14.2 rebake the three hot sidecars carry:
+
+  Capitol Studios Echo Chamber : `synthGain="-1.9928"`
+  Damped Studio Booth          : `synthGain="-1.1803"`
+  Tiled Shower Room            : `synthGain="-3.8153"`
+
+The other 40 sidecars stay clean (no `synthGain` attribute). Final
+factory peak audit: **0 WAVs at −0.5 dBFS or hotter** (was 8 in v2.14.1).
+
+**UI** — single new toggle `synthGainAutoButton` ("Auto-trim Output")
+in the IR Synth panel's experimental row. Drives `synth_gain_auto`.
+The progress label below "Calculate IR" extends with peak / trim
+readout:
+
+  no clip  : `Done.  Peak: −12.0 dBFS`
+  trimmed  : `Done.  Peak: −1.0 dBFS (auto-trim −3.5 dB)`
+  silent   : `Done.  Peak: silent.`
+
+A manual override slider (explicit `synth_gain_db`) is intentionally
+deferred to a future release — the on/off toggle covers the user's
+"I want this character even if it clips" workflow and the rest of the
+state machine is already wired through.
+
+**Tests** — three new regression tests in `PingEngineTests.cpp`:
+
+- IR_39: bit-identity guarantee — auto on with peak ≤ 0 dBFS produces
+  byte-identical output to auto off (same fixture as IR_01)
+- IR_40: hot fixture (3×2.5×2.5 m, no diffusion) clips internally;
+  auto-trim brings peak to exactly −1 dBFS within 1e-9 linear
+- IR_41: `measured_peak_dbfs + applied_gain_db == post-trim peak dB`
+
 ### Factory preset srcRad hotfix (v2.14.1)
 
 v2.14.0 shipped with the factory `.ping` sidecars and the rebaked
