@@ -1459,6 +1459,46 @@ characteristic of that preset's geometry).
 + cosine end-fade) → installer pkg. The trim removed
 ~32 minutes of total trailing silence across 101 trimmed WAVs.
 
+### Factory preset srcRad hotfix (v2.14.1)
+
+v2.14.0 shipped with the factory `.ping` sidecars and the rebaked
+factory `.wav` files all carrying / synthesising under
+`Generic instrument`, but the factory **preset** XMLs in
+`Installer/factory_presets/**/*.xml` (the files actually loaded when the
+user picks a preset from the menu) were missed. Loading e.g. "Carnegie
+Hall New York" therefore showed `Cardioid (legacy)` in the radiation
+combo because `irSynthParamsFromXml` falls back to that string when
+`srcRad=` is absent (`PluginProcessor.cpp` ~3201).
+
+The fix is symmetric with the v2.14 sidecar surgery, but operates on
+the JUCE binary state wrapper (`copyXmlToBinary` /
+`getXmlFromBinary`):
+
+```
+4 bytes   ASCII magic 'VC2!'
+4 bytes   little-endian uint32 = XML byte length (excluding NUL)
+N bytes   XML payload (UTF-8)
+1 byte    \0 terminator
+```
+
+`Tools/add_srcrad_to_factory_presets.py` parses the header, slices out
+the XML payload byte-for-byte (preserves attribute order, casing,
+whitespace, and the rest of the parameter tree), injects
+`srcRad="Generic instrument"` into the unique self-closing
+`<irSynthParams .../>` element, recomputes the LE u32 length, and
+re-emits header + payload + NUL. Idempotent — re-running on a preset
+that already has `srcRad=` is a no-op (the tweak is preserved).
+
+Note the canonical engine spelling is `"Generic instrument"`
+(lowercase 'i', `IRSynthEngine.cpp:579`); v2.14's sidecar surgery used
+`"Generic Instrument"` which still resolves correctly via the
+case-insensitive `iEqual` lookup, but the factory-preset injection
+uses the canonical lowercase form so that the next save / reload cycle
+in-plugin is a true byte-identical no-op.
+
+All 40 factory preset XMLs were edited (`+28 bytes` each = the new
+attribute). No engine, schema, or sidecar changes — pure data fix.
+
 ### Close / coincident speaker handling
 
 When the two speakers are close together, perfectly periodic image-source reflections (especially floor-ceiling bounces at 2H/c intervals) can produce audible repeating delays. Two distance thresholds are checked against the speaker separation `srcDist`:
