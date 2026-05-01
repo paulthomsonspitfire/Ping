@@ -22,6 +22,6 @@
                  ambientLtilt="0.0" ambientRtilt="0.0" miclTilt="0.0" micrTilt="0.0"
                  deccaOn="0" deccaCx="0.5" deccaCy="0.65" deccaAng="-1.570796326794897"
                  deccaCtrGain="0.5" deccaToeOut="1.570796326794897" deccaTilt="0.0"
-                 mirrorAxis="1"/>
+                 mirrorAxis="1" srcRad="Generic Instrument"/>
   <mixerGates mainOn="1" directOn="0" outrigOn="0" ambientOn="0"/>
 </PingIRSynth>

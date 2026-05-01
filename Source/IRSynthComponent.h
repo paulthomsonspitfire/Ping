@@ -139,11 +139,13 @@ private:
     juce::Rectangle<int> surfacesHeaderBounds, contentsHeaderBounds,
                          interiorHeaderBounds,  optionsHeaderBounds,
                          roomHeaderBounds,
-                         // Horizontal Mic Paths strip: 4 columns of path-local controls
-                         // sitting between the floor-plan / left column above and the
-                         // bottom bar below. Each column owns its own section header.
+                         // Horizontal Mic Paths strip: 3 columns of path-local controls
+                         // (MAIN | OUTRIG | AMBIENT) sitting under the floor plan,
+                         // above the LOADED row + bottom bar. DIRECT no longer has
+                         // its own column — it's a checkbox in MAIN, next to Decca
+                         // Tree (v2.13 UI compaction). Each column owns its own
+                         // section header.
                          mainHeaderBounds,
-                         directHeaderBounds,
                          outrigHeaderBounds,
                          ambientHeaderBounds,
                          micPathsStripBounds;   // whole-strip rect (for top separator)
@@ -250,7 +252,10 @@ private:
     // DIRECT has no position/pattern/height controls — it reuses the MAIN
     // pair. OUTRIG and AMBIENT each expose a pattern combo and height
     // slider; their L/R x/y positions come from the FloorPlanComponent.
-    juce::ToggleButton directEnableButton  { "Enabled" };
+    // DIRECT enable lives in the MAIN column next to Decca Tree (v2.13 UI
+    // compaction), so its label is "Direct" rather than the bare "Enabled"
+    // used by OUTRIG/AMBIENT (which still sit under their own column headers).
+    juce::ToggleButton directEnableButton  { "Direct" };
     juce::ToggleButton outrigEnableButton  { "Enabled" };
     juce::ToggleButton ambientEnableButton { "Enabled" };
 
@@ -296,10 +301,9 @@ private:
     juce::Label  mainTiltLabel,  outrigTiltLabel,  ambientTiltLabel;
     juce::Label  mainTiltReadout, outrigTiltReadout, ambientTiltReadout;
 
-    // Information labels shown in the MAIN and DIRECT columns of the strip.
-    // MAIN has no per-column controls (it is always synthesised and configured
-    // elsewhere); DIRECT has only an enable toggle (it inherits MAIN pair).
-    juce::Label mainPathInfoLabel, directPathInfoLabel;
+    // Information label kept (zero-sized) in the MAIN column of the strip.
+    // DIRECT no longer has its own column or info label (v2.13 UI compaction).
+    juce::Label mainPathInfoLabel;
 
     // Filename display labels — one per mic path, drawn in the row above the
     // bottom bar. Populated by polling pathDisplayNameSupplier from

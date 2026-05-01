@@ -9,5 +9,5 @@
                  rlx="0.3622448979591837" rly="0.8168934240362812" rrx="0.5272108843537415"
                  rry="0.8205782312925171" spkl="2.285608903560783" spkr="0.427563817296172"
                  micl="-2.135703080888242" micr="-1.212999083597348" micPat="cardioid"
-                 erOnly="0" sr="48000" bakeERTail="0" bakedERGain="1.0" bakedTailGain="1.0"/>
+                 erOnly="0" sr="48000" bakeERTail="0" bakedERGain="1.0" bakedTailGain="1.0" srcRad="Generic Instrument"/>
 </PingIRSynth>

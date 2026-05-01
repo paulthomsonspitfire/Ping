@@ -212,6 +212,21 @@ static IRSynthParams paramsFromPingAttrs(const std::map<std::string, std::string
     p.micr_angle  = getDouble(a, "micr", -0.785398163397);
     p.mic_pattern = getStr(a, "micPat", "cardioid");
 
+    // Source radiation preset (v2.11+). Mirrors PluginProcessor.cpp ::
+    // irSynthParamsFromXml — missing attribute resolves to legacy cardioid
+    // for back-compat. SourceRadiation::byPreset() also falls back to legacy
+    // if the named preset isn't in the registry.
+    {
+        const std::string srcRadName = getStr(a, "srcRad", "Cardioid (legacy)");
+        p.source_radiation = SourceRadiation::byPreset(srcRadName);
+    }
+
+    // Source elevation tilt (v2.12+). Defaults to 0 when missing — keeps
+    // engine output bit-identical to v2.11 even for non-Legacy radiation
+    // kinds (cosThSpk == cos(2D-az-diff) when tilt = 0).
+    p.spkl_tilt = getDouble(a, "srcTiltL", 0.0);
+    p.spkr_tilt = getDouble(a, "srcTiltR", 0.0);
+
     p.er_only                 = getBool  (a, "erOnly",        false);
     p.sample_rate             = getInt   (a, "sr",            48000);
     p.bake_er_tail_balance    = getBool  (a, "bakeERTail",    false);
@@ -226,6 +241,9 @@ static IRSynthParams paramsFromPingAttrs(const std::map<std::string, std::string
     p.direct_max_order        = getInt (a, "directMaxOrder", defaults.direct_max_order);
     p.lambert_scatter_enabled = getBool(a, "lambertScatter", defaults.lambert_scatter_enabled);
     p.spk_directivity_full    = getBool(a, "spkDirFull",     defaults.spk_directivity_full);
+    // Mono speaker source (v2.9.5+). Missing attribute → false (preserves
+    // historical dual-speaker rendering for old sidecars).
+    p.mono_source             = getBool(a, "monoSrc",        defaults.mono_source);
 
     // Outrigger pair. Pre-tilt sidecars (no `outrigLtilt` attr) fall back to
     // 0.0 NOT the struct default (-π/6) — same convention as the plugin.

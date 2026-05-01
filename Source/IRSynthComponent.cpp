@@ -280,7 +280,10 @@ IRSynthComponent::IRSynthComponent()
     {
         sl->setRange (-90.0, 90.0, 0.5);
         sl->setValue (0.0, juce::dontSendNotification);
-        sl->setTextValueSuffix (" \xc2\xb0");                            // " °"
+        // Use fromUTF8 so the degree glyph is interpreted as UTF-8 (0xC2 0xB0
+        // = °) rather than Latin-1 (which renders as "Â°"). Matches the
+        // formatting used by mainTilt/outrigTilt/ambientTilt readouts.
+        sl->setTextValueSuffix (juce::String::fromUTF8 (" \xc2\xb0"));
         sl->setColour (juce::Slider::textBoxTextColourId,    textDim);
         sl->setColour (juce::Slider::textBoxOutlineColourId, juce::Colour (0));
         sl->setColour (juce::Slider::trackColourId,          accent);
@@ -717,13 +720,6 @@ IRSynthComponent::IRSynthComponent()
     mainPathInfoLabel.setColour (juce::Label::textColourId, textDim);
     mainPathInfoLabel.setFont (juce::FontOptions (10.0f));
 
-    addAndMakeVisible (directPathInfoLabel);
-    directPathInfoLabel.setText ("Reach set in Options\nShares MAIN pair position",
-                                 juce::dontSendNotification);
-    directPathInfoLabel.setJustificationType (juce::Justification::topLeft);
-    directPathInfoLabel.setColour (juce::Label::textColourId, textDim);
-    directPathInfoLabel.setFont (juce::FontOptions (10.0f));
-
     // Per-path filename labels (one per MAIN/DIRECT/OUTRIG/AMBIENT column).
     // Drawn directly under the Mic Paths strip so the user can see at a
     // glance which file is loaded into each slot. Each label is tinted with
@@ -920,7 +916,6 @@ void IRSynthComponent::paint (juce::Graphics& g)
                     1.0f);
     }
     drawSectionHeader (mainHeaderBounds,    "Main");
-    drawSectionHeader (directHeaderBounds,  "Direct");
     drawSectionHeader (outrigHeaderBounds,  "Outrigger");
     drawSectionHeader (ambientHeaderBounds, "Ambient");
 }
@@ -931,23 +926,6 @@ void IRSynthComponent::resized()
     const int barH = 52;
     auto contentArea = b.removeFromTop (b.getHeight() - barH);
     auto barArea = b;
-
-    // ── Horizontal Mic Paths strip ──────────────────────────────────────────
-    // Carved off the bottom of contentArea (above barArea). Spans the full
-    // content width so MAIN / DIRECT / OUTRIG / AMBIENT read left-to-right
-    // and pair naturally with the MicMixerComponent column order on the
-    // main page. A thin gap separates it from the FloorPlan / left column
-    // above, and the bottom bar below.
-    //
-    // stripH sized to the tallest column (MAIN = header + Decca toggle +
-    // Pattern + Centre fill + Toe-out rows) with a small margin so the
-    // bottom-most Toe-out control sits just above the RT60 display in the
-    // bar below (user request, v2.7.5).
-    // stripH bumped to 154 to fit one extra Tilt row in MAIN (Decca + Pattern
-    // + Centre fill + Toe-out + Tilt). OUTRIG/AMBIENT also fit a Tilt row
-    // below their Height row; DIRECT remains short (just the enable toggle).
-    const int stripH   = 154;
-    auto micStripArea = contentArea.removeFromBottom (stripH);
 
     // ── Per-path filename row ───────────────────────────────────────────────
     // Sits *immediately under* the Mic Paths strip with no separating gap, so
@@ -966,40 +944,55 @@ void IRSynthComponent::resized()
 
     // ── Left / right column split ───────────────────────────────────────────
     // Left column: all acoustic-character + room-geometry controls (~35% width).
-    // Right column: FloorPlanComponent, always visible (remaining ~65% width).
+    //              Now occupies the full content height (the mic-paths strip no
+    //              longer eats the bottom of this column) so Options + Room
+    //              Geometry can flow further down with empty slack at the
+    //              bottom for future controls (v2.13 UI compaction).
+    // Right column: FloorPlanComponent on top, mic-paths strip carved off its
+    //               bottom — so the strip sits *under the floor plan only*,
+    //               not stretching across the left column.
     const int leftW = juce::jmax (280, (int) (0.35f * contentArea.getWidth()));
     auto leftCol  = contentArea.removeFromLeft (leftW);
-    auto rightCol = contentArea;   // remaining width
+    auto rightCol = contentArea;   // remaining width — will host floor plan + strip
+
+    // stripH sized to the tallest column (MAIN = header + Decca/Direct toggle
+    // row + Pattern + Centre fill + Toe-out + Tilt) with a small margin so the
+    // bottom-most Tilt control sits just above the per-path filename row in
+    // the bar below. With DIRECT removed as its own column, MAIN fits a
+    // side-by-side Decca + Direct toggle row in place of the previous Decca-
+    // only row, so stripH is unchanged.
+    const int stripH       = 154;
+    auto micStripArea = rightCol.removeFromBottom (stripH);
 
     layoutControls (leftCol);
     floorPlanComponent.setBounds (rightCol.reduced (8));
     layoutMicPathsStrip (micStripArea);
 
-    // Lay out the four per-path filename labels directly under the Mic Paths
-    // strip's four columns so each label visually anchors to its section
-    // header above. We re-derive the column geometry from micStripArea
-    // exactly the way layoutMicPathsStrip does (4 equal columns, 10 px
-    // gap, 6 px inset) so the labels track the columns even if the column
-    // formula changes later — a single source of geometry is preferable to
-    // exposing the column rectangles as members.
+    // Lay out the four per-path filename labels along the LOADED row. The row
+    // still spans the full bar width (= original full content width), even
+    // though the mic-paths strip above it now only spans the floor-plan
+    // column — keeping the LOADED row wide gives the IR filename labels
+    // enough room to render long filenames. The DIRECT label is preserved at
+    // its original column position so users can still see which IR is
+    // currently loaded for the direct path.
     //
     // The "LOADED:" caption sits at the far-left edge of the row, anchored
-    // to the same X as the bar's left edge (= mic strip left edge) so it
-    // aligns with the RT60 label below.
+    // to the same X as the bar's left edge so it aligns with the RT60 label
+    // below.
     {
         const int colGap   = 10;
         const int inset    = 6;
-        const int stripX   = micStripArea.getX();
-        const int stripW   = micStripArea.getWidth();
-        const int colW     = (stripW - colGap * 3) / 4;
+        const int rowX     = pathNameRow.getX();
+        const int rowW     = pathNameRow.getWidth();
+        const int colW     = (rowW - colGap * 3) / 4;
 
         const int loadedW = 56;  // wide enough for "LOADED:" at 11 pt + small margin
-        loadedRowLabel.setBounds (stripX, pathNameRow.getY(),
+        loadedRowLabel.setBounds (rowX, pathNameRow.getY(),
                                   loadedW, pathNameRow.getHeight());
 
         for (int i = 0; i < 4; ++i)
         {
-            const int colX = stripX + (colW + colGap) * i;
+            const int colX = rowX + (colW + colGap) * i;
             pathNameLabels[i].setBounds (colX + inset, pathNameRow.getY(),
                                          colW - inset * 2, pathNameRow.getHeight());
         }
@@ -1245,30 +1238,14 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
         y += rowH;
     };
 
-    // Cathedral has two proportion rows (Nave + Transept) which used to stack
-    // and crash into the bottom Mic Paths strip. Lay them side by side so they
-    // occupy a single row and free vertical space below.
-    if (navePctSlider.isVisible() && trptPctSlider.isVisible())
-    {
-        const int halfW   = (geomRowW - gap) / 2;
-        const int nameW   = 38;            // tighter than dimRow — half the width
-        const int valueW  = 36;
-        const int sW      = juce::jmax (40, halfW - nameW - valueW - gap * 2);
-        navePctLabel  .setBounds (x0,                              y, nameW,  rowH);
-        navePctSlider .setBounds (x0 + nameW + gap,                y, sW,     rowH);
-        navePctReadout.setBounds (x0 + nameW + gap + sW + gap,     y, valueW, rowH);
-        const int x1 = x0 + halfW + gap;
-        trptPctLabel  .setBounds (x1,                              y, nameW,  rowH);
-        trptPctSlider .setBounds (x1 + nameW + gap,                y, sW,     rowH);
-        trptPctReadout.setBounds (x1 + nameW + gap + sW + gap,     y, valueW, rowH);
-        lastGeomRowY = y;
-        y += rowH;
-    }
-    else
-    {
-        propRow (navePctSlider, navePctLabel, navePctReadout);
-        propRow (trptPctSlider, trptPctLabel, trptPctReadout);
-    }
+    // Cathedral's two proportion rows (Nave + Transept) used to be packed
+    // side-by-side because the bottom Mic Paths strip ate the left column's
+    // vertical slack. With the strip now confined to the floor-plan column
+    // (v2.13 UI compaction), the left column has full content height and
+    // these rows can stack on their own lines under Width/Depth/Height,
+    // matching the styling of Taper / Cnr Cut below.
+    propRow (navePctSlider, navePctLabel, navePctReadout);
+    propRow (trptPctSlider, trptPctLabel, trptPctReadout);
     propRow (taperSlider,     taperLabel,     taperReadout);
     propRow (cornerCutSlider, cornerCutLabel, cornerCutReadout);
 
@@ -1297,8 +1274,14 @@ void IRSynthComponent::layoutControls (juce::Rectangle<int> b)
 
 void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
 {
-    // Four equal-width columns in left-to-right order: MAIN, DIRECT, OUTRIG, AMBIENT.
-    // Each column contains a section header, optional toggle, and optional control rows.
+    // Three equal-width columns in left-to-right order: MAIN, OUTRIG, AMBIENT.
+    // Each column contains a section header and per-path control rows. DIRECT
+    // no longer has its own column — its enable toggle lives in the MAIN
+    // column, sharing the Decca Tree row (v2.13 UI compaction). The strip is
+    // now also narrower horizontally — it tracks the floor-plan column above
+    // it rather than spanning the full content width — so MAIN/OUTRIG/AMBIENT
+    // each get a slightly tighter ctrlW than before, but the column count
+    // dropping 4 → 3 more than offsets the strip's narrower outer width.
     micPathsStripBounds = b;
 
     const int rowH     = 22;
@@ -1313,7 +1296,7 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
     const int stripY   = b.getY() + 8;   // leave 8 px for separator line in paint()
     const int stripW   = b.getWidth();
 
-    const int colW = (stripW - colGap * 3) / 4;
+    const int colW = (stripW - colGap * 2) / 3;
 
     // Per-column helpers — capture colX so each column lays out its own controls.
     auto layoutMainCol = [&] (int colX)
@@ -1326,11 +1309,20 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
         y += headerH + 4;
 
         // MAIN always on — the enable-toggle row the other columns use here
-        // is instead occupied by the Decca Tree mode switch (replaces the
-        // MAIN L/R mics with a single Decca tree puck). Keeps the Pattern
-        // combo row aligned horizontally with OUTRIG/AMBIENT.
-        deccaEnableButton.setBounds (x0, y, ctrlW, rowH);
-        y += rowH + 2;
+        // is instead occupied by two side-by-side mode toggles:
+        //   • Decca Tree   — replaces the MAIN L/R mics with a single Decca
+        //                    tree puck (toggles floor-plan visibility).
+        //   • Direct       — enables the direct path (which inherits the
+        //                    MAIN pair position; reach is set in Options).
+        // This keeps the Pattern combo row aligned horizontally with
+        // OUTRIG/AMBIENT and removes the need for a stand-alone DIRECT
+        // column in the strip (v2.13 UI compaction).
+        {
+            const int halfW = (ctrlW - gap) / 2;
+            deccaEnableButton .setBounds (x0,                  y, halfW, rowH);
+            directEnableButton.setBounds (x0 + halfW + gap,    y, halfW, rowH);
+            y += rowH + 2;
+        }
 
         micPatternLabel.setBounds (x0, y, labelW, rowH);
         micPatternCombo.setBounds (x0 + labelW + gap, y,
@@ -1374,21 +1366,6 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
         // mainPathInfoLabel kept visible but zero-sized — the empty string
         // didn't render anything anyway.
         mainPathInfoLabel.setBounds (x0, y, 0, 0);
-    };
-
-    auto layoutDirectCol = [&] (int colX)
-    {
-        const int x0    = colX + inset;
-        const int ctrlW = colW - inset * 2;
-        int y = stripY;
-
-        directHeaderBounds = { x0, y, ctrlW, headerH };
-        y += headerH + 4;
-
-        directEnableButton.setBounds (x0, y, ctrlW, rowH);
-        y += rowH + 2;
-
-        directPathInfoLabel.setBounds (x0, y, ctrlW, rowH * 2);
     };
 
     auto layoutOutrigCol = [&] (int colX)
@@ -1454,12 +1431,10 @@ void IRSynthComponent::layoutMicPathsStrip (juce::Rectangle<int> b)
     const int col0X = stripX;
     const int col1X = stripX + (colW + colGap) * 1;
     const int col2X = stripX + (colW + colGap) * 2;
-    const int col3X = stripX + (colW + colGap) * 3;
 
     layoutMainCol    (col0X);
-    layoutDirectCol  (col1X);
-    layoutOutrigCol  (col2X);
-    layoutAmbientCol (col3X);
+    layoutOutrigCol  (col1X);
+    layoutAmbientCol (col2X);
 }
 
 IRSynthParams IRSynthComponent::getParams() const

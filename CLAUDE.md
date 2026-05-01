@@ -1358,6 +1358,107 @@ clear per-band changes (~3 dB at HF for 45° tilt), and the strings/voice
 preset defaults visibly lift HF energy when the source is tipped up
 toward the elevated Decca array.
 
+### IR Synth panel UI compaction (v2.13)
+
+The IR Synth panel's "Mic Paths" strip used to span the full content
+width with four columns (MAIN | DIRECT | OUTRIG | AMBIENT), eating the
+bottom of the left column. v2.13 narrows the strip to the floor-plan
+column only and drops DIRECT as a stand-alone column:
+
+  * The DIRECT enable lives next to the Decca Tree toggle inside MAIN's
+    column header row, so MAIN's row 1 is now `[Decca Tree] [Direct]`
+    side-by-side. The two toggles share the row equally; everything
+    below (Pattern combo, Centre fill, Toe-out, Tilt) is unchanged.
+  * `directEnableButton`'s text changes from `"Enabled"` to `"Direct"`
+    so it reads correctly without the column header that used to label
+    it. OUTRIG/AMBIENT still say `"Enabled"` under their headers.
+  * The DIRECT column's `directPathInfoLabel` ("Reach set in Options /
+    Shares MAIN pair position") is gone — `directHeaderBounds` and the
+    label member are removed.
+  * The strip is carved off the bottom of `rightCol` only (not the full
+    `contentArea`), so `leftCol` now fills the full content height. The
+    `layoutControls` flow is unchanged but Options + Room Geometry
+    sections naturally extend further down with empty slack at the
+    bottom for future controls.
+  * The Cathedral-only side-by-side packing of Nave + Transept rows
+    (introduced when the strip was eating left-col vertical space) is
+    removed — they're now full-width rows like Width/Depth/Height /
+    Taper / Cnr Cut.
+  * `Tilt L` / `Tilt R` source-tilt readouts: degree symbol fixed
+    (`setTextValueSuffix(juce::String::fromUTF8(" \xc2\xb0"))` instead
+    of the bare C string, which was being decoded as Latin-1 → "Â°").
+
+The LOADED-row of per-path filename labels (MAIN / DIRECT / OUTRIG /
+AMBIENT) still spans the full content width below the strip — kept wide
+so long IR filenames have room. The DIRECT label is preserved at its
+original column position even though the DIRECT column header above is
+gone, because users still load DIRECT IRs and need to see which one is
+active.
+
+No engine changes. No new XML attributes. `IRSynthParams` and the
+sidecar schema are unchanged from v2.12. v2.12 sidecars and IRs round-
+trip bit-identically.
+
+### Factory IR rebake with Generic Instrument default (v2.14)
+
+All 43 factory `.ping` sidecars get a single new attribute,
+`srcRad="Generic Instrument"`, and all 130 factory `.wav` files are
+re-rendered through the v2.14 engine. This is the first rebake since
+the v2.10 mirror-symmetric jitter fix and is the first time factory
+presets benefit from v2.11's 3D `SourceRadiation` work — they were
+previously falling through to `Cardioid (legacy)` (the loader fallback
+when `srcRad` is missing) and so were running on the 2D legacy code
+path even after v2.11/v2.12 shipped.
+
+**Why Generic Instrument** — `Cardioid (legacy)` has a hard zero at
+180° (everything behind the source is dead silent) and is frequency-
+flat, neither of which is realistic. Generic Instrument is the
+neutral v2.11 preset designed for non-instrument-specific room IRs:
+mild frequency-dependent narrowing toward HF, modest rear floor
+(~−12 dB at 180° rather than −∞), no built-in tilt
+(`defaultTiltDeg = 0`). It avoids baking in any instrument-specific
+bias (vs. Voice / Strings / Brass) so users putting any source through
+the convolution don't fight a preset assumption.
+
+**Surgical sidecar edit** — `Tools/add_srcrad_to_factory_sidecars.py`
+adds exactly one attribute per file and preserves byte-for-byte
+everything else (positions, materials, decca settings, etc.) and the
+existing CRLF line endings. Idempotent: re-running on a sidecar that
+already has `srcRad=` is a no-op. Diff verification:
+`git diff --shortstat Installer/factory_irs/*.ping` showed exactly
+**43 insertions / 43 deletions** — one edited line per file.
+
+**Rebake tool fix** — `Tools/rebake_factory_irs.cpp` previously did
+not parse `srcRad`, `srcTiltL`, `srcTiltR`, or `monoSrc`, so v2.11/
+v2.12/v2.9.5 attributes in a sidecar were silently dropped during
+rebake (the resulting WAV would always use `Cardioid (legacy)` +
+tilt 0 + dual-source regardless of what the sidecar said). v2.14
+fixes the tool to mirror `PluginProcessor.cpp::irSynthParamsFromXml`
+semantics — missing `srcRad` → `Cardioid (legacy)`, missing tilts
+→ 0, missing `monoSrc` → false. **Anyone using the rebake tool
+on a sidecar with custom radiation/tilt settings before v2.14 was
+silently getting legacy output.**
+
+**WAV peak comparison** (Capitol Studios Echo Chamber — the hottest
+factory preset, all four paths enabled, very small reflective room):
+
+| Path     | v2.13 (legacy 2D) | v2.14 (Generic 3D) | Δ                  |
+|----------|-------------------|--------------------|--------------------|
+| MAIN     | −0.00 dBFS        | −1.02 dBFS         | +1.02 dB headroom  |
+| DIRECT   | −0.76 dBFS        | −1.81 dBFS         | +1.05 dB headroom  |
+| OUTRIG   | −0.00 dBFS        | −0.00 dBFS         | unchanged (at FS)  |
+| AMBIENT  | −0.00 dBFS        | −0.00 dBFS         | unchanged (at FS)  |
+
+So the new IRs are not hotter than the old ones — main / direct
+actually have slightly more headroom, and the outrig / ambient
+peaks were already at full scale before the rebake (existing
+characteristic of that preset's geometry).
+
+**Pipeline** — same as v2.10: rebake → trim trailing silence (
+`Tools/trim_factory_irs.py`, −90 dB threshold + 500 ms safety tail
++ cosine end-fade) → installer pkg. The trim removed
+~32 minutes of total trailing silence across 101 trimmed WAVs.
+
 ### Close / coincident speaker handling
 
 When the two speakers are close together, perfectly periodic image-source reflections (especially floor-ceiling bounces at 2H/c intervals) can produce audible repeating delays. Two distance thresholds are checked against the speaker separation `srcDist`:
